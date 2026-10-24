@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: GPL-2.0-only
 // Copyright (c) 2026 [OWNER NAME]
 // Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 const out = { has: typeof XMLHttpRequest, states: [XMLHttpRequest.UNSENT, XMLHttpRequest.DONE], tag: Object.prototype.toString.call(new XMLHttpRequest()) };

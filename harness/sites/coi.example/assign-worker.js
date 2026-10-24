@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: GPL-2.0-only
 // Copyright (c) 2026 [OWNER NAME]
 // Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 // A spare runner as plasmaontheweb.com's: set up on 'init', given its task later in 'assign' (a Map of compiled modules,

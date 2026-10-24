@@ -83,8 +83,8 @@ Chitin's test suites and its comparison and diff tooling are not part of this re
 
 > Draft — not legal advice; to be reviewed by a lawyer before publication.
 
-Chitin's own code is under the PolyForm Noncommercial License 1.0.0 ([LICENSE.md](LICENSE.md)):
-noncommercial use only. Third-party components keep their own licences; the engine is built on Ladybird
+Chitin's own code is under the GNU General Public License, version 2 ([LICENSE.md](LICENSE.md),
+SPDX `GPL-2.0-only`). Third-party components keep their own licences; the engine is built on Ladybird
 (BSD-2-Clause), whose notices are kept in every build ([CREDITS.md](CREDITS.md)). Copies and forks must
 rename and rebrand ([TRADEMARKS.md](TRADEMARKS.md)).
 

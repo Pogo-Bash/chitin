@@ -1,5 +1,5 @@
 import { statSync } from 'node:fs';
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: GPL-2.0-only
 // Copyright (c) 2026 [OWNER NAME]
 // Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 // Chitin phase-0 harness server. Loopback only (127.0.0.1 and ::1), one port, routed by Host:

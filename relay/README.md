@@ -24,10 +24,9 @@ From `docs/legal/relay-operators.md` (draft, not legal advice; read the whole fi
    where your users are, and **you must follow your hosting provider's acceptable-use policy.** Many
    providers do not allow public proxies, VPN-like services or anything that looks like scanning, and a
    complaint can get your account locked or closed. Read the policy before you start.
-5. **You may only run the relay as the licence allows.** The relay is part of Chitin's own code and is
-   under the PolyForm Noncommercial License 1.0.0. Running one for yourself, friends, a school or a
-   charity may be a noncommercial purpose; selling access to it or running it as a business is not
-   permitted under that licence without separate permission.
+5. **The licence.** The relay is part of Chitin's own code and is under the GNU General Public License,
+   version 2 (`LICENSE.md`). If you distribute it, modified or not, the GPL's terms apply, including
+   offering the source.
 6. **Do not describe your relay as official** or use Chitin's name or logo in a way that suggests the
    project runs, backs or endorses it (`TRADEMARKS.md`). Do not advertise it as a way to bypass school,
    work or other filters; your wording can create liability for you.

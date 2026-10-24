@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-License-Identifier: GPL-2.0-only
 # Copyright (c) 2026 [OWNER NAME]
 # Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 # Builds Ganglion's third-party dependencies for wasm32 with the pinned Emscripten (docs/toolchain.md)

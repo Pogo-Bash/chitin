@@ -1,7 +1,7 @@
 # Licences of this site
 
 This directory is the built output of the app in tools/frameworks/., made from @angular/cli 21.2.27 ng new (MIT).
-The app code itself is Chitin's test fixture (PolyForm-Noncommercial-1.0.0 with the rest of the repository); the packages below are
+The app code itself is Chitin's test fixture (GPL-2.0-only with the rest of the repository); the packages below are
 compiled into the bundle under their own licences:
 
 - @angular/common 21.2.25: MIT — Copyright (c) 2010-2026 Google LLC. https://angular.dev/license
