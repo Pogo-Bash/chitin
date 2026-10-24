@@ -1,0 +1,638 @@
+{
+ "wisp-js": {
+  "wisp-js (10)": [
+   {
+    "load": 6.5,
+    "mibps": 2035.2,
+    "cpu_s_per_gib": 0.492,
+    "cores": 0.98,
+    "rss_mib": 165.3,
+    "server_alive": true
+   },
+   {
+    "load": 6.9,
+    "mibps": 1996.8,
+    "cpu_s_per_gib": 0.501,
+    "cores": 0.98,
+    "rss_mib": 170.7,
+    "server_alive": true
+   },
+   {
+    "load": 6.9,
+    "mibps": 1932.8,
+    "cpu_s_per_gib": 0.516,
+    "cores": 0.97,
+    "rss_mib": 163.4,
+    "server_alive": true
+   }
+  ],
+  "wisp-js (5x10)": [
+   {
+    "load": 6.9,
+    "mibps": 1804.8,
+    "cpu_s_per_gib": 0.679,
+    "cores": 1.2,
+    "rss_mib": 190.9,
+    "server_alive": true
+   },
+   {
+    "load": 6.7,
+    "mibps": 1881.6,
+    "cpu_s_per_gib": 0.657,
+    "cores": 1.21,
+    "rss_mib": 182.5,
+    "server_alive": true
+   },
+   {
+    "load": 6.8,
+    "mibps": 1894.4,
+    "cpu_s_per_gib": 0.659,
+    "cores": 1.22,
+    "rss_mib": 192.3,
+    "server_alive": true
+   }
+  ],
+  "wisp-mux (10)": [
+   {
+    "load": 6.8,
+    "mibps": 2112.0,
+    "cpu_s_per_gib": 0.511,
+    "cores": 1.05,
+    "rss_mib": 181.1,
+    "server_alive": true
+   },
+   {
+    "load": 7.0,
+    "mibps": 1894.4,
+    "cpu_s_per_gib": 0.566,
+    "cores": 1.05,
+    "rss_mib": 178.6,
+    "server_alive": true
+   },
+   {
+    "load": 7.0,
+    "mibps": 2022.4,
+    "cpu_s_per_gib": 0.528,
+    "cores": 1.04,
+    "rss_mib": 167.4,
+    "server_alive": true
+   }
+  ],
+  "wisp-mux (5x10)": [
+   {
+    "load": 6.9,
+    "mibps": 1868.8,
+    "cpu_s_per_gib": 0.628,
+    "cores": 1.15,
+    "rss_mib": 223.0,
+    "server_alive": true
+   },
+   {
+    "load": 7.3,
+    "mibps": 1932.8,
+    "cpu_s_per_gib": 0.596,
+    "cores": 1.12,
+    "rss_mib": 205.5,
+    "server_alive": true
+   },
+   {
+    "load": 7.3,
+    "mibps": 2048.0,
+    "cpu_s_per_gib": 0.569,
+    "cores": 1.14,
+    "rss_mib": 212.3,
+    "server_alive": true
+   }
+  ]
+ },
+ "@rvwasm/wisp": {
+  "wisp-js (10)": [
+   {
+    "load": 7.3,
+    "mibps": 2048.0,
+    "cpu_s_per_gib": 0.499,
+    "cores": 1.0,
+    "rss_mib": 123.2,
+    "server_alive": true
+   },
+   {
+    "load": 7.4,
+    "mibps": 2201.6,
+    "cpu_s_per_gib": 0.465,
+    "cores": 1.0,
+    "rss_mib": 123.1,
+    "server_alive": true
+   },
+   {
+    "load": 7.9,
+    "mibps": 2329.6,
+    "cpu_s_per_gib": 0.438,
+    "cores": 1.0,
+    "rss_mib": 137.0,
+    "server_alive": true
+   }
+  ],
+  "wisp-js (5x10)": [
+   {
+    "load": 10.7,
+    "mibps": 1920.0,
+    "cpu_s_per_gib": 0.571,
+    "cores": 1.07,
+    "rss_mib": 169.8,
+    "server_alive": true
+   },
+   {
+    "load": 10.4,
+    "mibps": 2048.0,
+    "cpu_s_per_gib": 0.536,
+    "cores": 1.07,
+    "rss_mib": 168.2,
+    "server_alive": true
+   },
+   {
+    "load": 10.2,
+    "mibps": 2022.4,
+    "cpu_s_per_gib": 0.542,
+    "cores": 1.07,
+    "rss_mib": 169.6,
+    "server_alive": true
+   }
+  ],
+  "wisp-mux (10)": [
+   {
+    "load": 9.9,
+    "mibps": 2304.0,
+    "cpu_s_per_gib": 0.455,
+    "cores": 1.02,
+    "rss_mib": 126.9,
+    "server_alive": true
+   },
+   {
+    "load": 9.6,
+    "mibps": 2329.6,
+    "cpu_s_per_gib": 0.461,
+    "cores": 1.05,
+    "rss_mib": 135.9,
+    "server_alive": true
+   },
+   {
+    "load": 9.7,
+    "mibps": 2124.8,
+    "cpu_s_per_gib": 0.507,
+    "cores": 1.05,
+    "rss_mib": 130.4,
+    "server_alive": true
+   }
+  ],
+  "wisp-mux (5x10)": [
+   {
+    "load": 9.7,
+    "mibps": 1984.0,
+    "cpu_s_per_gib": 0.553,
+    "cores": 1.07,
+    "rss_mib": 173.7,
+    "server_alive": true
+   },
+   {
+    "load": 9.6,
+    "mibps": 1984.0,
+    "cpu_s_per_gib": 0.553,
+    "cores": 1.07,
+    "rss_mib": 181.4,
+    "server_alive": true
+   },
+   {
+    "load": 9.6,
+    "mibps": 2086.4,
+    "cpu_s_per_gib": 0.525,
+    "cores": 1.07,
+    "rss_mib": 182.1,
+    "server_alive": true
+   }
+  ]
+ },
+ "epoxy (single)": {
+  "wisp-js (10)": [
+   {
+    "load": 9.0,
+    "mibps": 2534.4,
+    "cpu_s_per_gib": 0.262,
+    "cores": 0.65,
+    "rss_mib": 119.6,
+    "server_alive": true
+   },
+   {
+    "load": 9.3,
+    "mibps": 2726.4,
+    "cpu_s_per_gib": 0.243,
+    "cores": 0.65,
+    "rss_mib": 121.2,
+    "server_alive": true
+   },
+   {
+    "load": 9.3,
+    "mibps": 2752.0,
+    "cpu_s_per_gib": 0.244,
+    "cores": 0.66,
+    "rss_mib": 109.7,
+    "server_alive": true
+   }
+  ],
+  "wisp-js (5x10)": [
+   {
+    "load": 8.9,
+    "mibps": 3161.6,
+    "cpu_s_per_gib": 0.303,
+    "cores": 0.93,
+    "rss_mib": 127.4,
+    "server_alive": true
+   },
+   {
+    "load": 8.8,
+    "mibps": 2790.4,
+    "cpu_s_per_gib": 0.346,
+    "cores": 0.94,
+    "rss_mib": 140.9,
+    "server_alive": true
+   },
+   {
+    "load": 8.9,
+    "mibps": 3020.8,
+    "cpu_s_per_gib": 0.319,
+    "cores": 0.94,
+    "rss_mib": 170.9,
+    "server_alive": true
+   }
+  ],
+  "wisp-mux (10)": [
+   {
+    "load": 8.9,
+    "mibps": 2944.0,
+    "cpu_s_per_gib": 0.316,
+    "cores": 0.91,
+    "rss_mib": 104.3,
+    "server_alive": true
+   },
+   {
+    "load": 8.9,
+    "mibps": 2803.2,
+    "cpu_s_per_gib": 0.328,
+    "cores": 0.9,
+    "rss_mib": 96.7,
+    "server_alive": true
+   },
+   {
+    "load": 9.3,
+    "mibps": 2892.8,
+    "cpu_s_per_gib": 0.312,
+    "cores": 0.88,
+    "rss_mib": 131.7,
+    "server_alive": true
+   }
+  ],
+  "wisp-mux (5x10)": [
+   {
+    "load": 13.1,
+    "mibps": 2534.4,
+    "cpu_s_per_gib": 0.419,
+    "cores": 1.04,
+    "rss_mib": 137.9,
+    "server_alive": true
+   },
+   {
+    "load": 13.1,
+    "mibps": 3084.8,
+    "cpu_s_per_gib": 0.339,
+    "cores": 1.02,
+    "rss_mib": 174.7,
+    "server_alive": true
+   },
+   {
+    "load": 12.9,
+    "mibps": 2188.8,
+    "cpu_s_per_gib": 0.478,
+    "cores": 1.02,
+    "rss_mib": 148.4,
+    "server_alive": true
+   }
+  ]
+ },
+ "epoxy (multi)": {
+  "wisp-js (10)": [
+   {
+    "load": 18.5,
+    "mibps": 2380.8,
+    "cpu_s_per_gib": 0.355,
+    "cores": 0.82,
+    "rss_mib": 291.1,
+    "server_alive": true
+   },
+   {
+    "load": 15.0,
+    "mibps": 1740.8,
+    "cpu_s_per_gib": 0.479,
+    "cores": 0.82,
+    "rss_mib": 294.0,
+    "server_alive": true
+   },
+   {
+    "load": 17.9,
+    "mibps": 2073.6,
+    "cpu_s_per_gib": 0.396,
+    "cores": 0.8,
+    "rss_mib": 283.2,
+    "server_alive": true
+   }
+  ],
+  "wisp-js (5x10)": [
+   {
+    "load": 14.7,
+    "mibps": 6028.8,
+    "cpu_s_per_gib": 0.389,
+    "cores": 2.29,
+    "rss_mib": 521.6,
+    "server_alive": true
+   },
+   {
+    "load": 14.4,
+    "mibps": 5824.0,
+    "cpu_s_per_gib": 0.407,
+    "cores": 2.31,
+    "rss_mib": 538.3,
+    "server_alive": true
+   },
+   {
+    "load": 13.7,
+    "mibps": 5964.8,
+    "cpu_s_per_gib": 0.401,
+    "cores": 2.34,
+    "rss_mib": 530.5,
+    "server_alive": true
+   }
+  ],
+  "wisp-mux (10)": [
+   {
+    "load": 13.3,
+    "mibps": 3468.8,
+    "cpu_s_per_gib": 0.356,
+    "cores": 1.21,
+    "rss_mib": 345.4,
+    "server_alive": true
+   },
+   {
+    "load": 11.9,
+    "mibps": 3904.0,
+    "cpu_s_per_gib": 0.316,
+    "cores": 1.21,
+    "rss_mib": 344.5,
+    "server_alive": true
+   },
+   {
+    "load": 10.8,
+    "mibps": 3520.0,
+    "cpu_s_per_gib": 0.359,
+    "cores": 1.23,
+    "rss_mib": 354.1,
+    "server_alive": true
+   }
+  ],
+  "wisp-mux (5x10)": [
+   {
+    "load": 9.9,
+    "mibps": 8294.4,
+    "cpu_s_per_gib": 0.424,
+    "cores": 3.44,
+    "rss_mib": 556.9,
+    "server_alive": true
+   },
+   {
+    "load": 9.7,
+    "mibps": 8678.4,
+    "cpu_s_per_gib": 0.405,
+    "cores": 3.43,
+    "rss_mib": 560.1,
+    "server_alive": true
+   },
+   {
+    "load": 9.7,
+    "mibps": 8294.4,
+    "cpu_s_per_gib": 0.419,
+    "cores": 3.39,
+    "rss_mib": 558.8,
+    "server_alive": true
+   }
+  ]
+ },
+ "wisp-cpp 1t": {
+  "wisp-js (10)": [
+   {
+    "load": 9.7,
+    "mibps": 3980.8,
+    "cpu_s_per_gib": 0.177,
+    "cores": 0.69,
+    "rss_mib": 26.3,
+    "server_alive": true
+   },
+   {
+    "load": 9.3,
+    "mibps": 4672.0,
+    "cpu_s_per_gib": 0.146,
+    "cores": 0.66,
+    "rss_mib": 25.4,
+    "server_alive": true
+   },
+   {
+    "load": 8.8,
+    "mibps": 4480.0,
+    "cpu_s_per_gib": 0.153,
+    "cores": 0.67,
+    "rss_mib": 25.5,
+    "server_alive": true
+   }
+  ],
+  "wisp-js (5x10)": [
+   {
+    "load": 8.4,
+    "mibps": 5913.6,
+    "cpu_s_per_gib": 0.17,
+    "cores": 0.98,
+    "rss_mib": 27.5,
+    "server_alive": true
+   },
+   {
+    "load": 8.0,
+    "mibps": 5427.2,
+    "cpu_s_per_gib": 0.186,
+    "cores": 0.98,
+    "rss_mib": 30.3,
+    "server_alive": true
+   },
+   {
+    "load": 19.4,
+    "mibps": 2214.4,
+    "cpu_s_per_gib": 0.384,
+    "cores": 0.83,
+    "rss_mib": 33.6,
+    "server_alive": true
+   }
+  ],
+  "wisp-mux (10)": [
+   {
+    "load": 14.6,
+    "mibps": 6976.0,
+    "cpu_s_per_gib": 0.129,
+    "cores": 0.88,
+    "rss_mib": 25.6,
+    "server_alive": true
+   },
+   {
+    "load": 13.4,
+    "mibps": 6720.0,
+    "cpu_s_per_gib": 0.134,
+    "cores": 0.88,
+    "rss_mib": 27.6,
+    "server_alive": true
+   },
+   {
+    "load": 12.2,
+    "mibps": 5939.2,
+    "cpu_s_per_gib": 0.15,
+    "cores": 0.87,
+    "rss_mib": 26.4,
+    "server_alive": true
+   }
+  ],
+  "wisp-mux (5x10)": [
+   {
+    "load": 11.1,
+    "mibps": 6400.0,
+    "cpu_s_per_gib": 0.161,
+    "cores": 1.01,
+    "rss_mib": 25.2,
+    "server_alive": true
+   },
+   {
+    "load": 10.1,
+    "mibps": 6041.6,
+    "cpu_s_per_gib": 0.171,
+    "cores": 1.01,
+    "rss_mib": 26.7,
+    "server_alive": true
+   },
+   {
+    "load": 9.5,
+    "mibps": 6592.0,
+    "cpu_s_per_gib": 0.156,
+    "cores": 1.01,
+    "rss_mib": 25.9,
+    "server_alive": true
+   }
+  ]
+ },
+ "wisp-cpp 2t": {
+  "wisp-js (10)": [
+   {
+    "load": 8.9,
+    "mibps": 3993.6,
+    "cpu_s_per_gib": 0.171,
+    "cores": 0.67,
+    "rss_mib": 26.6,
+    "server_alive": true
+   },
+   {
+    "load": 8.9,
+    "mibps": 3532.8,
+    "cpu_s_per_gib": 0.196,
+    "cores": 0.68,
+    "rss_mib": 25.7,
+    "server_alive": true
+   },
+   {
+    "load": 8.9,
+    "mibps": 4339.2,
+    "cpu_s_per_gib": 0.161,
+    "cores": 0.68,
+    "rss_mib": 26.6,
+    "server_alive": true
+   }
+  ],
+  "wisp-js (5x10)": [
+   {
+    "load": 8.6,
+    "mibps": 7411.2,
+    "cpu_s_per_gib": 0.207,
+    "cores": 1.5,
+    "rss_mib": 40.5,
+    "server_alive": true
+   },
+   {
+    "load": 8.4,
+    "mibps": 7782.4,
+    "cpu_s_per_gib": 0.197,
+    "cores": 1.5,
+    "rss_mib": 39.5,
+    "server_alive": true
+   },
+   {
+    "load": 8.1,
+    "mibps": 8716.8,
+    "cpu_s_per_gib": 0.2,
+    "cores": 1.7,
+    "rss_mib": 40.4,
+    "server_alive": true
+   }
+  ],
+  "wisp-mux (10)": [
+   {
+    "load": 8.0,
+    "mibps": 6528.0,
+    "cpu_s_per_gib": 0.138,
+    "cores": 0.88,
+    "rss_mib": 26.8,
+    "server_alive": true
+   },
+   {
+    "load": 8.0,
+    "mibps": 6169.6,
+    "cpu_s_per_gib": 0.148,
+    "cores": 0.89,
+    "rss_mib": 26.7,
+    "server_alive": true
+   },
+   {
+    "load": 7.6,
+    "mibps": 6041.6,
+    "cpu_s_per_gib": 0.151,
+    "cores": 0.89,
+    "rss_mib": 25.7,
+    "server_alive": true
+   }
+  ],
+  "wisp-mux (5x10)": [
+   {
+    "load": 7.3,
+    "mibps": 12121.6,
+    "cpu_s_per_gib": 0.154,
+    "cores": 1.83,
+    "rss_mib": 33.8,
+    "server_alive": true
+   },
+   {
+    "load": 7.1,
+    "mibps": 11238.4,
+    "cpu_s_per_gib": 0.166,
+    "cores": 1.82,
+    "rss_mib": 27.2,
+    "server_alive": true
+   },
+   {
+    "load": 7.2,
+    "mibps": 12019.2,
+    "cpu_s_per_gib": 0.155,
+    "cores": 1.82,
+    "rss_mib": 27.5,
+    "server_alive": true
+   }
+  ]
+ }
+}

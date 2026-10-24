@@ -69,6 +69,7 @@ toolchain (Emscripten, dependencies, the Ladybird checkout) and the build are de
 |---|---|
 | `harness/` | The carapace (the page you open) and the segment code each site runs in |
 | `relay/` | The relay (Wisp 2 server, Python, standard library only) and its Dockerfile |
+| `relay-cpp/` | A fast C++ relay with the same rules (MIT OR Apache-2.0; see its README) |
 | `glue/` | The bridge between the engine and the host V8 |
 | `engine/` | Chitin's platform layer for the engine (network, fonts, host integration) |
 | `patches/ladybird/` | The Ladybird patches the engine is built with |

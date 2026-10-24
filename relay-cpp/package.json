@@ -1,0 +1,12 @@
+{
+  "name": "@rvwasm/wisp-cpp",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A thread-per-core Wisp v1/v2 relay in C++23 with the @rvwasm/relay-guard rules. No dependencies beyond the OS, the C++ standard library and the compiler.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "make -j4 build/wisp-server build/wisp-server-test",
+    "test": "make -j4 test build/wisp-server-test && node --test --test-concurrency=1 test/server.test.js"
+  }
+}
