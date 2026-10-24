@@ -1,4 +1,9 @@
-build/
+build/*
+!build/ganglion.wasm
+!build/ganglion-engine.js
+!build/ganglion.js
+!build/cookies.mjs
+!build/gen/
 node_modules/
 *.log
 .DS_Store
