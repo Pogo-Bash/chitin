@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 13:23:04 -0500
+Subject: [PATCH 02/23] AK: Emscripten as a platform (AK_OS_EMSCRIPTEN,
+ ARCH(WASM32)), with the system allocator
+
+---
+ AK/Platform.h  | 12 ++++++++++++
+ AK/kmalloc.cpp |  4 ++--
+ 2 files changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/AK/Platform.h b/AK/Platform.h
+index 4c09b1cb01..a7c8235ae9 100644
+--- a/AK/Platform.h
++++ b/AK/Platform.h
+@@ -33,6 +33,12 @@
+ #    define AK_IS_ARCH_AARCH64() 0
+ #endif
+ 
++#if defined(__wasm32__)
++#    define AK_IS_ARCH_WASM32() 1
++#else
++#    define AK_IS_ARCH_WASM32() 0
++#endif
++
+ #if defined(__riscv) && __riscv_xlen == 64
+ #    define AK_IS_ARCH_RISCV64() 1
+ #else
+@@ -138,6 +144,12 @@
+ #    define AK_OS_WINDOWS
+ #endif
+ 
++// Emscripten (wasm32-unknown-emscripten): a POSIX-like libc without processes, signals or a real
++// filesystem, running in a browser Worker.
++#if defined(__EMSCRIPTEN__)
++#    define AK_OS_EMSCRIPTEN
++#endif
++
+ #if defined(__ANDROID__)
+ #    define STR(x) __STR(x)
+ #    define __STR(x) #x
+diff --git a/AK/kmalloc.cpp b/AK/kmalloc.cpp
+index 70ad04dd5f..6372a7a6f8 100644
+--- a/AK/kmalloc.cpp
++++ b/AK/kmalloc.cpp
+@@ -8,11 +8,11 @@
+ #include <AK/Platform.h>
+ #include <AK/kmalloc.h>
+ 
+-#if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__) || defined(HAS_THREAD_SANITIZER)
++#if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__) || defined(HAS_THREAD_SANITIZER) || defined(AK_OS_EMSCRIPTEN)
+ // LeakSanitizer does not reliably trace references stored in mimalloc-managed
+ // AK containers, and ThreadSanitizer cannot see memory being freed on one thread
+ // and reused on another inside mimalloc, so sanitizer builds fall back to the
+-// system allocator.
++// system allocator. So does Emscripten, whose libc allocator works in linear memory without mmap.
+ #    define AK_USE_SYSTEM_ALLOCATOR_INSTRUMENTED 1
+ #else
+ #    include <mimalloc.h>

@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><title>ws</title>
+<p id="s">start</p>
+<script>
+// A page that talks WebSocket (tests/websocket.test.mjs, the chrome group): window.t(url, script) runs a scenario; it logs what
+// the page saw into window.log (event names, data, codes) so a test can compare with what a server and Chrome did.
+window.log = [];
+window.sockets = {};
+window.openWS = function (name, url, protocols, binaryType) {
+    const ws = protocols === undefined ? new WebSocket(url) : new WebSocket(url, protocols);
+    if (binaryType) ws.binaryType = binaryType;
+    window.sockets[name] = ws;
+    const note = (what) => window.log.push(name + ':' + what);
+    ws.onopen = () => note('open:' + ws.protocol + ':' + ws.readyState);
+    ws.onerror = (e) => note('error:' + e.type);
+    ws.onclose = (e) => note('close:' + e.code + ':' + e.reason + ':' + e.wasClean + ':' + ws.readyState);
+    ws.onmessage = (e) => {
+        const d = e.data;
+        note('message:' + (typeof d === 'string' ? 'text:' + (d.length > 40 ? d.length : d) : d instanceof ArrayBuffer ? 'ab:' + Array.from(new Uint8Array(d.slice(0, 8))).join(',') + ':' + d.byteLength : d instanceof Blob ? 'blob:' + d.size : typeof d));
+    };
+    return ws;
+};
+document.getElementById('s').textContent = 'ready';
+</script>

@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<title>idb sw</title>
+<pre id="out"></pre>
+<script>
+// IndexedDB in a page's service worker (docs/user-tests/spotify.md: Spotify's workbox expiration plugin): the worker uses the
+// origin's databases as workbox and the idb library do, reports to the page, and the page then reads the same database.
+window.result = null;
+navigator.serviceWorker.addEventListener('message', async (e) => {
+    window.swData = e.data;
+    const page = await new Promise((resolve) => {
+        const r = indexedDB.open('sw-db');
+        r.onsuccess = () => {
+            const db = r.result;
+            const tx = db.transaction('entries');
+            const all = tx.objectStore('entries').getAll();
+            all.onsuccess = () => { resolve({ version: db.version, stores: [...db.objectStoreNames], ids: all.result.map((x) => x.id) }); db.close(); };
+        };
+        r.onerror = () => resolve('open failed ' + r.error);
+    });
+    window.result = { sw: e.data, page };
+    document.getElementById('out').textContent = JSON.stringify(window.result);
+    document.title = 'done';
+    // An HTTP client library's error left unhandled (Spotify's HttpResponseError), when a test sets window.rejectHttp: the
+    // Segment panel names its request.
+    const poll = setInterval(() => {
+        if (!window.rejectHttp)
+            return;
+        clearInterval(poll);
+        const err = new Error('Not Found');
+        err.name = 'HttpResponseError'; err.requestUrl = 'https://api.example/v1/x'; err.requestMethod = 'get'; err.status = 404;
+        Promise.reject(err);
+    }, 50);
+});
+navigator.serviceWorker.register('sw.js').then((reg) => {
+    const w = reg.installing || reg.waiting || reg.active;
+    window.states = [w.state];
+    const go = () => w.postMessage('run');
+    if (w.state === 'activated') go(); else w.addEventListener('statechange', () => { states.push(w.state); if (w.state === 'activated') go(); });
+}, (e) => { document.title = 'error ' + e; });
+</script>

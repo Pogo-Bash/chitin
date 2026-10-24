@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>a sticky header</title>
+<style>
+body { margin: 0; font: 16px/1.5 sans-serif; background: #fff; color: #222; }
+header { position: sticky; top: 0; height: 56px; background: #264653; color: #fff; display: flex; align-items: center; padding: 0 20px; z-index: 2; }
+nav.fixed { position: fixed; right: 16px; bottom: 16px; width: 120px; height: 40px; background: #e76f51; color: #fff; border-radius: 20px; text-align: center; line-height: 40px; z-index: 3; }
+main { padding: 0 20px; } p { margin: 0 0 12px; }
+</style>
+<script src="lorem.js"></script>
+<div style="height:80px;background:#e9c46a;padding:20px">Above the sticky header</div>
+<header>Sticky header (top: 0)</header>
+<main id="m"></main>
+<nav class="fixed">fixed</nav>
+<script>fill(document.getElementById('m'), 120);</script>

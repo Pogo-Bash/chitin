@@ -1,0 +1,34 @@
+// Chitin phase-0 subset of Ladybird's Libraries/LibWeb/DOM/Event.idl (BSD-2-Clause, the Ladybird developers).
+// Members kept as written upstream; members the toy does not implement are left out.
+// https://dom.spec.whatwg.org/#event
+[Exposed=*]
+interface Event {
+    constructor(DOMString type, optional EventInit eventInitDict = {});
+
+    readonly attribute [FlyString] DOMString type;
+    [DirectGetter] readonly attribute EventTarget? target;
+    [ImplementedAs=current_target] readonly attribute EventTarget? currentTarget;
+
+    const unsigned short NONE = 0;
+    const unsigned short CAPTURING_PHASE = 1;
+    const unsigned short AT_TARGET = 2;
+    const unsigned short BUBBLING_PHASE = 3;
+    readonly attribute unsigned short eventPhase;
+
+    undefined stopPropagation();
+    undefined stopImmediatePropagation();
+
+    readonly attribute boolean bubbles;
+    readonly attribute boolean cancelable;
+    undefined preventDefault();
+    readonly attribute boolean defaultPrevented;
+
+    [LegacyUnforgeable] readonly attribute boolean isTrusted;
+    readonly attribute double timeStamp;
+};
+
+dictionary EventInit {
+    boolean bubbles = false;
+    boolean cancelable = false;
+    boolean composed = false;
+};

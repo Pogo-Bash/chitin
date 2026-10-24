@@ -1,0 +1,86 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+     Copyright (c) 2026 [OWNER NAME]
+     Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
+     OPFS edge cases a file layer over it (DayDream's TFS, BrowserFS-style) meets: stale File snapshots, reads while a
+     writer is open or closing, keepExistingData + truncate + seek, sizes after close, two writers, removal while open.
+     Each answer is the outcome's name or value; chrome-test compares Chitin's with Chrome's. -->
+<title>opfs io</title>
+<script>
+window.seen = [];
+const put = (k, v) => seen.push(k + '=' + JSON.stringify(v));
+const outcome = async (fn) => { try { return await fn(); } catch (e) { return (e && e.name) || String(e); } };
+const write = async (h, data, opts) => { const w = await h.createWritable(opts); await w.write(data); await w.close(); };
+(async () => {
+    try {
+        const root = await navigator.storage.getDirectory();
+        for await (const name of root.keys()) await root.removeEntry(name, { recursive: true });
+        const h = await root.getFileHandle('a.txt', { create: true });
+        // 1. A File taken before a later write: reading it afterwards.
+        await write(h, 'one');
+        const stale = await h.getFile();
+        await write(h, 'two!');
+        put('staleText', await outcome(() => stale.text()));
+        put('staleSize', stale.size);
+        put('fresh', await outcome(async () => (await h.getFile()).text()));
+        // 2. Reads while a writer is open (before its close), and its size.
+        const w = await h.createWritable();
+        await w.write('three');
+        put('duringOpen', await outcome(async () => (await h.getFile()).text()));
+        await w.close();
+        put('afterClose', await outcome(async () => { const f = await h.getFile(); return [f.size, await f.text()]; }));
+        // 3. keepExistingData, seek, truncate.
+        const k = await h.createWritable({ keepExistingData: true });
+        await k.seek(2);
+        await k.write('XY');
+        await k.truncate(6);
+        await k.write({ type: 'write', position: 7, data: 'Z' });
+        await k.close();
+        put('keepSeekTruncate', await outcome(async () => Array.from(new Uint8Array(await (await h.getFile()).arrayBuffer()))));
+        // 4. getFile racing the close of a writer, many times: getFile itself answers a File (the read may then find
+        //    the file changed, NotReadableError, or not: that depends on timing in Chrome too).
+        const race = {};
+        for (let i = 0; i < 40; i++) {
+            const r = await h.createWritable();
+            await r.write('x'.repeat(1000 + i));
+            const [, got] = await Promise.all([r.close(), outcome(async () => { const f = await h.getFile(); const t = await outcome(() => f.text()); return 'file/' + (typeof t === 'string' || t === 'NotReadableError' ? 'ok' : t); })]);
+            race[got] = 1;
+        }
+        put('raceClose', Object.keys(race).sort());
+        // 5. A File taken, then a writer opened and closed while the File is being read: the write always succeeds.
+        const many = {};
+        for (let i = 0; i < 40; i++) {
+            const f = await h.getFile();
+            const [got, wrote] = await Promise.all([outcome(async () => (await f.arrayBuffer()).byteLength > 0 ? 'ok' : 'empty'), outcome(async () => { await write(h, 'y'.repeat(2000 + i)); return 'wrote'; })]);
+            many[(got === 'NotReadableError' ? 'ok' : got) + '/' + wrote] = 1;
+        }
+        put('readDuringWrite', Object.keys(many).sort());
+        // 6. Two writers on one file: the last close wins.
+        const a = await h.createWritable(), b = await h.createWritable();
+        await a.write('AAAA'); await b.write('BB');
+        await a.close(); await b.close();
+        put('twoWriters', await outcome(async () => (await h.getFile()).text()));
+        // 7. removeEntry while a writer is open, then that writer's close, then a read through the old handle.
+        const g = await root.getFileHandle('g.txt', { create: true });
+        const gw = await g.createWritable();
+        await gw.write('gone');
+        put('removeWhileOpen', await outcome(() => root.removeEntry('g.txt')));
+        put('closeAfterRemove', await outcome(() => gw.close()));
+        put('readRemoved', await outcome(async () => (await g.getFile()).text()));
+        // 8. A File of a removed file.
+        const r2 = await root.getFileHandle('r.txt', { create: true });
+        await write(r2, 'data');
+        const rf = await r2.getFile();
+        await root.removeEntry('r.txt');
+        put('fileOfRemoved', await outcome(() => rf.text()));
+        // 9. Writes after close and on a closed stream.
+        const c = await h.createWritable();
+        await c.close();
+        put('writeAfterClose', await outcome(() => c.write('z')));
+        put('size', (await h.getFile()).size);
+    } catch (e) {
+        put('error', String(e && e.name) + ': ' + String(e && e.message));
+    }
+    put('done', 1);
+})();
+</script>

@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 19:47:14 -0500
+Subject: [PATCH 53/56] LibWeb: pushState and replaceState pass their
+ serialized data as the navigate event's classicHistoryAPIState
+
+It went in the navigationAPIState slot, so the navigate event's hashChange was true for a pushState to a fragment (Chrome and the spec: false), and the entry's navigation API state was the classic state.
+---
+ Libraries/LibWeb/HTML/History.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Libraries/LibWeb/HTML/History.cpp b/Libraries/LibWeb/HTML/History.cpp
+index 4878af1df3..60c2ef521b 100644
+--- a/Libraries/LibWeb/HTML/History.cpp
++++ b/Libraries/LibWeb/HTML/History.cpp
+@@ -215,7 +215,7 @@ WebIDL::ExceptionOr<void> History::shared_history_push_replace_state(JS::Realm&
+     //    with navigationType set to historyHandling, isSameDocument set to true, destinationURL set to newURL,
+     //    and classicHistoryAPIState set to serializedData.
+     auto navigation_type = history_handling == HistoryHandlingBehavior::Push ? NavigationType::Push : NavigationType::Replace;
+-    auto continue_ = navigation->fire_a_push_replace_reload_navigate_event(navigation_type, new_url, true, UserNavigationInvolvement::None, {}, {}, serialized_data);
++    auto continue_ = navigation->fire_a_push_replace_reload_navigate_event(navigation_type, new_url, true, UserNavigationInvolvement::None, {}, {}, {}, serialized_data);
+     // 9. If continue is false, then return.
+     if (!continue_)
+         return {};
+-- 
+2.50.1 (Apple Git-155)
+

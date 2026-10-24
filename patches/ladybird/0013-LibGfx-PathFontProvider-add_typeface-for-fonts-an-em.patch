@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 14:30:52 -0500
+Subject: [PATCH 13/23] LibGfx: PathFontProvider::add_typeface() for fonts an
+ embedder loads itself
+
+---
+ Libraries/LibGfx/Font/PathFontProvider.cpp | 8 ++++++++
+ Libraries/LibGfx/Font/PathFontProvider.h   | 2 ++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/Libraries/LibGfx/Font/PathFontProvider.cpp b/Libraries/LibGfx/Font/PathFontProvider.cpp
+index 520e9258c0..b35cd29476 100644
+--- a/Libraries/LibGfx/Font/PathFontProvider.cpp
++++ b/Libraries/LibGfx/Font/PathFontProvider.cpp
+@@ -52,6 +52,14 @@ void PathFontProvider::load_all_fonts_from_uri(StringView uri)
+     });
+ }
+ 
++void PathFontProvider::add_typeface(NonnullRefPtr<Typeface> font)
++{
++    auto& family = m_typeface_by_family.ensure(font->family(), [] {
++        return Vector<NonnullRefPtr<Typeface>> {};
++    });
++    family.append(move(font));
++}
++
+ void PathFontProvider::for_each_typeface_in_uri(StringView uri, HashTable<String>& loaded_paths, Function<void(String const&, u32, FontFileFormat, NonnullRefPtr<Typeface>)> callback)
+ {
+     auto root_or_error = Core::Resource::load_from_uri(uri);
+diff --git a/Libraries/LibGfx/Font/PathFontProvider.h b/Libraries/LibGfx/Font/PathFontProvider.h
+index dfbe644af0..2a054982a5 100644
+--- a/Libraries/LibGfx/Font/PathFontProvider.h
++++ b/Libraries/LibGfx/Font/PathFontProvider.h
+@@ -27,6 +27,8 @@ public:
+     virtual ~PathFontProvider() override;
+ 
+     void load_all_fonts_from_uri(StringView);
++    // A typeface from somewhere other than a font directory, such as bytes an embedder hands over.
++    void add_typeface(NonnullRefPtr<Typeface>);
+     static void for_each_typeface_in_uri(StringView, HashTable<String>& loaded_paths, Function<void(String const& path, u32 ttc_index, FontFileFormat, NonnullRefPtr<Typeface>)>);
+ 
+     virtual RefPtr<Gfx::Font> get_font(FlyString const& family, float point_size, unsigned weight, unsigned width, unsigned slope, Optional<FontVariationSettings> const& font_variation_settings = {}, Optional<Gfx::ShapeFeatures> const& shape_features = {}) override;

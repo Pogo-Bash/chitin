@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 22:21:39 -0500
+Subject: [PATCH] LibWeb: fetch() rejects a network error with Chrome's "Failed
+ to fetch", and a CORS failure says why in the log
+
+The TypeError's message is not specified; Chrome's is "Failed to fetch" for every network error, and pages compare it. A failed
+CORS check is logged with the request URL, its origin, the status, the credentials mode and the response's
+Access-Control-Allow-Origin/-Credentials (what Chrome puts on its console).
+---
+ Libraries/LibWeb/Fetch/FetchMethod.cpp       | 5 +++--
+ Libraries/LibWeb/Fetch/Fetching/Fetching.cpp | 6 ++++++
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/Libraries/LibWeb/Fetch/FetchMethod.cpp b/Libraries/LibWeb/Fetch/FetchMethod.cpp
+index 243e7d5dd2..cc1c98d5f8 100644
+--- a/Libraries/LibWeb/Fetch/FetchMethod.cpp
++++ b/Libraries/LibWeb/Fetch/FetchMethod.cpp
+@@ -130,8 +130,9 @@ GC::Ref<WebIDL::Promise> fetch(JS::Realm& realm, RequestInfo const& input, Bindi
+ 
+         // 3. If response is a network error, then reject p with a TypeError and abort these steps.
+         if (response->is_network_error()) {
+-            auto message = response->network_error_message().value_or("Response is a network error"_string);
+-            WebIDL::reject_promise(relevant_realm, promise_capability, JS::TypeError::create(relevant_realm, Utf16String::from_utf8(message)));
++            // The TypeError's message is not specified; Chrome's is "Failed to fetch" for every network error (the reason goes to
++            // its console), and pages compare it.
++            WebIDL::reject_promise(relevant_realm, promise_capability, JS::TypeError::create(relevant_realm, "Failed to fetch"_utf16));
+             return;
+         }
+ 
+diff --git a/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp b/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp
+index 7b2e2e93af..40ca7ddf65 100644
+--- a/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp
++++ b/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp
+@@ -1492,6 +1492,12 @@ GC::Ref<PendingResponse> http_fetch(JS::Realm& realm, Infrastructure::FetchParam
+             //       a service worker for that matter, it is applied here.
+             if (request->response_tainting() == Infrastructure::Request::ResponseTainting::CORS
+                 && !cors_check(request, *response)) {
++                // What Chrome reports on the console ("blocked by CORS policy"), in the engine log: the response's own answer.
++                dbgln("Fetch: blocked by CORS: {} from origin {} (status {}, credentials {}, Access-Control-Allow-Origin {}, Access-Control-Allow-Credentials {})",
++                    request->current_url(), request->byte_serialize_origin(), response->status(),
++                    request->credentials_mode() == Infrastructure::Request::CredentialsMode::Include ? "include"sv : "not included"sv,
++                    response->header_list()->get("Access-Control-Allow-Origin"sv).value_or("absent"),
++                    response->header_list()->get("Access-Control-Allow-Credentials"sv).value_or("absent"));
+                 returned_pending_response->resolve(Infrastructure::Response::network_error("Request with 'cors' response tainting failed CORS check"_string));
+                 return;
+             }

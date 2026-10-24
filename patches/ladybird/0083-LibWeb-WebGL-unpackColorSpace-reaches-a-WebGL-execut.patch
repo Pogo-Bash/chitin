@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 16:32:32 -0500
+Subject: [PATCH] LibWeb: WebGL unpackColorSpace reaches a WebGL executor
+
+---
+ Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp | 9 +++++++++
+ Libraries/LibWeb/WebGL/WebGLRenderingContextBase.h   | 2 +-
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
+index 97cad9cd79..6a7d738c56 100644
+--- a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
+@@ -600,6 +600,15 @@ Optional<JsonValue> WebGLRenderingContextBase::host_query_json(HostQuery kind, u
+     return parsed.release_value();
+ }
+ 
++// An executor that is itself WebGL converts image sources to its own unpackColorSpace: it is set there, in order with the
++// uploads (it was ignored: Khronos's display-p3 video and image uploads came out in sRGB).
++void WebGLRenderingContextBase::set_unpack_color_space(Bindings::PredefinedColorSpace value)
++{
++    m_unpack_color_space = value;
++    auto name = ByteString::formatted("\"{}\"", Bindings::idl_enum_to_string(value).to_utf8());
++    host_extension_call("@context"sv, "unpackColorSpace"sv, name);
++}
++
+ void WebGLRenderingContextBase::host_extension_call(StringView extension, StringView method, StringView json_arguments)
+ {
+     if (m_context_lost || !executor_is_webgl())
+diff --git a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.h b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.h
+index 5af3bf1332..1a4819a4e8 100644
+--- a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.h
++++ b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.h
+@@ -79,7 +79,7 @@ public:
+     Bindings::PredefinedColorSpace drawing_buffer_color_space() const { return m_drawing_buffer_color_space; }
+     void set_drawing_buffer_color_space(Bindings::PredefinedColorSpace value) { m_drawing_buffer_color_space = value; }
+     Bindings::PredefinedColorSpace unpack_color_space() const { return m_unpack_color_space; }
+-    void set_unpack_color_space(Bindings::PredefinedColorSpace value) { m_unpack_color_space = value; }
++    void set_unpack_color_space(Bindings::PredefinedColorSpace value);
+ 
+     // An executor that is itself a WebGL implementation (an embedder running WebGL on its host's) answers queries
+     // with the host's own values (glHostQueryCHITIN): the kinds are the WebGL getters.

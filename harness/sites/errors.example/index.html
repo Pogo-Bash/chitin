@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>errors</title>
+<!-- Uncaught exceptions of every shape, each reported to the console; the page goes on. -->
+<p id="p">before</p>
+<script>document.title = 'first ran';</script>
+<script>throw new Error('boom from an inline script');</script>
+<script>throw 'boom, a string';</script>
+<script>throw { custom: true };</script>
+<script>
+document.getElementById('p').textContent = 'after the throws';
+setTimeout(function () { throw new TypeError('boom from a timer'); }, 1);
+setTimeout(function () {
+    document.getElementById('p').textContent = 'timer ran';
+    Promise.resolve().then(function () { document.title = 'microtask ran'; });
+}, 10);
+document.addEventListener('click', function () { throw new RangeError('boom from a listener'); });
+document.addEventListener('click', function () { document.body.setAttribute('data-clicked', '1'); });
+requestAnimationFrame(function () { document.body.setAttribute('data-raf', '1'); });
+</script>
+</html>

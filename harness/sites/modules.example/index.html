@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>modules</title></head>
+<body>
+<p id="out">not run</p>
+<script>window.order = ['classic']; window.results = {};</script>
+<script type="module">
+import { x } from './a.js';
+order.push('inline:' + x);
+results.inlineMeta = import.meta.url.startsWith('https://modules.example/');
+results.inlineThis = String(this);
+document.getElementById('out').textContent = 'inline module ran';
+</script>
+<script type="module" src="b.js"></script>
+<script type="module">
+// A second inline module: it must not be the same module as the first (same document URL).
+order.push('inline2');
+document.addEventListener('DOMContentLoaded', () => order.push('dcl'));
+window.addEventListener('load', () => order.push('load'));
+results.readyState = document.readyState;
+</script>
+<script>order.push('classic2');</script>
+<script>
+results.workerType = typeof Worker + '/' + typeof SharedWorker;
+// Set-like and map-like iteration (FontFaceSet): the runtime's Set iterator.
+var face = new FontFace('x', 'local(Arial)');
+document.fonts.add(face);
+results.setlike = [[...document.fonts].length, [...document.fonts.entries()].length, [...document.fonts.keys()][0] === face, Array.from(document.fonts.values()).length, document.fonts.entries().next().value.length];
+</script>
+</body>
+</html>

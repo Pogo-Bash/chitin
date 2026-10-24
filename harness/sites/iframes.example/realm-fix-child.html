@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><title>realm fix child</title>
+<script>
+// Scramjet's client shape: a non-configurable accessor on Object.prototype, defined again by the frame's next document.
+var second = location.search === '?2';
+try {
+    Object.defineProperty(Object.prototype, '$fixtest', { get: function () { return second ? 2 : 1; }, set: function () {}, enumerable: false, configurable: false });
+    parent.results.fromChild.push('defined ' + ({}).$fixtest);
+} catch (e) {
+    parent.results.fromChild.push('error ' + e.message);
+}
+if (!second)
+    setTimeout(function () { location.href = 'realm-fix-child.html?2'; }, 0);
+</script>
+</head><body><p>realm fix child</p></body></html>

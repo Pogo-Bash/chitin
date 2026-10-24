@@ -1,0 +1,16 @@
+// Chitin phase-0 subset of Ladybird's Libraries/LibWeb/DOM/Document.idl (BSD-2-Clause, the Ladybird developers).
+// Members kept as written upstream; members the toy does not implement are left out.
+// https://dom.spec.whatwg.org/#document
+[Exposed=Window]
+interface Document : Node {
+    readonly attribute Element? documentElement;
+    // https://html.spec.whatwg.org/multipage/dom.html#dom-document-body
+    readonly attribute HTMLElement? body;
+
+    [CEReactions, NewObject] Element createElement([FlyString] DOMString localName);
+    [NewObject] Text createTextNode(DOMString data);
+    [NewObject] Range createRange();
+
+    // NonElementParentNode
+    Element? getElementById(DOMString elementId);
+};

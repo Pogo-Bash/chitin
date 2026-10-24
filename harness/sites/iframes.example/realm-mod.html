@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><title>module parent</title></head>
+<body>
+<script>var results = { events: [] }; window.addEventListener('load', function () { results.events.push('window load'); });</script>
+<script type="module">
+import { seenTitle, where } from './shared-mod.js';
+window.parentSaw = seenTitle + ' ' + where();
+</script>
+<iframe id="f" src="realm-mod-child.html"></iframe>
+</body></html>

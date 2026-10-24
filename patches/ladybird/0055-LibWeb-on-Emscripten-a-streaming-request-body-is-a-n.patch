@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 19:47:15 -0500
+Subject: [PATCH 55/56] LibWeb: on Emscripten a streaming request body is a
+ network error (the embedder's network is HTTP/1.1)
+
+Fetch's HTTP-network fetch refuses a body whose source is null over an HTTP/1.x connection; Chrome rejects fetch() with a TypeError. Before, the stream was read whole and sent.
+---
+ Libraries/LibWeb/Fetch/Fetching/Fetching.cpp | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp b/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp
+index 43ffd44bee..7b2e2e93af 100644
+--- a/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp
++++ b/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp
+@@ -2290,6 +2290,18 @@ GC::Ref<PendingResponse> nonstandard_resource_loader_file_or_http_network_fetch(
+ 
+     auto request = fetch_params.request();
+ 
++#ifdef AK_OS_EMSCRIPTEN
++    // https://fetch.spec.whatwg.org/#concept-http-network-fetch: "If connection is an HTTP/1.x connection, request's body is
++    // non-null, and request's body's source is null, then return a network error." The embedder's network speaks HTTP/1.1
++    // only, so a streaming request body (a ReadableStream, duplex "half") is refused here, as Chrome refuses one over HTTP/1.1,
++    // instead of being read whole and sent.
++    if (request->current_url().scheme().is_one_of("http"sv, "https"sv)
++        && request->body().has<GC::Ref<Infrastructure::Body>>()
++        && request->body().get<GC::Ref<Infrastructure::Body>>()->source().has<Empty>()) {
++        return PendingResponse::create(request, Infrastructure::Response::network_error("Streaming upload over HTTP/1.1"_string));
++    }
++#endif
++
+     auto& page = Bindings::principal_host_defined_page(realm);
+ 
+     auto load_request_headers = request->header_list();
+-- 
+2.50.1 (Apple Git-155)
+

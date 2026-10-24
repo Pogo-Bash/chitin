@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<!-- chess.com and fiverr: new AudioContext() at load (a sound or fingerprint probe), then promise work and rAF. -->
+<title>start</title>
+<script>
+var results = { events: [] };
+var ctx = new AudioContext();
+results.events.push('state ' + ctx.state + ' ' + ctx.sampleRate);
+var osc = ctx.createOscillator(), gain = ctx.createGain();
+gain.gain.value = 0;
+osc.connect(gain).connect(ctx.destination);
+osc.start();
+Promise.resolve().then(() => results.events.push('microtask'));
+requestAnimationFrame(() => {
+    queueMicrotask(() => results.events.push('raf microtask'));
+    ctx.resume().then(() => {
+        results.events.push('resumed ' + ctx.state);
+        var t0 = ctx.currentTime;
+        setTimeout(() => {
+            results.events.push('advances ' + (ctx.currentTime > t0));
+            ctx.close().then(() => { results.events.push('closed ' + ctx.state); document.title = 'done'; });
+        }, 200);
+    });
+});
+</script>

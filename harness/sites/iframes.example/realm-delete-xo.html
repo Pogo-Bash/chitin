@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><title>cross-origin same-site frame delete</title></head>
+<body>
+<script>
+var results = { events: [], fromChild: [] };
+window.addEventListener('load', function () { results.events.push('window load'); });
+window.addEventListener('message', function (e) { results.fromChild.push(e.data); });
+</script>
+<iframe id="f" src="https://assets.iframes.example/delete-child.html"></iframe>
+</body></html>

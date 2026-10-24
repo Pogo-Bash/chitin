@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 12:01:13 -0500
+Subject: [PATCH 36/36] LibWeb: a system fallback font installed after text was
+ laid out re-resolves every font cascade and lays out again
+
+FontComputer::did_change_system_fallback_fonts() retires every memoized cascade and records a font input change for
+each, as a web font load does for its family, and drops the layout tree: the cascades resolve as before, so styles do
+not change, and the text shaped without the new face is only reached by building layout again. An embedder whose
+fallback fonts arrive asynchronously (Chitin loads Unicode-range subsets on first need) calls it.
+---
+ Libraries/LibWeb/CSS/FontComputer.cpp | 16 ++++++++++++++++
+ Libraries/LibWeb/CSS/FontComputer.h   |  3 +++
+ Libraries/LibWeb/DOM/Document.h       |  1 +
+ 3 files changed, 20 insertions(+)
+
+diff --git a/Libraries/LibWeb/CSS/FontComputer.cpp b/Libraries/LibWeb/CSS/FontComputer.cpp
+index e4c8ae16fb..6b6ae8d544 100644
+--- a/Libraries/LibWeb/CSS/FontComputer.cpp
++++ b/Libraries/LibWeb/CSS/FontComputer.cpp
+@@ -555,6 +555,22 @@ void FontComputer::did_load_font(Utf16FlyString const& family_name)
+     invalidate_changed_font_cascades(family_names);
+ }
+ 
++void FontComputer::did_change_system_fallback_fonts()
++{
++    bump_environment_generation();
++    Vector<Gfx::FontCascadeList const*> font_lists;
++    m_font_cascade_memo->forget_matching(m_environment_generation, [&](auto const&, auto const& font_list) {
++        font_lists.append(font_list.ptr());
++        return true;
++    });
++    if (!font_lists.is_empty())
++        record_font_input_changes({}, font_lists);
++    // The cascades resolve as before, so their users' styles do not change: the text shaped against them is kept by
++    // layout, which must be built again to reach the new face.
++    document().invalidate_layout_tree(DOM::InvalidateLayoutTreeReason::SystemFallbackFontsChanged);
++    document().page().client().request_frame();
++}
++
+ void FontComputer::did_load_font(FontFaceKey const& changed_face)
+ {
+     did_load_font(changed_face.family_name);
+diff --git a/Libraries/LibWeb/CSS/FontComputer.h b/Libraries/LibWeb/CSS/FontComputer.h
+index 371d451c43..3126b55391 100644
+--- a/Libraries/LibWeb/CSS/FontComputer.h
++++ b/Libraries/LibWeb/CSS/FontComputer.h
+@@ -196,6 +196,9 @@ public:
+     void clear_font_feature_values_cache(Utf16FlyString const& family_name);
+     void did_load_font(Utf16FlyString const& family_name);
+     void did_load_font(FontFaceKey const&);
++    // A font the system fallback can answer with has been installed since text was laid out: every cascade may now find
++    // a glyph it missed, so each is re-resolved and the elements that hold one restyle and lay out again.
++    void did_change_system_fallback_fonts();
+     // The style transaction that flew has been drained, so the styles it computed are the elements' own.
+     void did_end_flown_style_drain();
+ 
+diff --git a/Libraries/LibWeb/DOM/Document.h b/Libraries/LibWeb/DOM/Document.h
+index 91c61e6c1d..aec4750847 100644
+--- a/Libraries/LibWeb/DOM/Document.h
++++ b/Libraries/LibWeb/DOM/Document.h
+@@ -104,6 +104,7 @@ enum class QuirksMode {
+ 
+ #define ENUMERATE_INVALIDATE_LAYOUT_TREE_REASONS(X) \
+     X(InternalsFullRebuildComparison)               \
++    X(SystemFallbackFontsChanged)                   \
+     X(TopLayerElementStillRenderedAfterRemoval)
+ 
+ enum class InvalidateLayoutTreeReason {

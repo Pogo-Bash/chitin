@@ -1,0 +1,87 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<!-- Import maps (docs/architecture.md "Import maps"): what a page's modules resolve, load and fail with. window.ran is sorted
+     and compared with Chrome's (tests/chrome/run.mjs importMapGroup, tests/importmap.test.mjs). Paths only, never origins. -->
+<meta charset="utf-8">
+<title>importmap</title>
+<script>
+window.ran = [];
+const clean = (s) => String(s).split(location.origin).join('ORIGIN');
+window.onerror = (message, source, line, col, error) => { ran.push('error: ' + (error && error.name) + ': ' + clean(message)); };
+ran.push('supports: ' + HTMLScriptElement.supports('importmap') + ' ' + HTMLScriptElement.supports('module') + ' ' + HTMLScriptElement.supports('classic') + ' ' + HTMLScriptElement.supports('nope'));
+</script>
+<script type="importmap">
+{
+  "imports": {
+    "#entry": "/entry.mjs",
+    "lib/": "/lib/",
+    "nul": null,
+    "blocked/": null,
+    "bt/": "/lib/",
+    "/old.mjs": "/new.mjs"
+  },
+  "scopes": {
+    "/scoped/": { "#entry": "/scoped-entry.mjs" }
+  },
+  "integrity": {
+    "/good.mjs": "sha384-7kkXopINA+01iRn3dYoWYXRF6lpUVZXZ+ClaC2HzG06Jrl/p1wMNIa5lRqB7clOk",
+    "/bad.mjs": "sha384-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  }
+}
+</script>
+<script type="importmap">{ "imports": { "second": "/second.mjs", "#entry": "/ignored.mjs" } }</script>
+<script type="importmap">{ not json</script>
+<script type="importmap">{ "imports": [] }</script>
+<script>
+window.classicDone = import('#entry').then((m) => ran.push('classic dynamic: ' + m.default), (e) => ran.push('classic dynamic threw ' + e.name + ': ' + e.message));
+</script>
+<script type="module" src="/static.mjs"></script>
+<script type="module" src="/static-null.mjs"></script>
+<script type="module" src="/static-bare.mjs"></script>
+<script type="module" src="/static-backtrack.mjs"></script>
+<script type="module">
+const t = async (label, f) => { try { ran.push(label + ': ' + clean(await f())); } catch (e) { ran.push(label + ' threw ' + e.name + ': ' + clean(e.message)); } };
+await t('dynamic #entry', async () => (await import('#entry')).default);
+await t('dynamic template', async () => (await import(`lib/a.mjs`)).default);
+await t('dynamic url key', async () => (await import('/old.mjs')).default);
+await t('dynamic nul', async () => (await import('nul')).default);
+await t('dynamic blocked prefix', async () => (await import('blocked/x.mjs')).default);
+await t('dynamic backtrack', async () => (await import('bt/../new.mjs')).default);
+await t('dynamic bare', async () => (await import('not-in-the-map')).default);
+await t('dynamic expression', async () => { const s = '#en' + 'try'; return (await import(s)).default; });
+await t('integrity good', async () => (await import('/good.mjs')).default);
+await t('integrity bad', async () => (await import('/bad.mjs')).default);
+await t('resolve #entry', () => new URL(import.meta.resolve('#entry')).pathname);
+await t('resolve prefix', () => new URL(import.meta.resolve('lib/z.mjs')).pathname);
+const late = document.createElement('script');
+late.type = 'importmap';
+late.textContent = '{ "imports": { "late": "/late.mjs", "#entry": "/ignored.mjs" } }';
+document.head.append(late);
+await t('late map', async () => (await import('late')).default);
+await t('late map keeps #entry', async () => (await import('#entry')).default);
+let fromWorker;
+try {
+    const worker = new Worker('/worker.mjs', { type: 'module' });
+    fromWorker = await new Promise((resolve) => { worker.onmessage = (e) => resolve(e.data); setTimeout(() => resolve('no answer'), 10000); });
+} catch (e) {
+    fromWorker = 'no Worker: ' + e.name;
+}
+ran.push('worker: ' + fromWorker);
+await window.classicDone;
+// The frame's module runs after this one (Chitin runs a frame's module scripts after its parent's: docs/architecture.md), so
+// the wait for it is a timer's, not this module's.
+const frame = document.createElement('iframe');
+frame.src = '/frame.html';
+document.body.append(frame);
+let waits = 0;
+const poll = setInterval(() => {
+    if (!ran.some((l) => l.startsWith('frame: ')) && ++waits < 100)
+        return;
+    clearInterval(poll);
+    ran.push('frame done: ' + ran.some((l) => l.startsWith('frame: ')));
+    document.title = 'done';
+}, 100);
+</script>
+<body>

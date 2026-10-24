@@ -1,0 +1,138 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 22:06:36 -0500
+Subject: [PATCH] LibWeb: pipeTo's steps after its pending writes are a GC
+ function, and a file: URL's origin serializes as Chrome's
+
+ReadableStreamPipeTo held the shutdown steps (the action and the error) in an AK::Function captured inside the promise reaction's
+GC::Function: the collector scans a GC function's own captures, not the heap storage of an AK::Function inside them, so a
+collection while the last write was pending freed the action, and the reaction then called an empty function (VERIFY in
+shutdown_with_action). They are a GC::Function of their own now.
+
+DOMURL.origin: a file: URL's origin stays an opaque "file" origin for every check; its serialization in the URL API is the
+tuple-origin form Chrome gives, "file://" (URL: the file origin is implementation-defined).
+---
+ Libraries/LibWeb/DOMURL/DOMURL.cpp            |  7 ++++-
+ .../LibWeb/Streams/ReadableStreamPipeTo.cpp   | 29 ++++++++++---------
+ .../LibWeb/Streams/ReadableStreamPipeTo.h     |  2 +-
+ 3 files changed, 23 insertions(+), 15 deletions(-)
+
+diff --git a/Libraries/LibWeb/DOMURL/DOMURL.cpp b/Libraries/LibWeb/DOMURL/DOMURL.cpp
+index 027f64afde..13154b2c5b 100644
+--- a/Libraries/LibWeb/DOMURL/DOMURL.cpp
++++ b/Libraries/LibWeb/DOMURL/DOMURL.cpp
+@@ -202,7 +202,12 @@ WebIDL::ExceptionOr<void> DOMURL::set_href(Utf16String const& value)
+ Utf16String DOMURL::origin() const
+ {
+     // The origin getter steps are to return the serialization of this’s URL’s origin. [HTML]
+-    return utf16_string_from_url_ascii(m_url.origin().serialize());
++    // A file: URL's origin is implementation-defined (URL "origin", "file"). Ours stays opaque for every check, and its serialization
++    // here is Chrome's: the tuple origin ("file", empty host, null port), "file://" (also for a blob: URL whose path URL is a file: URL).
++    auto origin = m_url.origin();
++    if (origin.is_opaque_file_origin())
++        return "file://"_utf16;
++    return utf16_string_from_url_ascii(origin.serialize());
+ }
+ 
+ // https://url.spec.whatwg.org/#dom-url-protocol
+diff --git a/Libraries/LibWeb/Streams/ReadableStreamPipeTo.cpp b/Libraries/LibWeb/Streams/ReadableStreamPipeTo.cpp
+index d77f5c17b7..b8aba4c9db 100644
+--- a/Libraries/LibWeb/Streams/ReadableStreamPipeTo.cpp
++++ b/Libraries/LibWeb/Streams/ReadableStreamPipeTo.cpp
+@@ -154,7 +154,10 @@ void ReadableStreamPipeTo::shutdown_with_action(GC::Ref<GC::Function<GC::Ref<Web
+     // 2. Set shuttingDown to true.
+     m_shutting_down = true;
+ 
+-    auto on_pending_writes_complete = [this, action, original_error = move(original_error)]() mutable {
++    // The steps after the pending writes are a GC::Function of their own: captured in an AK::Function inside the promise
++    // reaction, the action and the error would sit in malloc'd storage the collector does not scan, and a collection while the
++    // last write is pending would free the action.
++    auto on_pending_writes_complete = GC::create_function(GC::Heap::the(), [this, action, original_error = move(original_error)]() mutable {
+         HTML::TemporaryExecutionContext execution_context { promise_realm(), HTML::TemporaryExecutionContext::CallbacksEnabled::Yes };
+ 
+         // 4. Let p be the result of performing action.
+@@ -172,7 +175,7 @@ void ReadableStreamPipeTo::shutdown_with_action(GC::Ref<GC::Function<GC::Ref<Web
+                 finish(new_error);
+                 return JS::js_undefined();
+             }));
+-    };
++    });
+ 
+     // 3. If dest.[[state]] is "writable" and ! WritableStreamCloseQueuedOrInFlight(dest) is false,
+     if (m_destination->state() == WritableStream::State::Writable && !writable_stream_close_queued_or_in_flight(m_destination)) {
+@@ -180,9 +183,9 @@ void ReadableStreamPipeTo::shutdown_with_action(GC::Ref<GC::Function<GC::Ref<Web
+         write_unwritten_chunks();
+ 
+         // 2. Wait until every chunk that has been read has been written (i.e. the corresponding promises have settled).
+-        wait_for_pending_writes_to_complete(move(on_pending_writes_complete));
++        wait_for_pending_writes_to_complete(on_pending_writes_complete);
+     } else {
+-        on_pending_writes_complete();
++        on_pending_writes_complete->function()();
+     }
+ }
+ 
+@@ -196,12 +199,12 @@ void ReadableStreamPipeTo::shutdown(Optional<JS::Value> error)
+     // 2. Set shuttingDown to true.
+     m_shutting_down = true;
+ 
+-    auto on_pending_writes_complete = [this, error = move(error)]() mutable {
++    auto on_pending_writes_complete = GC::create_function(GC::Heap::the(), [this, error = move(error)]() mutable {
+         HTML::TemporaryExecutionContext execution_context { promise_realm(), HTML::TemporaryExecutionContext::CallbacksEnabled::Yes };
+ 
+         // 4. Finalize, passing along error if it was given.
+         finish(move(error));
+-    };
++    });
+ 
+     // 3. If dest.[[state]] is "writable" and ! WritableStreamCloseQueuedOrInFlight(dest) is false,
+     if (m_destination->state() == WritableStream::State::Writable && !writable_stream_close_queued_or_in_flight(m_destination)) {
+@@ -209,9 +212,9 @@ void ReadableStreamPipeTo::shutdown(Optional<JS::Value> error)
+         write_unwritten_chunks();
+ 
+         // 2. Wait until every chunk that has been read has been written (i.e. the corresponding promises have settled).
+-        wait_for_pending_writes_to_complete(move(on_pending_writes_complete));
++        wait_for_pending_writes_to_complete(on_pending_writes_complete);
+     } else {
+-        on_pending_writes_complete();
++        on_pending_writes_complete->function()();
+     }
+ }
+ 
+@@ -265,18 +268,18 @@ void ReadableStreamPipeTo::write_unwritten_chunks()
+         write_chunk();
+ }
+ 
+-void ReadableStreamPipeTo::wait_for_pending_writes_to_complete(Function<void()> on_complete)
++void ReadableStreamPipeTo::wait_for_pending_writes_to_complete(GC::Ref<GC::Function<void()>> on_complete)
+ {
+     auto last_write_promise = m_last_write_promise;
+     m_last_write_promise = {};
+     if (!last_write_promise) {
+-        HTML::queue_a_microtask(nullptr, GC::create_function(GC::Heap::the(), [on_complete = move(on_complete)]() {
+-            on_complete();
++        HTML::queue_a_microtask(nullptr, GC::create_function(GC::Heap::the(), [on_complete]() {
++            on_complete->function()();
+         }));
+         return;
+     }
+-    auto run_complete_steps = GC::create_function(GC::Heap::the(), [on_complete = move(on_complete)](JS::Value) -> WebIDL::ExceptionOr<JS::Value> {
+-        on_complete();
++    auto run_complete_steps = GC::create_function(GC::Heap::the(), [on_complete](JS::Value) -> WebIDL::ExceptionOr<JS::Value> {
++        on_complete->function()();
+         return JS::js_undefined();
+     });
+     WebIDL::react_to_promise(*last_write_promise, run_complete_steps, run_complete_steps);
+diff --git a/Libraries/LibWeb/Streams/ReadableStreamPipeTo.h b/Libraries/LibWeb/Streams/ReadableStreamPipeTo.h
+index fff83ea9ac..7a3e0d44c1 100644
+--- a/Libraries/LibWeb/Streams/ReadableStreamPipeTo.h
++++ b/Libraries/LibWeb/Streams/ReadableStreamPipeTo.h
+@@ -47,7 +47,7 @@ private:
+     void write_chunk();
+ 
+     void write_unwritten_chunks();
+-    void wait_for_pending_writes_to_complete(Function<void()> on_complete);
++    void wait_for_pending_writes_to_complete(GC::Ref<GC::Function<void()>> on_complete);
+ 
+     void finish(Optional<JS::Value> error = {});
+ 

@@ -1,0 +1,87 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>a Spotify-shaped page, position-coded</title>
+<!--
+  The scroll sync test page (docs/scroll.md "Position-coded pages"): the layout of a web player (a side bar that scrolls,
+  a main view that is a rounded inner scroller with a sticky top bar, a parallax header moved by a scroll listener, a
+  horizontal shelf, a sticky track-list header, a cross-site iframe, lazy blocks swapped in by an IntersectionObserver,
+  a fixed now-playing bar). Every box is made of 8 px rows coloured rgb(row & 255, row >> 8, id * 16 + 8): a pixel
+  read from any recorded frame says which box and which row of it is shown there, so the analyser
+  (tests/chrome/scroll-sync.mjs) can tell, per frame, at which scroll offset each part was drawn, and where nothing
+  was drawn at all.
+  ids: 1 side bar, 2 main rows, 3 top bar, 5 top bar past 200 px, 4 parallax, 6 sticky header, 7 shelf, 8 lazy
+  placeholder, 9 lazy loaded, 10 the iframe (scrollframe.example), 11 fixed bar.
+-->
+<style>
+html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+.rows > div { height: 8px; }
+#side { position: absolute; left: 8px; top: 8px; width: 272px; height: 704px; overflow-y: auto; border-radius: 8px; }
+#main { position: absolute; left: 288px; top: 8px; width: 984px; height: 704px; overflow-y: auto; border-radius: 8px; }
+#content { position: relative; height: 6000px; }
+#bg { position: absolute; left: 0; top: 0; width: 100%; height: 6000px; }
+#topbar { position: sticky; top: 0; margin-left: 600px; width: 300px; height: 64px; z-index: 3; }
+#parallax { position: absolute; left: 600px; top: 300px; width: 300px; height: 400px; z-index: 1; }
+#shelf { position: absolute; left: 20px; top: 600px; width: 500px; height: 200px; overflow-x: auto; overflow-y: hidden; z-index: 1; }
+#shelf .rows { width: 3000px; }
+#tracks { position: absolute; left: 20px; top: 1500px; width: 500px; height: 2000px; z-index: 2; pointer-events: none; }
+#trackhead { position: sticky; top: 64px; height: 40px; }
+#frame { position: absolute; left: 20px; top: 2600px; width: 500px; height: 300px; border: 0; z-index: 1; }
+.lazy { position: absolute; left: 20px; width: 500px; height: 200px; z-index: 1; }
+#bar { position: fixed; left: 0; bottom: 0; width: 100%; height: 80px; z-index: 5; }
+</style>
+<div id="side" class="rows"></div>
+<div id="main"><div id="content">
+  <div id="bg" class="rows"></div>
+  <div id="topbar" class="rows"></div>
+  <div id="parallax" class="rows"></div>
+  <div id="shelf"><div class="rows"></div></div>
+  <div id="tracks"><div id="trackhead" class="rows"></div></div>
+  <iframe id="frame" src="https://scrollframe.example/"></iframe>
+</div></div>
+<div id="bar" class="rows"></div>
+<script>
+const code = (id, row) => `rgb(${row & 255},${row >> 8},${id * 16 + 8})`;
+function rows(el, id, height) {
+    el.textContent = '';
+    for (let row = 0; row < height / 8; row++) {
+        const d = document.createElement('div');
+        d.style.background = code(id, row);
+        el.appendChild(d);
+    }
+}
+const $ = (id) => document.getElementById(id);
+// ?square: no rounded corners, so the main view and the side bar are layers and scroll on the carapace (threaded);
+// rounded, they scroll in the engine (docs/scroll.md).
+if (location.search.includes('square'))
+    for (const id of ['side', 'main']) $(id).style.borderRadius = '0';
+rows($('side'), 1, 3000);
+rows($('bg'), 2, 6000);
+rows($('topbar'), 3, 64);
+rows($('parallax'), 4, 400);
+rows($('shelf').firstElementChild, 7, 200);
+rows($('trackhead'), 6, 40);
+rows($('bar'), 11, 80);
+const lazy = [];
+for (let k = 0; k < 6; k++) {
+    const d = document.createElement('div');
+    d.className = 'lazy rows';
+    d.style.top = 3400 + k * 400 + 'px';
+    rows(d, 8, 200);
+    $('content').appendChild(d);
+    lazy.push(d);
+}
+// Lazy content: placeholder rows until the block intersects the main view (as a lazy image would load).
+const io = new IntersectionObserver((entries) => {
+    for (const e of entries)
+        if (e.isIntersecting && !e.target.dataset.loaded) { e.target.dataset.loaded = '1'; rows(e.target, 9, 200); }
+}, { root: $('main') });
+for (const d of lazy) io.observe(d);
+// Scroll-linked script: the parallax header moves at half the scroll speed, the top bar turns "opaque" past 200 px.
+let opaque = false;
+$('main').addEventListener('scroll', () => {
+    const y = $('main').scrollTop;
+    $('parallax').style.transform = `translateY(${Math.round(y / 2)}px)`;
+    if ((y > 200) !== opaque) { opaque = y > 200; rows($('topbar'), opaque ? 5 : 3, 64); }
+}, { passive: true });
+window.scrollSyncReady = true;
+</script>

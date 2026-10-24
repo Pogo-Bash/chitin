@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><title>frame realms: shared built-ins</title></head>
+<body>
+<script>
+var results = { events: [], fromChild: [] };
+window.addEventListener('load', function () { results.events.push('window load'); });
+</script>
+<iframe id="f" src="realm-fix-child.html"></iframe>
+</body></html>

@@ -1,0 +1,1442 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 20:31:19 -0500
+Subject: [PATCH] LibWeb: Resource, Navigation, Server and Paint Timing as in
+ Blink
+
+Resource Timing reports <img> (initiator "img") and <link rel=stylesheet>
+("link", as every engine and WPT do), a parser-blocking script as
+render-blocking, the response body's encoded and decoded sizes, its
+content encoding and minimised content type, Server-Timing as
+PerformanceServerTiming (from the unfiltered headers, dropped by a failed
+timing allow check, which also reports transferSize 0), Blink's extra
+attributes (contentEncoding, the service worker router fields) in Blink's
+order, and a same-origin iframe's document to its container's global.
+PerformanceEntry has navigationId; PerformanceNavigationTiming has
+activationStart and notRestoredReasons. Paint Timing reports first-paint
+and first-contentful-paint, VisibilityStateEntry the initial and changed
+visibility states, and supportedEntryTypes lists the registry's types in
+Blink's alphabetical order (the event, LCP, layout-shift, longtask and
+other types are accepted, with empty buffers). An embedder that reuses a
+global can reset its performance timeline.
+---
+ .../LibWeb/Animations/AnimationTimeline.h     |   7 ++
+ Libraries/LibWeb/CMakeLists.txt               |   3 +
+ Libraries/LibWeb/DOM/Document.cpp             |  96 +++++++++++++-
+ Libraries/LibWeb/DOM/Document.h               |  15 +++
+ .../Fetch/Fetching/FetchedDataReceiver.cpp    |  20 +++
+ .../Fetch/Fetching/FetchedDataReceiver.h      |  10 +-
+ Libraries/LibWeb/Fetch/Fetching/Fetching.cpp  |  11 +-
+ .../Fetch/Infrastructure/FetchController.h    |   1 +
+ .../Fetch/Infrastructure/FetchTimingInfo.cpp  |   1 +
+ .../Fetch/Infrastructure/FetchTimingInfo.h    |   5 +
+ .../Fetch/Infrastructure/HTTP/Responses.h     |   3 +
+ Libraries/LibWeb/Forward.h                    |   9 ++
+ Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp |   5 +-
+ Libraries/LibWeb/HTML/HTMLLinkElement.cpp     |   8 +-
+ Libraries/LibWeb/HTML/HTMLScriptElement.cpp   |   4 +-
+ .../LibWeb/HTML/SharedResourceRequest.cpp     |   5 +
+ .../LibWeb/HTML/VisibilityStateEntry.cpp      |  48 +++++++
+ Libraries/LibWeb/HTML/VisibilityStateEntry.h  |  37 ++++++
+ .../LibWeb/HTML/VisibilityStateEntry.idl      |   5 +
+ .../LibWeb/HTML/WindowOrWorkerGlobalScope.cpp |  34 +++++
+ .../LibWeb/HTML/WindowOrWorkerGlobalScope.h   |  12 ++
+ .../SupportedPerformanceTypes.h               |  28 +++--
+ .../PerformanceNavigationTiming.h             |   3 +
+ .../PerformanceNavigationTiming.idl           |   4 +
+ .../PaintTiming/PerformancePaintTiming.cpp    |  34 +++++
+ .../PaintTiming/PerformancePaintTiming.h      |  41 ++++++
+ .../PaintTiming/PerformancePaintTiming.idl    |   8 ++
+ .../LibWeb/PerformanceTimeline/EntryTypes.h   |   6 +-
+ .../PerformanceTimeline/PerformanceEntry.h    |  11 ++
+ .../PerformanceTimeline/PerformanceEntry.idl  |   2 +
+ .../PerformanceObserver.cpp                   |  18 ++-
+ .../UnreportedEntryTypes.h                    |  33 +++++
+ .../PerformanceResourceTiming.cpp             |  39 ++++++
+ .../PerformanceResourceTiming.h               |  16 +++
+ .../PerformanceResourceTiming.idl             |  19 ++-
+ .../ServerTiming/PerformanceServerTiming.cpp  | 119 ++++++++++++++++++
+ .../ServerTiming/PerformanceServerTiming.h    |  41 ++++++
+ .../ServerTiming/PerformanceServerTiming.idl  |   8 ++
+ Libraries/LibWeb/idl_files.cmake              |   3 +
+ Libraries/LibWebCommon/MimeSniff/MimeType.cpp |  17 ++-
+ 40 files changed, 748 insertions(+), 41 deletions(-)
+ create mode 100644 Libraries/LibWeb/HTML/VisibilityStateEntry.cpp
+ create mode 100644 Libraries/LibWeb/HTML/VisibilityStateEntry.h
+ create mode 100644 Libraries/LibWeb/HTML/VisibilityStateEntry.idl
+ create mode 100644 Libraries/LibWeb/PaintTiming/PerformancePaintTiming.cpp
+ create mode 100644 Libraries/LibWeb/PaintTiming/PerformancePaintTiming.h
+ create mode 100644 Libraries/LibWeb/PaintTiming/PerformancePaintTiming.idl
+ create mode 100644 Libraries/LibWeb/PerformanceTimeline/UnreportedEntryTypes.h
+ create mode 100644 Libraries/LibWeb/ServerTiming/PerformanceServerTiming.cpp
+ create mode 100644 Libraries/LibWeb/ServerTiming/PerformanceServerTiming.h
+ create mode 100644 Libraries/LibWeb/ServerTiming/PerformanceServerTiming.idl
+
+diff --git a/Libraries/LibWeb/Animations/AnimationTimeline.h b/Libraries/LibWeb/Animations/AnimationTimeline.h
+index 557ff381ea..d9e0ac9888 100644
+--- a/Libraries/LibWeb/Animations/AnimationTimeline.h
++++ b/Libraries/LibWeb/Animations/AnimationTimeline.h
+@@ -58,6 +58,13 @@ public:
+     void disassociate_with_animation(GC::Ref<Animation> value) { m_associated_animations.remove(*value); }
+     GC::WeakHashSet<Animation> const& associated_animations() const { return m_associated_animations; }
+ 
++    // The document's time origin moved (an embedder loading a new page into it): the timeline starts over.
++    void reset_for_new_time_origin()
++    {
++        m_current_time = {};
++        m_observed_current_time = {};
++    }
++
+ protected:
+     explicit AnimationTimeline(GC::Ref<DOM::Document>);
+ 
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index 302b118daf..11f03dc39c 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -819,6 +819,9 @@ set(SOURCES
+     ResizeObserver/ResizeObserverEntry.cpp
+     ResizeObserver/ResizeObserverSize.cpp
+     ResourceTiming/PerformanceResourceTiming.cpp
++    ServerTiming/PerformanceServerTiming.cpp
++    PaintTiming/PerformancePaintTiming.cpp
++    HTML/VisibilityStateEntry.cpp
+     SecureContexts/AbstractOperations.cpp
+     Selection/Selection.cpp
+     Selection/CaretNavigation.cpp
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+index a6be68824d..a173ad3546 100644
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -161,7 +161,9 @@
+ #include <LibWeb/HTML/HTMLHeadElement.h>
+ #include <LibWeb/HTML/HTMLHtmlElement.h>
+ #include <LibWeb/HTML/HTMLIFrameElement.h>
++#include <LibWeb/HTML/HTMLCanvasElement.h>
+ #include <LibWeb/HTML/HTMLImageElement.h>
++#include <LibWeb/HTML/HTMLVideoElement.h>
+ #include <LibWeb/HTML/HTMLInputElement.h>
+ #include <LibWeb/HTML/HTMLLinkElement.h>
+ #include <LibWeb/HTML/HTMLMetaElement.h>
+@@ -216,6 +218,8 @@
+ #include <LibWeb/Loader/ContentBlocker.h>
+ #include <LibWeb/Namespace.h>
+ #include <LibWeb/NavigationTiming/PerformanceNavigationTiming.h>
++#include <LibWeb/PaintTiming/PerformancePaintTiming.h>
++#include <LibWeb/HTML/VisibilityStateEntry.h>
+ #include <LibWeb/Page/EventHandler.h>
+ #include <LibWeb/Page/Page.h>
+ #include <LibWeb/Painting/BoxViews.h>
+@@ -590,6 +594,10 @@ WebIDL::ExceptionOr<GC::Ref<Document>> Document::create_and_initialize(Type type
+             navigation_params.response->status());
+     }
+ 
++    // https://html.spec.whatwg.org/multipage/document-lifecycle.html#initialise-the-document-object: the document's
++    // initial visibility state is reported as a VisibilityStateEntry at time 0 (HTML "queue a visibility state entry").
++    document->queue_initial_visibility_state_entry();
++
+     // AD-HOC: Retain the navigation fetch controller so aborting the document can cancel the main resource after
+     //         response commitment. Navigation fetches are not included in the document's subresource fetch group.
+     if (navigation_params.fetch_controller)
+@@ -4674,6 +4682,23 @@ void Document::queue_navigation_timing_entry()
+ // https://html.spec.whatwg.org/multipage/browsing-the-web.html#completely-finish-loading
+ void Document::completely_finish_loading()
+ {
++    // AD-HOC: An iframe's document that passed the timing allow check is reported to its container's global (initiator
++    //         type "iframe"), as Blink, Gecko and WebKit do: the navigation fetch's task destination is not the
++    //         container's global, so Fetch's own report never runs, and the iframe load event steps report only the
++    //         fallback timing of a document that failed the check (resource-timing/iframe-*.html).
++    if (m_ongoing_navigation_fetch_controller && m_ongoing_navigation_fetch_controller->has_report_timing_steps()) {
++        if (auto navigable = this->navigable(); navigable && navigable->container()) {
++            if (auto* iframe = as_if<HTML::HTMLIFrameElement>(*navigable->container()); iframe && !iframe->pending_resource_start_time().has_value())
++                m_ongoing_navigation_fetch_controller->report_timing(HTML::relevant_global_object(iframe->document()));
++        }
++    } else if (m_navigation_timing_entry) {
++        // NB: Navigation params that crossed a process boundary have no fetch controller: the navigation timing entry
++        //     holds the same timing info, and is reported in its place.
++        if (auto navigable = this->navigable(); navigable && navigable->container()) {
++            if (auto* iframe = as_if<HTML::HTMLIFrameElement>(*navigable->container()); iframe && !iframe->pending_resource_start_time().has_value())
++                m_navigation_timing_entry->mark_as_resource_of(HTML::relevant_global_object(iframe->document()), "iframe"_utf16_fly_string);
++        }
++    }
+     m_ongoing_navigation_fetch_controller = nullptr;
+ 
+     // 2. Set document's completely loaded time to the current time.
+@@ -4950,6 +4975,74 @@ void Document::media_element_audio_play_state_changed(Badge<HTML::HTMLMediaEleme
+ }
+ 
+ // https://html.spec.whatwg.org/multipage/interaction.html#update-the-visibility-state
++// https://w3c.github.io/paint-timing/#contentful
++// NB: Approximated from the DOM: rendered non-whitespace text, a rendered image with decoded data, a rendered canvas,
++//     video, or svg element. A background image is not looked at.
++static bool has_contentful_paint(Document& document)
++{
++    bool contentful = false;
++    document.for_each_in_subtree([&](Node& node) {
++        if (!node.has_layout_box())
++            return TraversalDecision::Continue;
++        if (auto* text = as_if<Text>(node)) {
++            if (!text->data().is_ascii_whitespace())
++                contentful = true;
++        } else if (auto* image = as_if<HTML::HTMLImageElement>(node)) {
++            if (image->decoded_image_data())
++                contentful = true;
++        } else if (is<HTML::HTMLCanvasElement>(node) || is<HTML::HTMLVideoElement>(node) || is<SVG::SVGSVGElement>(node)) {
++            contentful = true;
++        }
++        return contentful ? TraversalDecision::Break : TraversalDecision::Continue;
++    });
++    return contentful;
++}
++
++// https://w3c.github.io/paint-timing/#mark-paint-timing
++void Document::mark_paint_timing(double rendering_time)
++{
++    // NB: Only a document that is its navigable's active document and shows something has paints to report.
++    if (m_previously_reported_paints.first_contentful_paint || !navigable() || !window() || !body())
++        return;
++    // 1. If document's previously reported paints contains "first-contentful-paint", then return.
++    // 2. Let paintTimestamp be the rendering update's time (relative to document's time origin).
++    auto paint_timestamp = HighResolutionTime::relative_high_resolution_time(rendering_time, relevant_global_object(*this));
++    auto report = [&](Utf16String const& name) {
++        // https://w3c.github.io/paint-timing/#report-paint-timing
++        auto entry = PaintTiming::PerformancePaintTiming::create(name, max(0.0, paint_timestamp));
++        window()->queue_performance_entry(entry);
++        window()->add_performance_entry(entry);
++    };
++    // 3. Let reportedPaints be document's previously reported paints.
++    // 4-5. If reportedPaints does not contain "first-paint" and the user agent painted something that is not the
++    //      default background (NB: any rendered content, or a body that is rendered at all): report first-paint.
++    // 6-7. If document should report first contentful paint: report first-paint first if it was not, then FCP.
++    bool contentful = has_contentful_paint(*this);
++    if (!m_previously_reported_paints.first_paint && (contentful || body()->has_layout_box())) {
++        // INTEROP: Blink reports first-paint with the first frame that has content; a frame with only a body box is
++        //          the default background to it.
++        if (contentful) {
++            m_previously_reported_paints.first_paint = true;
++            report("first-paint"_utf16);
++        }
++    }
++    if (contentful) {
++        m_previously_reported_paints.first_contentful_paint = true;
++        report("first-contentful-paint"_utf16);
++    }
++}
++
++void Document::reset_default_timeline()
++{
++    if (m_default_timeline)
++        m_default_timeline->reset_for_new_time_origin();
++}
++
++void Document::queue_initial_visibility_state_entry()
++{
++    HTML::VisibilityStateEntry::queue(*this, (m_visibility_state == HTML::VisibilityState::Visible ? "visible"_utf16 : "hidden"_utf16), 0);
++}
++
+ void Document::update_the_visibility_state(HTML::VisibilityState visibility_state)
+ {
+     // 1. If document's visibility state equals visibilityState, then return.
+@@ -4959,8 +5052,9 @@ void Document::update_the_visibility_state(HTML::VisibilityState visibility_stat
+     // 2. Set document's visibility state to visibilityState.
+     m_visibility_state = visibility_state;
+ 
+-    // FIXME: 3. Queue a new VisibilityStateEntry whose visibility state is visibilityState and whose timestamp is the current
++    // 3. Queue a new VisibilityStateEntry whose visibility state is visibilityState and whose timestamp is the current
+     //    high resolution time given document's relevant global object.
++    HTML::VisibilityStateEntry::queue(*this, (visibility_state == HTML::VisibilityState::Visible ? "visible"_utf16 : "hidden"_utf16), HighResolutionTime::current_high_resolution_time(relevant_global_object(*this)));
+ 
+     // FIXME: 4. Run the screen orientation change steps with document.
+ 
+diff --git a/Libraries/LibWeb/DOM/Document.h b/Libraries/LibWeb/DOM/Document.h
+index aec4750847..015e71eb19 100644
+--- a/Libraries/LibWeb/DOM/Document.h
++++ b/Libraries/LibWeb/DOM/Document.h
+@@ -866,6 +866,15 @@ public:
+     // https://html.spec.whatwg.org/multipage/interaction.html#update-the-visibility-state
+     void update_the_visibility_state(HTML::VisibilityState);
+ 
++    // https://w3c.github.io/paint-timing/#mark-paint-timing
++    void mark_paint_timing(double rendering_time);
++    // For an embedder that loads a new page into this document: its first paints are reported again.
++    void reset_paint_timing() { m_previously_reported_paints = {}; }
++    // For the same embedder: its time origin moved, so the default document timeline starts over.
++    void reset_default_timeline();
++    // https://html.spec.whatwg.org/multipage/interaction.html#queue-a-visibility-state-entry, for the initial state.
++    void queue_initial_visibility_state_entry();
++
+     void run_the_resize_steps();
+     void run_the_scroll_steps();
+ 
+@@ -2224,6 +2233,12 @@ private:
+     // https://html.spec.whatwg.org/multipage/dom.html#render-blocking-element-set
+     HashTable<GC::Ref<Element>> m_render_blocking_elements;
+ 
++    // https://w3c.github.io/paint-timing/#previously-reported-paints
++    struct PreviouslyReportedPaints {
++        bool first_paint { false };
++        bool first_contentful_paint { false };
++    } m_previously_reported_paints;
++
+     // https://drafts.csswg.org/css-view-transitions-1/#document-active-view-transition
+     GC::Ptr<ViewTransition::ViewTransition> m_active_view_transition;
+ 
+diff --git a/Libraries/LibWeb/Fetch/Fetching/FetchedDataReceiver.cpp b/Libraries/LibWeb/Fetch/Fetching/FetchedDataReceiver.cpp
+index 7144235e2e..1ce9f09c6e 100644
+--- a/Libraries/LibWeb/Fetch/Fetching/FetchedDataReceiver.cpp
++++ b/Libraries/LibWeb/Fetch/Fetching/FetchedDataReceiver.cpp
+@@ -64,8 +64,28 @@ void FetchedDataReceiver::visit_edges(Visitor& visitor)
+ 
+ // This implements the parallel steps of the pullAlgorithm in HTTP-network-fetch.
+ // https://fetch.spec.whatwg.org/#ref-for-in-parallel⑤
++void FetchedDataReceiver::set_response_body_sizes(u64 encoded_size)
++{
++    if (!m_response)
++        return;
++    auto body_info = m_response->body_info();
++    // A server that sends no content coding sends the decoded bytes: with no count from the network, the encoded size
++    // is the decoded size.
++    body_info.encoded_size = encoded_size != 0 ? encoded_size : m_decoded_size;
++    body_info.decoded_size = m_decoded_size;
++    // https://fetch.spec.whatwg.org/#ref-for-response-body-info-content-encoding: the coding when there is exactly one
++    // and it is one the user agent supports, otherwise the empty string.
++    if (auto codings = m_response->header_list()->get_decode_and_split("Content-Encoding"sv); codings.has_value() && codings->size() == 1) {
++        auto coding = codings->first().to_ascii_lowercase();
++        if (coding.is_one_of("gzip"sv, "deflate"sv, "br"sv, "zstd"sv))
++            body_info.content_encoding = Utf16String::from_utf8(coding);
++    }
++    m_response->set_body_info(move(body_info));
++}
++
+ void FetchedDataReceiver::handle_network_data(JS::Realm& realm, Requests::ResponseData data, NetworkState state)
+ {
++    m_decoded_size += data.bytes().size();
+     if (state == NetworkState::Complete) {
+         VERIFY(data.bytes().is_empty());
+         m_network_complete = true;
+diff --git a/Libraries/LibWeb/Fetch/Fetching/FetchedDataReceiver.h b/Libraries/LibWeb/Fetch/Fetching/FetchedDataReceiver.h
+index eb220151bc..f4dec15409 100644
+--- a/Libraries/LibWeb/Fetch/Fetching/FetchedDataReceiver.h
++++ b/Libraries/LibWeb/Fetch/Fetching/FetchedDataReceiver.h
+@@ -26,7 +26,12 @@ public:
+     explicit FetchedDataReceiver(GC::Ref<Streams::ReadableStream>);
+     virtual ~FetchedDataReceiver() override;
+ 
+-    void set_response(GC::Ref<Fetch::Infrastructure::Response const> response) { m_response = response; }
++    void set_response(GC::Ref<Fetch::Infrastructure::Response> response) { m_response = response; }
++
++    // https://fetch.spec.whatwg.org/#concept-response-body-info
++    // The response's body info: the bytes received from the network before content codings are removed (encodedSize)
++    // and the body's bytes after (decodedSize). The decoded size is counted here, as the bytes arrive.
++    void set_response_body_sizes(u64 encoded_size);
+     void set_body(GC::Ref<Fetch::Infrastructure::Body> body);
+     void set_network_request(RefPtr<Requests::Request> const& request) { m_network_request = request; }
+ 
+@@ -49,7 +54,8 @@ private:
+     void close_stream(JS::Realm&);
+ 
+     GC::Ptr<Infrastructure::FetchParams const> m_fetch_params;
+-    GC::Ptr<Fetch::Infrastructure::Response const> m_response;
++    GC::Ptr<Fetch::Infrastructure::Response> m_response;
++    u64 m_decoded_size { 0 };
+     GC::Ptr<Fetch::Infrastructure::Body> m_body;
+ 
+     GC::Ref<Streams::ReadableStream> m_stream;
+diff --git a/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp b/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp
+index 43ffd44bee..ea7d922b00 100644
+--- a/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp
++++ b/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp
+@@ -817,7 +817,9 @@ void fetch_response_handover(JS::Realm& realm, Infrastructure::FetchParams const
+     //    The user agent may decide to expose `Server-Timing` headers to non-secure contexts requests as well.
+     auto client = fetch_params.request()->client();
+     if (!response.is_network_error() && client != nullptr && HTML::is_secure_context(*client)) {
+-        if (auto server_timing_headers = response.header_list()->get_decode_and_split("Server-Timing"sv); server_timing_headers.has_value())
++        // NB: The headers of the response before filtering: a no-cors response's are hidden from the page, but its
++        //     timing info keeps them, and the timing allow check decides whether they are reported (Blink does so).
++        if (auto server_timing_headers = response.unsafe_response()->header_list()->get_decode_and_split("Server-Timing"sv); server_timing_headers.has_value())
+             timing_info->set_server_timing_headers(server_timing_headers.release_value());
+     }
+ 
+@@ -851,7 +853,8 @@ void fetch_response_handover(JS::Realm& realm, Infrastructure::FetchParams const
+             //        Resource Timing, causing it to take a relative time of an already relative time, effectively make
+             //        it always a negative value approximately the value of the time origin.
+             //        https://github.com/whatwg/fetch/issues/1812
+-            timing_info->set_end_time(unsafe_end_time);
++            // NB: Coarsened, as the timing info's other times are (Resource Timing's responseEnd and duration).
++            timing_info->set_end_time(HighResolutionTime::coarsen_time(unsafe_end_time, HTML::relevant_settings_object(global).cross_origin_isolated_capability()));
+ 
+             // 3. Let cacheState be response’s cache state.
+             auto cache_state = response.cache_state();
+@@ -2448,6 +2451,10 @@ GC::Ref<PendingResponse> nonstandard_resource_loader_file_or_http_network_fetch(
+ 
+         if (success) {
+             fetch_timing_info->update_final_timings(timing_info, cross_origin_isolated_capability);
++            // https://fetch.spec.whatwg.org/#ref-for-concept-response-body-info
++            // NB: The spec increases response's body info's encoded and decoded sizes as bytes are transmitted; the
++            //     network reports the encoded total at the end, the decoded bytes were counted as they arrived.
++            fetched_data_receiver->set_response_body_sizes(static_cast<u64>(max<i64>(timing_info.encoded_body_size, 0)));
+             fetched_data_receiver->handle_network_data(realm, Requests::ResponseData::from_bytes({}), FetchedDataReceiver::NetworkState::Complete);
+         } else {
+             // 16.1.2.2. Otherwise, if stream is readable, error stream with a TypeError.
+diff --git a/Libraries/LibWeb/Fetch/Infrastructure/FetchController.h b/Libraries/LibWeb/Fetch/Infrastructure/FetchController.h
+index c38ed29bb7..7d41546c6b 100644
+--- a/Libraries/LibWeb/Fetch/Infrastructure/FetchController.h
++++ b/Libraries/LibWeb/Fetch/Infrastructure/FetchController.h
+@@ -52,6 +52,7 @@ public:
+     [[nodiscard]] RefPtr<FetchTimingInfo> timing_info() const;
+ 
+     void report_timing(JS::Object&) const;
++    [[nodiscard]] bool has_report_timing_steps() const { return m_report_timing_steps != nullptr; }
+     void process_next_manual_redirect() const;
+     [[nodiscard]] NonnullRefPtr<FetchTimingInfo> extract_full_timing_info() const;
+     void abort(JS::Realm&, Optional<JS::Value>);
+diff --git a/Libraries/LibWeb/Fetch/Infrastructure/FetchTimingInfo.cpp b/Libraries/LibWeb/Fetch/Infrastructure/FetchTimingInfo.cpp
+index 892afaad70..6b77c5ad62 100644
+--- a/Libraries/LibWeb/Fetch/Infrastructure/FetchTimingInfo.cpp
++++ b/Libraries/LibWeb/Fetch/Infrastructure/FetchTimingInfo.cpp
+@@ -28,6 +28,7 @@ NonnullRefPtr<FetchTimingInfo> create_opaque_timing_info(FetchTimingInfo const&
+     new_timing_info->set_post_redirect_start_time(timing_info.start_time());
+     new_timing_info->set_end_time(timing_info.end_time());
+     new_timing_info->set_render_blocking(timing_info.render_blocking());
++    new_timing_info->set_opaque(true);
+ 
+     return new_timing_info;
+ }
+diff --git a/Libraries/LibWeb/Fetch/Infrastructure/FetchTimingInfo.h b/Libraries/LibWeb/Fetch/Infrastructure/FetchTimingInfo.h
+index d9d1abe25c..8f435faeb5 100644
+--- a/Libraries/LibWeb/Fetch/Infrastructure/FetchTimingInfo.h
++++ b/Libraries/LibWeb/Fetch/Infrastructure/FetchTimingInfo.h
+@@ -60,6 +60,10 @@ public:
+     [[nodiscard]] bool render_blocking() const { return m_render_blocking; }
+     void set_render_blocking(bool render_blocking) { m_render_blocking = render_blocking; }
+ 
++    // Whether this is an opaque timing info (a failed timing allow check): Resource Timing reports no transfer size.
++    [[nodiscard]] bool is_opaque() const { return m_opaque; }
++    void set_opaque(bool opaque) { m_opaque = opaque; }
++
+     void update_final_timings(Requests::RequestTimingInfo const& final_timings, HTML::CanUseCrossOriginIsolatedAPIs cross_origin_isolated_capability);
+ 
+ private:
+@@ -119,6 +123,7 @@ private:
+     // server-timing headers (default « »)
+     //     A list of strings.
+     Vector<String> m_server_timing_headers;
++    bool m_opaque { false };
+ 
+     // https://fetch.spec.whatwg.org/#fetch-timing-info-render-blocking
+     // render-blocking (default false)
+diff --git a/Libraries/LibWeb/Fetch/Infrastructure/HTTP/Responses.h b/Libraries/LibWeb/Fetch/Infrastructure/HTTP/Responses.h
+index a0649799f3..e2238fcc8b 100644
+--- a/Libraries/LibWeb/Fetch/Infrastructure/HTTP/Responses.h
++++ b/Libraries/LibWeb/Fetch/Infrastructure/HTTP/Responses.h
+@@ -57,6 +57,9 @@ public:
+         // https://fetch.spec.whatwg.org/#response-body-info-content-type
+         Utf16String content_type {};
+ 
++        // https://fetch.spec.whatwg.org/#response-body-info-content-encoding
++        Utf16String content_encoding {};
++
+         bool operator==(BodyInfo const&) const = default;
+     };
+ 
+diff --git a/Libraries/LibWeb/Forward.h b/Libraries/LibWeb/Forward.h
+index 5ae4b2562b..1dca0dc4d2 100644
+--- a/Libraries/LibWeb/Forward.h
++++ b/Libraries/LibWeb/Forward.h
+@@ -839,6 +839,7 @@ class UserActivation;
+ class UserScrollGestureHold;
+ class ValidityState;
+ class VideoTrack;
++class VisibilityStateEntry;
+ class VideoTrackList;
+ class Window;
+ class WindowEnvironmentSettingsObject;
+@@ -1046,6 +1047,14 @@ class PerformanceResourceTiming;
+ 
+ }
+ 
++namespace Web::PaintTiming {
++class PerformancePaintTiming;
++}
++
++namespace Web::ServerTiming {
++class PerformanceServerTiming;
++}
++
+ namespace Web::Selection {
+ 
+ class Selection;
+diff --git a/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp b/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
+index 7cc57f082a..1d6424106f 100644
+--- a/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
++++ b/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
+@@ -1112,7 +1112,10 @@ void EventLoop::update_the_rendering_after_style_and_layout(Vector<GC::Root<DOM:
+ 
+     // FIXME: 20. For each doc of docs, record rendering time for doc given unsafeStyleAndLayoutStartTime.
+ 
+-    // FIXME: 21. For each doc of docs, mark paint timing for doc.
++    // 21. For each doc of docs, mark paint timing for doc.
++    // NB: With the time the rendering update started; the frame is painted in the next step.
++    for (auto& document : docs)
++        document->mark_paint_timing(HighResolutionTime::unsafe_shared_current_time());
+ 
+     // AD-HOC: Flush dirty canvas contexts in documents' pages after callbacks
+     // have had a chance to update them, and before painting snapshots the frame.
+diff --git a/Libraries/LibWeb/HTML/HTMLLinkElement.cpp b/Libraries/LibWeb/HTML/HTMLLinkElement.cpp
+index d03ea95072..ad4f09d41e 100644
+--- a/Libraries/LibWeb/HTML/HTMLLinkElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLLinkElement.cpp
+@@ -497,11 +497,9 @@ void HTMLLinkElement::default_fetch_and_process_linked_resource(u64 fetch_genera
+         return;
+ 
+     // 6. Set request's initiator type to "css" if el's rel attribute contains the keyword stylesheet; "link" otherwise.
+-    if (m_relationship & Relationship::Stylesheet) {
+-        request->set_initiator_type(Fetch::Infrastructure::Request::InitiatorType::CSS);
+-    } else {
+-        request->set_initiator_type(Fetch::Infrastructure::Request::InitiatorType::Link);
+-    }
++    // INTEROP: Blink, Gecko and WebKit report a <link rel=stylesheet> as "link" (resource-timing/initiator-type/link.html
++    //          expects it too); "css" is for the resources a style sheet itself requests.
++    request->set_initiator_type(Fetch::Infrastructure::Request::InitiatorType::Link);
+ 
+     // 7. Fetch request with processResponseConsumeBody set to the following steps given response response and null, failure, or a byte sequence bodyBytes:
+     Fetch::Infrastructure::FetchAlgorithms::Input fetch_algorithms_input {};
+diff --git a/Libraries/LibWeb/HTML/HTMLScriptElement.cpp b/Libraries/LibWeb/HTML/HTMLScriptElement.cpp
+index ef1225d9f9..361070789e 100644
+--- a/Libraries/LibWeb/HTML/HTMLScriptElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLScriptElement.cpp
+@@ -512,7 +512,9 @@ void HTMLScriptElement::prepare_script()
+         // 8. Set el's delaying the load event to true.
+         begin_delaying_document_load_event(*m_preparation_time_document);
+ 
+-        // FIXME: 9. If el is currently render-blocking, then set options's render-blocking to true.
++        // 9. If el is currently render-blocking, then set options's render-blocking to true.
++        if (m_preparation_time_document->is_render_blocking_element(*this))
++            options.render_blocking = true;
+ 
+         // 10. Let onComplete given result be the following steps:
+         OnFetchScriptComplete on_complete = create_on_fetch_script_complete(heap(), [this](auto result) {
+diff --git a/Libraries/LibWeb/HTML/SharedResourceRequest.cpp b/Libraries/LibWeb/HTML/SharedResourceRequest.cpp
+index b8d7ac080c..4c18930c0f 100644
+--- a/Libraries/LibWeb/HTML/SharedResourceRequest.cpp
++++ b/Libraries/LibWeb/HTML/SharedResourceRequest.cpp
+@@ -169,6 +169,11 @@ void SharedResourceRequest::fetch_resource(GC::Ref<Fetch::Infrastructure::Reques
+         response->body()->fully_read(realm, process_body, process_body_error, GC::Ref { realm.global_object() });
+     };
+ 
++    // AD-HOC: An image request has no initiator type in HTML, so it was never reported to Resource Timing; every engine
++    //         reports an <img> (and an <input type=image>, a poster, an SVG <image>) as "img", and WPT expects it.
++    if (!request->initiator_type().has_value())
++        request->set_initiator_type(Fetch::Infrastructure::Request::InitiatorType::IMG);
++
+     m_state = State::Fetching;
+     m_load_event_delayer.emplace(*m_document);
+ 
+diff --git a/Libraries/LibWeb/HTML/VisibilityStateEntry.cpp b/Libraries/LibWeb/HTML/VisibilityStateEntry.cpp
+new file mode 100644
+index 0000000000..b9048ff096
+--- /dev/null
++++ b/Libraries/LibWeb/HTML/VisibilityStateEntry.cpp
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibGC/Heap.h>
++#include <LibWeb/DOM/Document.h>
++#include <LibWeb/HTML/VisibilityStateEntry.h>
++#include <LibWeb/HTML/Window.h>
++#include <LibWeb/PerformanceTimeline/EntryTypes.h>
++
++namespace Web::HTML {
++
++GC_DEFINE_ALLOCATOR(VisibilityStateEntry);
++
++GC::Ref<VisibilityStateEntry> VisibilityStateEntry::create(Utf16String const& state, HighResolutionTime::DOMHighResTimeStamp start_time)
++{
++    return GC::Heap::the().allocate<VisibilityStateEntry>(state, start_time);
++}
++
++VisibilityStateEntry::VisibilityStateEntry(Utf16String const& state, HighResolutionTime::DOMHighResTimeStamp start_time)
++    : PerformanceTimeline::PerformanceEntry(state, start_time, 0)
++{
++}
++
++VisibilityStateEntry::~VisibilityStateEntry() = default;
++
++Utf16FlyString const& VisibilityStateEntry::entry_type() const
++{
++    return PerformanceTimeline::EntryTypes::visibility_state;
++}
++
++// https://html.spec.whatwg.org/multipage/interaction.html#queue-a-visibility-state-entry
++void VisibilityStateEntry::queue(DOM::Document& document, Utf16String const& state, HighResolutionTime::DOMHighResTimeStamp timestamp)
++{
++    // 1. Let entry be a new VisibilityStateEntry with name state, startTime timestamp (relative to the time origin).
++    auto window = document.window();
++    if (!window)
++        return;
++    auto entry = create(state, timestamp);
++    // 2. Queue entry.
++    window->queue_performance_entry(entry);
++    // AD-HOC: Also buffered, so getEntriesByType("visibility-state") and buffered observers see it, as in Blink.
++    window->add_performance_entry(entry);
++}
++
++}
+diff --git a/Libraries/LibWeb/HTML/VisibilityStateEntry.h b/Libraries/LibWeb/HTML/VisibilityStateEntry.h
+new file mode 100644
+index 0000000000..5650eb5532
+--- /dev/null
++++ b/Libraries/LibWeb/HTML/VisibilityStateEntry.h
+@@ -0,0 +1,37 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <LibWeb/PerformanceTimeline/PerformanceEntry.h>
++
++namespace Web::HTML {
++
++// https://html.spec.whatwg.org/multipage/interaction.html#visibilitystateentry
++class VisibilityStateEntry final : public PerformanceTimeline::PerformanceEntry {
++    WEB_WRAPPABLE(VisibilityStateEntry, PerformanceTimeline::PerformanceEntry);
++    GC_DECLARE_ALLOCATOR(VisibilityStateEntry);
++
++public:
++    virtual ~VisibilityStateEntry() override;
++
++    [[nodiscard]] static GC::Ref<VisibilityStateEntry> create(Utf16String const& state, HighResolutionTime::DOMHighResTimeStamp start_time);
++
++    // https://w3c.github.io/timing-entrytypes-registry/#registry
++    static PerformanceTimeline::AvailableFromTimeline available_from_timeline() { return PerformanceTimeline::AvailableFromTimeline::Yes; }
++    static Optional<u64> max_buffer_size() { return 50; }
++    virtual PerformanceTimeline::ShouldAddEntry should_add_entry(Optional<PerformanceTimeline::PerformanceObserverInit const&> = {}) const override { return PerformanceTimeline::ShouldAddEntry::Yes; }
++
++    virtual Utf16FlyString const& entry_type() const override;
++
++    // https://html.spec.whatwg.org/multipage/interaction.html#queue-a-visibility-state-entry
++    static void queue(DOM::Document&, Utf16String const& state, HighResolutionTime::DOMHighResTimeStamp timestamp);
++
++private:
++    VisibilityStateEntry(Utf16String const& state, HighResolutionTime::DOMHighResTimeStamp start_time);
++};
++
++}
+diff --git a/Libraries/LibWeb/HTML/VisibilityStateEntry.idl b/Libraries/LibWeb/HTML/VisibilityStateEntry.idl
+new file mode 100644
+index 0000000000..0c7bbf45f8
+--- /dev/null
++++ b/Libraries/LibWeb/HTML/VisibilityStateEntry.idl
+@@ -0,0 +1,5 @@
++// https://html.spec.whatwg.org/multipage/interaction.html#visibilitystateentry
++// NB: The spec's interface shadows name, entryType, startTime and duration; Blink's prototype has only its constructor.
++[Exposed=Window]
++interface VisibilityStateEntry : PerformanceEntry {
++};
+diff --git a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp
+index 58847988a2..cfae4731fc 100644
+--- a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp
++++ b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp
+@@ -7,6 +7,7 @@
+  * SPDX-License-Identifier: BSD-2-Clause
+  */
+ 
++#include <AK/Random.h>
+ #include <AK/Base64.h>
+ #include <AK/NumericLimits.h>
+ #include <AK/QuickSort.h>
+@@ -66,6 +67,9 @@
+ #include <LibWeb/Infra/SerializedURL.h>
+ #include <LibWeb/Loader/ResourceLoader.h>
+ #include <LibWeb/NavigationTiming/PerformanceNavigationTiming.h>
++#include <LibWeb/PaintTiming/PerformancePaintTiming.h>
++#include <LibWeb/HTML/VisibilityStateEntry.h>
++#include <LibWeb/PerformanceTimeline/UnreportedEntryTypes.h>
+ #include <LibWeb/Page/Page.h>
+ #include <LibWeb/Painting/PaintingRustBridge.h>
+ #include <LibWeb/PerformanceTimeline/EntryTypes.h>
+@@ -908,8 +912,36 @@ PerformanceTimeline::PerformanceEntryTuple& WindowOrWorkerGlobalScopeMixin::rele
+ }
+ 
+ // https://www.w3.org/TR/performance-timeline/#dfn-queue-a-performanceentry
++u64 WindowOrWorkerGlobalScopeMixin::navigation_id()
++{
++    if (m_navigation_id == 0)
++        set_new_navigation_id();
++    return m_navigation_id;
++}
++
++void WindowOrWorkerGlobalScopeMixin::set_new_navigation_id()
++{
++    // INTEROP: Blink's ids are small positive integers that tell nothing about how many navigations there were.
++    m_navigation_id = 1 + get_random_uniform(9999);
++}
++
++void WindowOrWorkerGlobalScopeMixin::reset_performance_timeline()
++{
++    for (auto& it : m_performance_entry_buffer_map) {
++        it.value.performance_entry_buffer.clear();
++        it.value.dropped_entries_count = 0;
++    }
++    m_resource_timing_secondary_buffer.clear();
++    m_resource_timing_buffer_full_event_pending = false;
++    m_resource_timing_buffer_size_limit = 250;
++    m_registered_performance_observer_objects.clear();
++    set_new_navigation_id();
++}
++
+ void WindowOrWorkerGlobalScopeMixin::queue_performance_entry(GC::Ref<PerformanceTimeline::PerformanceEntry> new_entry)
+ {
++    new_entry->set_navigation_id_if_unset(navigation_id());
++
+     // 1. Let interested observers be an initially empty set of PerformanceObserver objects.
+     Vector<GC::Root<PerformanceTimeline::PerformanceObserver>> interested_observers;
+ 
+@@ -959,6 +991,8 @@ void WindowOrWorkerGlobalScopeMixin::queue_performance_entry(GC::Ref<Performance
+ //         to the entry buffer separately.
+ void WindowOrWorkerGlobalScopeMixin::add_performance_entry(GC::Ref<PerformanceTimeline::PerformanceEntry> new_entry, CheckIfPerformanceBufferIsFull check_if_performance_buffer_is_full)
+ {
++    new_entry->set_navigation_id_if_unset(navigation_id());
++
+     // 6. Let tuple be the relevant performance entry tuple of entryType and relevantGlobal.
+     auto& tuple = relevant_performance_entry_tuple(new_entry->entry_type());
+ 
+diff --git a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.h b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.h
+index efe8e2efc8..46f7fddf44 100644
+--- a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.h
++++ b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.h
+@@ -67,6 +67,16 @@ public:
+ 
+     PerformanceTimeline::PerformanceEntryTuple& relevant_performance_entry_tuple(Utf16FlyString const& entry_type);
+     void queue_performance_entry(GC::Ref<PerformanceTimeline::PerformanceEntry> new_entry);
++
++    // https://w3c.github.io/performance-timeline/#dfn-navigation-id
++    // A navigation id, an implementation-defined unique number: a new one per navigation (and per same-document
++    // navigation, once soft navigations are reported).
++    u64 navigation_id();
++    void set_new_navigation_id();
++
++    // For an embedder that loads a new document into the same global: the performance timeline starts empty, as a new
++    // global's does (buffers, the resource timing limits, the registered observers), with a new navigation id.
++    void reset_performance_timeline();
+     void add_performance_entry(GC::Ref<PerformanceTimeline::PerformanceEntry> new_entry, CheckIfPerformanceBufferIsFull check_if_performance_buffer_is_full = CheckIfPerformanceBufferIsFull::No);
+     void clear_performance_entry_buffer(Badge<HighResolutionTime::Performance>, Utf16FlyString const& entry_type);
+     void remove_entries_from_performance_entry_buffer(Badge<HighResolutionTime::Performance>, Utf16FlyString const& entry_type, Utf16View entry_name);
+@@ -197,6 +207,8 @@ private:
+     // - a performance observer task queued flag
+     bool m_performance_observer_task_queued { false };
+ 
++    u64 m_navigation_id { 0 };
++
+     // - a list of registered performance observer objects that is initially empty
+     OrderedHashTable<GC::Ref<PerformanceTimeline::PerformanceObserver>> m_registered_performance_observer_objects;
+ 
+diff --git a/Libraries/LibWeb/HighResolutionTime/SupportedPerformanceTypes.h b/Libraries/LibWeb/HighResolutionTime/SupportedPerformanceTypes.h
+index 1cfdfcb6d2..7033b2103b 100644
+--- a/Libraries/LibWeb/HighResolutionTime/SupportedPerformanceTypes.h
++++ b/Libraries/LibWeb/HighResolutionTime/SupportedPerformanceTypes.h
+@@ -9,18 +9,24 @@
+ namespace Web::HighResolutionTime {
+ 
+ // Please keep these in alphabetical order based on the entry type :^)
+-#define ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES_BEFORE_NAVIGATION                                                 \
+-    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::mark, UserTiming::PerformanceMark) \
+-    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::measure, UserTiming::PerformanceMeasure)
+-
+-#define ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES_AFTER_NAVIGATION \
++// NB: supportedEntryTypes lists both kinds sorted together, as Blink does.
++#define ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES                                                                    \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::mark, UserTiming::PerformanceMark)   \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::measure, UserTiming::PerformanceMeasure) \
+     __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::resource, ResourceTiming::PerformanceResourceTiming)
+ 
+-#define ENUMERATE_WINDOW_SUPPORTED_PERFORMANCE_ENTRY_TYPES \
+-    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::navigation, NavigationTiming::PerformanceNavigationTiming)
+-
+-#define ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES               \
+-    ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES_BEFORE_NAVIGATION \
+-    ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES_AFTER_NAVIGATION
++#define ENUMERATE_WINDOW_SUPPORTED_PERFORMANCE_ENTRY_TYPES                                                                                                      \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::element, PerformanceTimeline::ElementTimingEntryType)                          \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::event, PerformanceTimeline::EventTimingEntryType)                              \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::first_input, PerformanceTimeline::FirstInputEntryType)                        \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::interaction_contentful_paint, PerformanceTimeline::InteractionContentfulPaintEntryType) \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::largest_contentful_paint, PerformanceTimeline::LargestContentfulPaintEntryType) \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::layout_shift, PerformanceTimeline::LayoutShiftEntryType)                      \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::long_animation_frame, PerformanceTimeline::LongAnimationFrameEntryType)        \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::longtask, PerformanceTimeline::LongTaskEntryType)                             \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::navigation, NavigationTiming::PerformanceNavigationTiming)                      \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::paint, PaintTiming::PerformancePaintTiming)                                    \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::soft_navigation, PerformanceTimeline::SoftNavigationEntryType)                 \
++    __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(PerformanceTimeline::EntryTypes::visibility_state, HTML::VisibilityStateEntry)
+ 
+ }
+diff --git a/Libraries/LibWeb/NavigationTiming/PerformanceNavigationTiming.h b/Libraries/LibWeb/NavigationTiming/PerformanceNavigationTiming.h
+index 558b54ee50..10d7909fa8 100644
+--- a/Libraries/LibWeb/NavigationTiming/PerformanceNavigationTiming.h
++++ b/Libraries/LibWeb/NavigationTiming/PerformanceNavigationTiming.h
+@@ -41,6 +41,9 @@ public:
+     Bindings::NavigationTimingType type() const { return m_navigation_type; }
+     u16 redirect_count() const { return m_redirect_count; }
+     HighResolutionTime::DOMHighResTimeStamp critical_ch_restart() const { return 0; }
++    // A document that was not prerendered was activated when its navigation started.
++    HighResolutionTime::DOMHighResTimeStamp activation_start() const { return 0; }
++    JS::Value not_restored_reasons() const { return JS::js_null(); }
+ 
+ private:
+     PerformanceNavigationTiming(DOM::Document&, Utf16String const& name, NonnullRefPtr<Fetch::Infrastructure::FetchTimingInfo>, HighResolutionTime::DOMHighResTimeStamp time_origin, u16 redirect_count, Bindings::NavigationTimingType);
+diff --git a/Libraries/LibWeb/NavigationTiming/PerformanceNavigationTiming.idl b/Libraries/LibWeb/NavigationTiming/PerformanceNavigationTiming.idl
+index d9fb4389cc..1445749294 100644
+--- a/Libraries/LibWeb/NavigationTiming/PerformanceNavigationTiming.idl
++++ b/Libraries/LibWeb/NavigationTiming/PerformanceNavigationTiming.idl
+@@ -11,7 +11,11 @@ interface PerformanceNavigationTiming : PerformanceResourceTiming {
+     readonly attribute DOMHighResTimeStamp loadEventEnd;
+     readonly attribute NavigationTimingType type;
+     readonly attribute unsigned short redirectCount;
++    // https://wicg.github.io/nav-speculation/prerendering.html#performance-navigation-timing-extension
++    readonly attribute DOMHighResTimeStamp activationStart;
+     readonly attribute DOMHighResTimeStamp criticalCHRestart;
++    // https://html.spec.whatwg.org/multipage/nav-history-apis.html#nrr-details-struct (no back/forward cache: null)
++    readonly attribute any notRestoredReasons;
+     [Default] object toJSON();
+ };
+ 
+diff --git a/Libraries/LibWeb/PaintTiming/PerformancePaintTiming.cpp b/Libraries/LibWeb/PaintTiming/PerformancePaintTiming.cpp
+new file mode 100644
+index 0000000000..269cf7888c
+--- /dev/null
++++ b/Libraries/LibWeb/PaintTiming/PerformancePaintTiming.cpp
+@@ -0,0 +1,34 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibGC/Heap.h>
++#include <LibWeb/PaintTiming/PerformancePaintTiming.h>
++#include <LibWeb/PerformanceTimeline/EntryTypes.h>
++
++namespace Web::PaintTiming {
++
++GC_DEFINE_ALLOCATOR(PerformancePaintTiming);
++
++GC::Ref<PerformancePaintTiming> PerformancePaintTiming::create(Utf16String const& name, HighResolutionTime::DOMHighResTimeStamp paint_time)
++{
++    return GC::Heap::the().allocate<PerformancePaintTiming>(name, paint_time);
++}
++
++// https://w3c.github.io/paint-timing/#report-paint-timing: startTime is the paint (or presentation) time, duration 0.
++PerformancePaintTiming::PerformancePaintTiming(Utf16String const& name, HighResolutionTime::DOMHighResTimeStamp paint_time)
++    : PerformanceTimeline::PerformanceEntry(name, paint_time, 0)
++    , m_paint_time(paint_time)
++{
++}
++
++PerformancePaintTiming::~PerformancePaintTiming() = default;
++
++Utf16FlyString const& PerformancePaintTiming::entry_type() const
++{
++    return PerformanceTimeline::EntryTypes::paint;
++}
++
++}
+diff --git a/Libraries/LibWeb/PaintTiming/PerformancePaintTiming.h b/Libraries/LibWeb/PaintTiming/PerformancePaintTiming.h
+new file mode 100644
+index 0000000000..1eded40bd7
+--- /dev/null
++++ b/Libraries/LibWeb/PaintTiming/PerformancePaintTiming.h
+@@ -0,0 +1,41 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <LibWeb/PerformanceTimeline/PerformanceEntry.h>
++
++namespace Web::PaintTiming {
++
++// https://w3c.github.io/paint-timing/#sec-PerformancePaintTiming
++class PerformancePaintTiming final : public PerformanceTimeline::PerformanceEntry {
++    WEB_WRAPPABLE(PerformancePaintTiming, PerformanceTimeline::PerformanceEntry);
++    GC_DECLARE_ALLOCATOR(PerformancePaintTiming);
++
++public:
++    virtual ~PerformancePaintTiming() override;
++
++    // name is "first-paint" or "first-contentful-paint"; paint_time is relative to the time origin.
++    [[nodiscard]] static GC::Ref<PerformancePaintTiming> create(Utf16String const& name, HighResolutionTime::DOMHighResTimeStamp paint_time);
++
++    // https://w3c.github.io/timing-entrytypes-registry/#registry
++    static PerformanceTimeline::AvailableFromTimeline available_from_timeline() { return PerformanceTimeline::AvailableFromTimeline::Yes; }
++    static Optional<u64> max_buffer_size() { return 2; }
++    virtual PerformanceTimeline::ShouldAddEntry should_add_entry(Optional<PerformanceTimeline::PerformanceObserverInit const&> = {}) const override { return PerformanceTimeline::ShouldAddEntry::Yes; }
++
++    virtual Utf16FlyString const& entry_type() const override;
++
++    HighResolutionTime::DOMHighResTimeStamp paint_time() const { return m_paint_time; }
++    // The engine presents a frame when it paints it: the presentation time is the paint time.
++    Optional<HighResolutionTime::DOMHighResTimeStamp> presentation_time() const { return m_paint_time; }
++
++private:
++    PerformancePaintTiming(Utf16String const& name, HighResolutionTime::DOMHighResTimeStamp paint_time);
++
++    HighResolutionTime::DOMHighResTimeStamp m_paint_time { 0 };
++};
++
++}
+diff --git a/Libraries/LibWeb/PaintTiming/PerformancePaintTiming.idl b/Libraries/LibWeb/PaintTiming/PerformancePaintTiming.idl
+new file mode 100644
+index 0000000000..69747c9b7f
+--- /dev/null
++++ b/Libraries/LibWeb/PaintTiming/PerformancePaintTiming.idl
+@@ -0,0 +1,8 @@
++// https://w3c.github.io/paint-timing/#sec-PerformancePaintTiming
++[Exposed=Window]
++interface PerformancePaintTiming : PerformanceEntry {
++    // https://w3c.github.io/paint-timing/#painttimingmixin
++    readonly attribute DOMHighResTimeStamp paintTime;
++    readonly attribute DOMHighResTimeStamp? presentationTime;
++    [Default] object toJSON();
++};
+diff --git a/Libraries/LibWeb/PerformanceTimeline/EntryTypes.h b/Libraries/LibWeb/PerformanceTimeline/EntryTypes.h
+index c502537e9f..2629410e78 100644
+--- a/Libraries/LibWeb/PerformanceTimeline/EntryTypes.h
++++ b/Libraries/LibWeb/PerformanceTimeline/EntryTypes.h
+@@ -15,14 +15,18 @@ namespace Web::PerformanceTimeline::EntryTypes {
+     __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(element, "element")                                   \
+     __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(event, "event")                                       \
+     __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(first_input, "first-input")                           \
++    __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(interaction_contentful_paint, "interaction-contentful-paint") \
+     __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(largest_contentful_paint, "largest-contentful-paint") \
+     __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(layout_shift, "layout-shift")                         \
++    __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(long_animation_frame, "long-animation-frame")         \
+     __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(longtask, "longtask")                                 \
+     __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(mark, "mark")                                         \
+     __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(measure, "measure")                                   \
+     __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(navigation, "navigation")                             \
+     __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(paint, "paint")                                       \
+-    __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(resource, "resource")
++    __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(resource, "resource")                                 \
++    __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(soft_navigation, "soft-navigation")                   \
++    __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(visibility_state, "visibility-state")
+ 
+ #define __ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPE(name, type) extern Utf16FlyString const& name;
+ ENUMERATE_PERFORMANCE_TIMELINE_ENTRY_TYPES
+diff --git a/Libraries/LibWeb/PerformanceTimeline/PerformanceEntry.h b/Libraries/LibWeb/PerformanceTimeline/PerformanceEntry.h
+index 0e24915157..4ade96bcee 100644
+--- a/Libraries/LibWeb/PerformanceTimeline/PerformanceEntry.h
++++ b/Libraries/LibWeb/PerformanceTimeline/PerformanceEntry.h
+@@ -40,6 +40,15 @@ public:
+     HighResolutionTime::DOMHighResTimeStamp start_time() const { return m_start_time; }
+     virtual HighResolutionTime::DOMHighResTimeStamp duration() const { return m_duration; }
+ 
++    // https://w3c.github.io/performance-timeline/#dom-performanceentry-navigationid
++    // The navigation id of the global the entry was queued or buffered in, when it was.
++    u64 navigation_id() const { return m_navigation_id; }
++    void set_navigation_id_if_unset(u64 id)
++    {
++        if (m_navigation_id == 0)
++            m_navigation_id = id;
++    }
++
+     // https://w3c.github.io/timing-entrytypes-registry/#dfn-should-add-entry
+     virtual PerformanceTimeline::ShouldAddEntry should_add_entry(Optional<PerformanceObserverInit const&> = {}) const = 0;
+ 
+@@ -56,6 +65,8 @@ private:
+ 
+     // https://www.w3.org/TR/performance-timeline/#dom-performanceentry-duration
+     HighResolutionTime::DOMHighResTimeStamp m_duration { 0.0 };
++
++    u64 m_navigation_id { 0 };
+ };
+ 
+ }
+diff --git a/Libraries/LibWeb/PerformanceTimeline/PerformanceEntry.idl b/Libraries/LibWeb/PerformanceTimeline/PerformanceEntry.idl
+index 28e9f71c42..2f718d05c3 100644
+--- a/Libraries/LibWeb/PerformanceTimeline/PerformanceEntry.idl
++++ b/Libraries/LibWeb/PerformanceTimeline/PerformanceEntry.idl
+@@ -5,5 +5,7 @@ interface PerformanceEntry {
+     readonly attribute [FlyString] DOMString entryType;
+     readonly attribute DOMHighResTimeStamp startTime;
+     readonly attribute DOMHighResTimeStamp duration;
++    // https://w3c.github.io/performance-timeline/#dom-performanceentry-navigationid
++    readonly attribute unsigned long long navigationId;
+     [Default] object toJSON();
+ };
+diff --git a/Libraries/LibWeb/PerformanceTimeline/PerformanceObserver.cpp b/Libraries/LibWeb/PerformanceTimeline/PerformanceObserver.cpp
+index ac574ac4c0..28198b6c21 100644
+--- a/Libraries/LibWeb/PerformanceTimeline/PerformanceObserver.cpp
++++ b/Libraries/LibWeb/PerformanceTimeline/PerformanceObserver.cpp
+@@ -17,6 +17,7 @@
+ #include <LibWeb/HTML/WindowOrWorkerGlobalScope.h>
+ #include <LibWeb/HighResolutionTime/SupportedPerformanceTypes.h>
+ #include <LibWeb/NavigationTiming/PerformanceNavigationTiming.h>
++#include <AK/QuickSort.h>
+ #include <LibWeb/PerformanceTimeline/EntryTypes.h>
+ #include <LibWeb/PerformanceTimeline/PerformanceEntry.h>
+ #include <LibWeb/PerformanceTimeline/PerformanceObserver.h>
+@@ -46,22 +47,17 @@ static GC::Ref<JS::Object> create_supported_entry_types_array(JS::Object& releva
+     auto& vm = realm.vm();
+     GC::RootVector<JS::Value> supported_entry_types;
+ 
++    Vector<Utf16FlyString> types;
+ #define __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(entry_type, cpp_class) \
+-    supported_entry_types.append(JS::PrimitiveString::create(vm, entry_type));
+-    ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES_BEFORE_NAVIGATION
+-#undef __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES
+-
++    types.append(entry_type);
++    ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES
+     if (HTML::window_from_global_object(relevant_global_object)) {
+-#define __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(entry_type, cpp_class) \
+-    supported_entry_types.append(JS::PrimitiveString::create(vm, entry_type));
+         ENUMERATE_WINDOW_SUPPORTED_PERFORMANCE_ENTRY_TYPES
+-#undef __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES
+     }
+-
+-#define __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES(entry_type, cpp_class) \
+-    supported_entry_types.append(JS::PrimitiveString::create(vm, entry_type));
+-    ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES_AFTER_NAVIGATION
+ #undef __ENUMERATE_SUPPORTED_PERFORMANCE_ENTRY_TYPES
++    quick_sort(types, [](auto const& a, auto const& b) { return a.view() < b.view(); });
++    for (auto const& type : types)
++        supported_entry_types.append(JS::PrimitiveString::create(vm, type));
+ 
+     auto supported_entry_types_array = JS::Array::create_from(realm, supported_entry_types);
+     MUST(supported_entry_types_array->set_integrity_level(JS::Object::IntegrityLevel::Frozen));
+diff --git a/Libraries/LibWeb/PerformanceTimeline/UnreportedEntryTypes.h b/Libraries/LibWeb/PerformanceTimeline/UnreportedEntryTypes.h
+new file mode 100644
+index 0000000000..77c3fbb018
+--- /dev/null
++++ b/Libraries/LibWeb/PerformanceTimeline/UnreportedEntryTypes.h
+@@ -0,0 +1,33 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/Optional.h>
++#include <LibWeb/PerformanceTimeline/PerformanceEntry.h>
++
++namespace Web::PerformanceTimeline {
++
++// Entry types of the registry (https://w3c.github.io/timing-entrytypes-registry/#registry) that an observer may ask for and
++// a page may look up, as in Blink, but of which no entries are made yet: their buffers stay empty. The registry's
++// availability and buffer size per type.
++template<AvailableFromTimeline available, u64 buffer_size>
++struct UnreportedEntryType {
++    static AvailableFromTimeline available_from_timeline() { return available; }
++    static Optional<u64> max_buffer_size() { return buffer_size; }
++};
++
++using ElementTimingEntryType = UnreportedEntryType<AvailableFromTimeline::No, 150>;
++using EventTimingEntryType = UnreportedEntryType<AvailableFromTimeline::No, 150>;
++using FirstInputEntryType = UnreportedEntryType<AvailableFromTimeline::Yes, 1>;
++using InteractionContentfulPaintEntryType = UnreportedEntryType<AvailableFromTimeline::No, 150>;
++using LargestContentfulPaintEntryType = UnreportedEntryType<AvailableFromTimeline::No, 150>;
++using LayoutShiftEntryType = UnreportedEntryType<AvailableFromTimeline::No, 150>;
++using LongAnimationFrameEntryType = UnreportedEntryType<AvailableFromTimeline::No, 200>;
++using LongTaskEntryType = UnreportedEntryType<AvailableFromTimeline::No, 200>;
++using SoftNavigationEntryType = UnreportedEntryType<AvailableFromTimeline::Yes, 50>;
++
++}
+diff --git a/Libraries/LibWeb/ResourceTiming/PerformanceResourceTiming.cpp b/Libraries/LibWeb/ResourceTiming/PerformanceResourceTiming.cpp
+index ce4425fe78..e455bb7c4a 100644
+--- a/Libraries/LibWeb/ResourceTiming/PerformanceResourceTiming.cpp
++++ b/Libraries/LibWeb/ResourceTiming/PerformanceResourceTiming.cpp
+@@ -7,9 +7,11 @@
+ #include <LibGC/Heap.h>
+ #include <LibWeb/Fetch/Infrastructure/FetchTimingInfo.h>
+ #include <LibWeb/HTML/Scripting/Environments.h>
++#include <LibWeb/HighResolutionTime/TimeOrigin.h>
+ #include <LibWeb/HTML/WindowOrWorkerGlobalScope.h>
+ #include <LibWeb/PerformanceTimeline/EntryTypes.h>
+ #include <LibWeb/ResourceTiming/PerformanceResourceTiming.h>
++#include <LibWeb/ServerTiming/PerformanceServerTiming.h>
+ 
+ namespace Web::ResourceTiming {
+ 
+@@ -301,6 +303,11 @@ u64 PerformanceResourceTiming::decoded_body_size() const
+ // https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-transfersize
+ u64 PerformanceResourceTiming::transfer_size() const
+ {
++    // https://w3c.github.io/resource-timing/#sec-cross-origin-resources: a resource that failed the timing allow check
++    // has a transferSize of 0 (resource-timing/TAO-null-opaque-origin.sub.html and its kin; Blink, Gecko).
++    if (m_timing_info->is_opaque())
++        return 0;
++
+     if (m_cache_mode.has_value()) {
+         // 1. If this's cache mode is "local", then return 0.
+         if (m_cache_mode.value() == Fetch::Infrastructure::Response::CacheState::Local)
+@@ -348,4 +355,36 @@ Utf16String const& PerformanceResourceTiming::content_type() const
+     return m_response_body_info.content_type;
+ }
+ 
++// https://w3c.github.io/resource-timing/#dom-performanceresourcetiming-contentencoding
++Utf16String const& PerformanceResourceTiming::content_encoding() const
++{
++    // The contentEncoding getter steps are to return this's resource info's content encoding.
++    return m_response_body_info.content_encoding;
++}
++
++void PerformanceResourceTiming::mark_as_resource_of(JS::Object& global, Utf16FlyString const& initiator_type) const
++{
++    // A document's entry is made before its response ends: its end is now, when the document finished loading.
++    if (m_timing_info->end_time() == 0)
++        m_timing_info->set_end_time(HighResolutionTime::coarsen_time(HighResolutionTime::unsafe_shared_current_time(), HTML::relevant_settings_object(global).cross_origin_isolated_capability()));
++    mark_resource_timing(m_timing_info, m_requested_url, initiator_type, global, m_cache_mode, m_response_body_info, m_response_status);
++}
++
++// https://w3c.github.io/server-timing/#servertiming-attribute
++Vector<GC::Ref<ServerTiming::PerformanceServerTiming>> PerformanceResourceTiming::server_timing() const
++{
++    // The serverTiming getter steps are to return a FrozenArray of PerformanceServerTiming objects, parsed from this's
++    // timing info's server-timing headers (empty when the timing allow check failed: the opaque timing info has none).
++    if (!m_server_timing.has_value())
++        m_server_timing = ServerTiming::PerformanceServerTiming::parse_header_values(m_timing_info->server_timing_headers());
++    return *m_server_timing;
++}
++
++void PerformanceResourceTiming::visit_edges(GC::Cell::Visitor& visitor)
++{
++    Base::visit_edges(visitor);
++    if (m_server_timing.has_value())
++        visitor.visit(*m_server_timing);
++}
++
+ }
+diff --git a/Libraries/LibWeb/ResourceTiming/PerformanceResourceTiming.h b/Libraries/LibWeb/ResourceTiming/PerformanceResourceTiming.h
+index b2e9ec171f..5ac78dd979 100644
+--- a/Libraries/LibWeb/ResourceTiming/PerformanceResourceTiming.h
++++ b/Libraries/LibWeb/ResourceTiming/PerformanceResourceTiming.h
+@@ -73,8 +73,22 @@ public:
+     RenderBlockingStatusType render_blocking_status() const;
+     bool is_render_blocking() const;
+     Utf16String const& content_type() const;
++    Utf16String const& content_encoding() const;
++
++    // This entry's timing, reported again as a resource of another global (an iframe document's navigation entry, to its
++    // container's global, initiator type "iframe").
++    void mark_as_resource_of(JS::Object& global, Utf16FlyString const& initiator_type) const;
++    Vector<GC::Ref<ServerTiming::PerformanceServerTiming>> server_timing() const;
++
++    // https://w3c.github.io/ServiceWorker/#static-routing-api: no service worker router answers a fetch here.
++    HighResolutionTime::DOMHighResTimeStamp worker_router_evaluation_start() const { return 0; }
++    HighResolutionTime::DOMHighResTimeStamp worker_cache_lookup_start() const { return 0; }
++    Utf16String worker_matched_source_type() const { return {}; }
++    Utf16String worker_final_source_type() const { return {}; }
+ 
+ protected:
++    virtual void visit_edges(GC::Cell::Visitor&) override;
++
+     PerformanceResourceTiming(String const& name, HighResolutionTime::DOMHighResTimeStamp start_time, HighResolutionTime::DOMHighResTimeStamp duration, NonnullRefPtr<Fetch::Infrastructure::FetchTimingInfo> timing_info, HighResolutionTime::DOMHighResTimeStamp time_origin);
+     PerformanceResourceTiming(Utf16String const& name, HighResolutionTime::DOMHighResTimeStamp start_time, HighResolutionTime::DOMHighResTimeStamp duration, NonnullRefPtr<Fetch::Infrastructure::FetchTimingInfo> timing_info, HighResolutionTime::DOMHighResTimeStamp time_origin);
+ 
+@@ -89,6 +103,8 @@ private:
+     Optional<Fetch::Infrastructure::Response::CacheState> m_cache_mode;
+     Fetch::Infrastructure::Status m_response_status;
+     Utf16FlyString m_delivery_type;
++    mutable Optional<Vector<GC::Ref<ServerTiming::PerformanceServerTiming>>> m_server_timing;
++
+ };
+ 
+ HighResolutionTime::DOMHighResTimeStamp convert_fetch_timestamp(HighResolutionTime::DOMHighResTimeStamp time_stamp, HighResolutionTime::DOMHighResTimeStamp time_origin);
+diff --git a/Libraries/LibWeb/ResourceTiming/PerformanceResourceTiming.idl b/Libraries/LibWeb/ResourceTiming/PerformanceResourceTiming.idl
+index 41b8d15332..70fc1cec0c 100644
+--- a/Libraries/LibWeb/ResourceTiming/PerformanceResourceTiming.idl
++++ b/Libraries/LibWeb/ResourceTiming/PerformanceResourceTiming.idl
+@@ -7,28 +7,37 @@ enum RenderBlockingStatusType {
+ // https://w3c.github.io/resource-timing/#dom-performanceresourcetiming
+ [Exposed=(Window,Worker)]
+ interface PerformanceResourceTiming : PerformanceEntry {
++    // NB: In Blink's order (its prototype and toJSON list them so; Resource Timing's IDL has another).
+     readonly attribute DOMString initiatorType;
+     readonly attribute DOMString deliveryType;
+     readonly attribute ByteString nextHopProtocol;
++    readonly attribute RenderBlockingStatusType renderBlockingStatus;
++    readonly attribute DOMString contentType;
++    readonly attribute DOMString contentEncoding;
+     readonly attribute DOMHighResTimeStamp workerStart;
++    // https://w3c.github.io/ServiceWorker/#static-routing-api (no router: 0 and the empty string)
++    readonly attribute DOMHighResTimeStamp workerRouterEvaluationStart;
++    readonly attribute DOMHighResTimeStamp workerCacheLookupStart;
++    readonly attribute DOMString workerMatchedSourceType;
++    readonly attribute DOMString workerFinalSourceType;
+     readonly attribute DOMHighResTimeStamp redirectStart;
+     readonly attribute DOMHighResTimeStamp redirectEnd;
+     readonly attribute DOMHighResTimeStamp fetchStart;
+     readonly attribute DOMHighResTimeStamp domainLookupStart;
+     readonly attribute DOMHighResTimeStamp domainLookupEnd;
+     readonly attribute DOMHighResTimeStamp connectStart;
+-    readonly attribute DOMHighResTimeStamp connectEnd;
+     readonly attribute DOMHighResTimeStamp secureConnectionStart;
++    readonly attribute DOMHighResTimeStamp connectEnd;
+     readonly attribute DOMHighResTimeStamp requestStart;
+-    readonly attribute DOMHighResTimeStamp finalResponseHeadersStart;
+-    readonly attribute DOMHighResTimeStamp firstInterimResponseStart;
+     readonly attribute DOMHighResTimeStamp responseStart;
++    readonly attribute DOMHighResTimeStamp firstInterimResponseStart;
++    readonly attribute DOMHighResTimeStamp finalResponseHeadersStart;
+     readonly attribute DOMHighResTimeStamp responseEnd;
+     readonly attribute unsigned long long  transferSize;
+     readonly attribute unsigned long long  encodedBodySize;
+     readonly attribute unsigned long long  decodedBodySize;
+     readonly attribute unsigned short responseStatus;
+-    readonly attribute RenderBlockingStatusType renderBlockingStatus;
+-    readonly attribute DOMString contentType;
++    // https://w3c.github.io/server-timing/#extension-to-the-performanceresourcetiming-interface
++    readonly attribute FrozenArray<PerformanceServerTiming> serverTiming;
+     [Default] object toJSON();
+ };
+diff --git a/Libraries/LibWeb/ServerTiming/PerformanceServerTiming.cpp b/Libraries/LibWeb/ServerTiming/PerformanceServerTiming.cpp
+new file mode 100644
+index 0000000000..67834d267c
+--- /dev/null
++++ b/Libraries/LibWeb/ServerTiming/PerformanceServerTiming.cpp
+@@ -0,0 +1,119 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <AK/CharacterTypes.h>
++#include <AK/GenericLexer.h>
++#include <AK/StringBuilder.h>
++#include <LibGC/Heap.h>
++#include <LibWeb/ServerTiming/PerformanceServerTiming.h>
++
++namespace Web::ServerTiming {
++
++GC_DEFINE_ALLOCATOR(PerformanceServerTiming);
++
++GC::Ref<PerformanceServerTiming> PerformanceServerTiming::create(String name, HighResolutionTime::DOMHighResTimeStamp duration, String description)
++{
++    return GC::Heap::the().allocate<PerformanceServerTiming>(move(name), duration, move(description));
++}
++
++PerformanceServerTiming::PerformanceServerTiming(String name, HighResolutionTime::DOMHighResTimeStamp duration, String description)
++    : m_name(move(name))
++    , m_duration(duration)
++    , m_description(move(description))
++{
++}
++
++PerformanceServerTiming::~PerformanceServerTiming() = default;
++
++static bool is_token_character(u32 c)
++{
++    // https://httpwg.org/specs/rfc9110.html#tokens
++    return is_ascii_alphanumeric(c) || "!#$%&'*+-.^_`|~"sv.contains(static_cast<char>(c));
++}
++
++static void skip_ows(GenericLexer& lexer)
++{
++    lexer.ignore_while([](char c) { return c == ' ' || c == '\t'; });
++}
++
++static StringView consume_token(GenericLexer& lexer)
++{
++    return lexer.consume_while([](char c) { return is_token_character(static_cast<u8>(c)); });
++}
++
++// token / quoted-string; a malformed value is empty.
++static Optional<String> consume_value(GenericLexer& lexer)
++{
++    if (lexer.next_is('"')) {
++        lexer.ignore();
++        StringBuilder builder;
++        while (!lexer.is_eof()) {
++            char c = lexer.consume();
++            if (c == '"')
++                return MUST(builder.to_string());
++            if (c == '\\') {
++                if (lexer.is_eof())
++                    return {};
++                c = lexer.consume();
++            }
++            builder.append(c);
++        }
++        return {};
++    }
++    return MUST(String::from_utf8(consume_token(lexer)));
++}
++
++// https://w3c.github.io/server-timing/#dfn-server-timing-header-parsing-algorithm
++// The header's grammar: #server-timing-metric, server-timing-metric = metric-name *( OWS ";" OWS server-timing-param ),
++// server-timing-param = server-timing-param-name OWS "=" OWS server-timing-param-value. The first "dur" and the first
++// "desc" of a metric count; a metric whose name is not a token is skipped, as the rest of its list entry.
++Vector<GC::Ref<PerformanceServerTiming>> PerformanceServerTiming::parse_header_values(Vector<String> const& values)
++{
++    Vector<GC::Ref<PerformanceServerTiming>> metrics;
++    for (auto const& value : values) {
++        GenericLexer lexer { value.bytes_as_string_view() };
++        while (!lexer.is_eof()) {
++            skip_ows(lexer);
++            auto name = consume_token(lexer);
++            bool ok = !name.is_empty();
++            Optional<double> duration;
++            Optional<String> description;
++            while (ok) {
++                skip_ows(lexer);
++                if (!lexer.next_is(';'))
++                    break;
++                lexer.ignore();
++                skip_ows(lexer);
++                auto param = consume_token(lexer);
++                skip_ows(lexer);
++                Optional<String> param_value;
++                if (lexer.next_is('=')) {
++                    lexer.ignore();
++                    skip_ows(lexer);
++                    param_value = consume_value(lexer);
++                }
++                if (param.equals_ignoring_ascii_case("dur"sv) && !duration.has_value()) {
++                    duration = param_value.has_value() ? param_value->to_number<double>(TrimWhitespace::No).value_or(0) : 0;
++                } else if (param.equals_ignoring_ascii_case("desc"sv) && !description.has_value()) {
++                    description = param_value.value_or({});
++                }
++            }
++            skip_ows(lexer);
++            if (!lexer.is_eof() && !lexer.next_is(',')) {
++                // Not a well-formed metric: drop the rest of this entry.
++                ok = false;
++                lexer.ignore_until(',');
++            }
++            if (lexer.next_is(','))
++                lexer.ignore();
++            if (ok)
++                metrics.append(create(MUST(String::from_utf8(name)), duration.value_or(0), description.value_or({})));
++        }
++    }
++    return metrics;
++}
++
++}
+diff --git a/Libraries/LibWeb/ServerTiming/PerformanceServerTiming.h b/Libraries/LibWeb/ServerTiming/PerformanceServerTiming.h
+new file mode 100644
+index 0000000000..023795df05
+--- /dev/null
++++ b/Libraries/LibWeb/ServerTiming/PerformanceServerTiming.h
+@@ -0,0 +1,41 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/String.h>
++#include <LibWeb/Bindings/Wrappable.h>
++#include <LibWeb/Forward.h>
++#include <LibWebCommon/HighResolutionTime/DOMHighResTimeStamp.h>
++
++namespace Web::ServerTiming {
++
++// https://w3c.github.io/server-timing/#the-performanceservertiming-interface
++class WEB_API PerformanceServerTiming final : public Bindings::GCAllocatedWrappable {
++    WEB_WRAPPABLE(PerformanceServerTiming, Bindings::GCAllocatedWrappable);
++    GC_DECLARE_ALLOCATOR(PerformanceServerTiming);
++
++public:
++    static GC::Ref<PerformanceServerTiming> create(String name, HighResolutionTime::DOMHighResTimeStamp duration, String description);
++    virtual ~PerformanceServerTiming() override;
++
++    String const& name() const { return m_name; }
++    HighResolutionTime::DOMHighResTimeStamp duration() const { return m_duration; }
++    String const& description() const { return m_description; }
++
++    // https://w3c.github.io/server-timing/#dfn-server-timing-header-parsing-algorithm
++    // Parses the Server-Timing header values of a response into its metrics.
++    static Vector<GC::Ref<PerformanceServerTiming>> parse_header_values(Vector<String> const&);
++
++private:
++    PerformanceServerTiming(String name, HighResolutionTime::DOMHighResTimeStamp duration, String description);
++
++    String m_name;
++    HighResolutionTime::DOMHighResTimeStamp m_duration { 0 };
++    String m_description;
++};
++
++}
+diff --git a/Libraries/LibWeb/ServerTiming/PerformanceServerTiming.idl b/Libraries/LibWeb/ServerTiming/PerformanceServerTiming.idl
+new file mode 100644
+index 0000000000..9856fe8246
+--- /dev/null
++++ b/Libraries/LibWeb/ServerTiming/PerformanceServerTiming.idl
+@@ -0,0 +1,8 @@
++// https://w3c.github.io/server-timing/#the-performanceservertiming-interface
++[Exposed=(Window,Worker)]
++interface PerformanceServerTiming {
++    readonly attribute DOMString name;
++    readonly attribute DOMHighResTimeStamp duration;
++    readonly attribute DOMString description;
++    [Default] object toJSON();
++};
+diff --git a/Libraries/LibWeb/idl_files.cmake b/Libraries/LibWeb/idl_files.cmake
+index d4d362758b..8c5c13234c 100644
+--- a/Libraries/LibWeb/idl_files.cmake
++++ b/Libraries/LibWeb/idl_files.cmake
+@@ -436,6 +436,9 @@ libweb_js_bindings(ResizeObserver/ResizeObserver)
+ libweb_js_bindings(ResizeObserver/ResizeObserverEntry)
+ libweb_js_bindings(ResizeObserver/ResizeObserverSize)
+ libweb_js_bindings(ResourceTiming/PerformanceResourceTiming)
++libweb_js_bindings(ServerTiming/PerformanceServerTiming)
++libweb_js_bindings(PaintTiming/PerformancePaintTiming)
++libweb_js_bindings(HTML/VisibilityStateEntry)
+ libweb_js_bindings(Selection/Selection)
+ libweb_js_bindings(Serial/Serial)
+ libweb_js_bindings(Serial/SerialPort)
+diff --git a/Libraries/LibWebCommon/MimeSniff/MimeType.cpp b/Libraries/LibWebCommon/MimeSniff/MimeType.cpp
+index 414d7f1f64..241b6f1ad6 100644
+--- a/Libraries/LibWebCommon/MimeSniff/MimeType.cpp
++++ b/Libraries/LibWebCommon/MimeSniff/MimeType.cpp
+@@ -7,6 +7,7 @@
+  * SPDX-License-Identifier: BSD-2-Clause
+  */
+ 
++#include <AK/Array.h>
+ #include <AK/CharacterTypes.h>
+ #include <AK/GenericLexer.h>
+ #include <AK/String.h>
+@@ -610,7 +611,21 @@ String minimise_a_supported_mime_type(MimeType const& mime_type)
+     if (mime_type.is_xml())
+         return "application/xml"_string;
+ 
+-    // FIXME: 5. If mimeType is supported by the user agent, then return mimeType’s essence.
++    // 5. If mimeType is supported by the user agent, then return mimeType’s essence.
++    // NB: The types the engine renders, decodes or plays itself.
++    static constexpr Array supported_essences {
++        "text/html"sv, "text/css"sv, "text/plain"sv, "text/vtt"sv,
++        "image/png"sv, "image/apng"sv, "image/jpeg"sv, "image/gif"sv, "image/webp"sv, "image/bmp"sv, "image/avif"sv,
++        "image/x-icon"sv, "image/vnd.microsoft.icon"sv,
++        "font/woff"sv, "font/woff2"sv, "font/ttf"sv, "font/otf"sv,
++        "audio/mpeg"sv, "audio/ogg"sv, "audio/wav"sv, "audio/webm"sv, "audio/mp4"sv, "audio/flac"sv,
++        "video/mp4"sv, "video/webm"sv, "video/ogg"sv,
++        "application/pdf"sv, "application/wasm"sv
++    };
++    for (auto essence : supported_essences) {
++        if (mime_type.essence() == essence)
++            return MUST(String::from_utf8(essence));
++    }
+ 
+     // 6. Return the empty string.
+     return {};
+-- 
+2.50.1 (Apple Git-155)
+

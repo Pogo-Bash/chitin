@@ -1,0 +1,164 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+     Copyright (c) 2026 [OWNER NAME]
+     Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
+     WebCrypto settlement order and the HTML event loop's microtask checkpoints (docs/crypto.md). Each scenario starts in
+     a task of its own after the previous one is quiet; its log is put to `seen` as name=JSON, done=1 last. Chrome on the
+     same file is the reference (tests/chrome/run.mjs group "subtle", tests/subtle.test.mjs). -->
+<html><head><title>subtle</title></head>
+<body>
+<script>
+var seen = [];
+var logs = {};
+function put(name, v) { seen.push(name + '=' + JSON.stringify(v)); }
+function hex(b) { return Array.prototype.map.call(new Uint8Array(b), function (x) { return (x < 16 ? '0' : '') + x.toString(16); }).join(''); }
+function bytes(n, seed) { var a = new Uint8Array(n); for (var i = 0; i < n; i++) a[i] = (i * 31 + seed) & 255; return a; }
+function quiet(ms) { return new Promise(function (r) { setTimeout(r, ms || 300); }); }
+function errName(f) { try { f(); return 'none'; } catch (e) { return e.name; } }
+var enc = new TextEncoder();
+
+// Two timers, each with a promise reaction and a queueMicrotask, a MessageChannel ping-pong doing the same per message:
+// every task's microtasks run before the next task (HTML "perform a microtask checkpoint").
+function tasks() {
+    var log = []; logs.tasks = log;
+    function task(name) { log.push(name); Promise.resolve().then(function () { log.push(name + '.p'); Promise.resolve().then(function () { log.push(name + '.pp'); }); }); queueMicrotask(function () { log.push(name + '.q'); }); }
+    setTimeout(function () { task('T1'); }, 0);
+    setTimeout(function () { task('T2'); }, 0);
+    var ch = new MessageChannel(), n = 0;
+    ch.port1.onmessage = function (e) { task('A' + e.data); if (e.data < 3) ch.port1.postMessage(e.data + 1); };
+    ch.port2.onmessage = function (e) { task('B' + e.data); ch.port2.postMessage(e.data); };
+    ch.port2.postMessage(0);
+    ch.port1.postMessage(1);
+    setTimeout(function () { task('T3'); setTimeout(function () { task('T4'); }, 0); }, 0);
+    task('S');
+    return quiet(400).then(function () { put('tasks', log); });
+}
+
+// Two event listeners on one event: microtasks between them when dispatched by the engine (a click from the platform is a
+// task) and none when dispatched from script.
+function listeners() {
+    var log = []; logs.listeners = log;
+    var t = document.createElement('div'); document.body.appendChild(t);
+    function l(name) { return function () { log.push(name); Promise.resolve().then(function () { log.push(name + '.p'); }); }; }
+    t.addEventListener('x', l('L1')); t.addEventListener('x', l('L2'));
+    t.dispatchEvent(new Event('x'));
+    log.push('after-dispatch');
+    return quiet(100).then(function () { put('listeners', log); });
+}
+
+var aesKey, hmacKey, pbkdfKey, ct, iv = bytes(12, 7);
+function keys() {
+    return Promise.all([
+        crypto.subtle.importKey('raw', bytes(16, 1), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']),
+        crypto.subtle.importKey('raw', bytes(32, 2), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']),
+        crypto.subtle.importKey('raw', enc.encode('password'), 'PBKDF2', false, ['deriveBits']),
+    ]).then(function (k) {
+        aesKey = k[0]; hmacKey = k[1]; pbkdfKey = k[2];
+        return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, aesKey, bytes(1000, 3));
+    }).then(function (c) { ct = c; });
+}
+
+// Many operations of mixed size and kind started in one task, with a microtask, a timer, a message and a frame request.
+function order(name, rafToo) {
+    var log = []; logs[name] = log;
+    function settle(label) { return function (v) { log.push(label); Promise.resolve().then(function () { log.push(label + '.p'); }); }; }
+    function fail(label) { return function (e) { log.push(label + ':' + e.name); }; }
+    var ops = [
+        ['d256-1M', function () { return crypto.subtle.digest('SHA-256', bytes(1 << 20, 1)); }],
+        ['d1-16', function () { return crypto.subtle.digest('SHA-1', bytes(16, 2)); }],
+        ['dMD5', function () { return crypto.subtle.digest('MD5', bytes(16, 2)); }],
+        ['d512-64K', function () { return crypto.subtle.digest({ name: 'SHA-512' }, bytes(65536, 3)); }],
+        ['imp', function () { return crypto.subtle.importKey('raw', bytes(32, 4), 'AES-GCM', true, ['encrypt']); }],
+        ['gen', function () { return crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, true, ['sign']); }],
+        ['enc-256K', function () { return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, aesKey, bytes(262144, 5)); }],
+        ['dec', function () { return crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, aesKey, ct); }],
+        ['decBad', function () { return crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes(12, 9) }, aesKey, ct); }],
+        ['sign', function () { return crypto.subtle.sign('HMAC', hmacKey, bytes(32, 6)); }],
+        ['signWrongKey', function () { return crypto.subtle.sign('HMAC', aesKey, bytes(32, 6)); }],
+        ['pbkdf2', function () { return crypto.subtle.deriveBits({ name: 'PBKDF2', salt: bytes(16, 8), iterations: 1000, hash: 'SHA-256' }, pbkdfKey, 256); }],
+        ['d384-0', function () { return crypto.subtle.digest('SHA-384', new Uint8Array(0)); }],
+    ];
+    queueMicrotask(function () { log.push('q'); });
+    ops.forEach(function (op) { op[1]().then(settle(op[0]), fail(op[0])); });
+    Promise.resolve().then(function () { log.push('p'); });
+    setTimeout(function () { log.push('T'); }, 0);
+    var ch = new MessageChannel(); ch.port1.onmessage = function () { log.push('M'); }; ch.port2.postMessage(0);
+    if (rafToo) requestAnimationFrame(function () { log.push('R'); });
+    log.push('sync-end');
+    return quiet(1500).then(function () { put(name, log); });
+}
+
+// Many digests of one kind back to back: each its own task, in call order.
+function digests() {
+    var log = []; logs.digests = log;
+    var sizes = [1 << 20, 1, 300000, 0, 4096, 2 << 20, 17, 65536];
+    var algs = ['SHA-256', 'SHA-1', 'SHA-512', 'SHA-384'];
+    sizes.forEach(function (n, i) {
+        crypto.subtle.digest(algs[i % 4], bytes(n, i)).then(function (h) { log.push(i + ':' + hex(h).slice(0, 8)); queueMicrotask(function () { log.push(i + '.q'); }); });
+    });
+    log.push('sync-end');
+    return quiet(1500).then(function () { put('digests', log); });
+}
+
+// The bytes are copied when the call is made: changing the input after the call does not change the answer.
+function copies() {
+    var a = bytes(100000, 11), b = bytes(64, 12), c = bytes(1000, 13);
+    var want = Promise.all([crypto.subtle.digest('SHA-256', a.slice()), crypto.subtle.sign('HMAC', hmacKey, b.slice()), crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, aesKey, c.slice())]);
+    var ivm = iv.slice();
+    var got = Promise.all([crypto.subtle.digest('SHA-256', a), crypto.subtle.sign('HMAC', hmacKey, b), crypto.subtle.encrypt({ name: 'AES-GCM', iv: ivm }, aesKey, c)]);
+    a.fill(0); b.fill(0); c.fill(0); ivm.fill(0);
+    var dv = new DataView(bytes(32, 14).buffer, 4, 8), dwant = crypto.subtle.digest('SHA-1', new Uint8Array(dv.buffer, 4, 8).slice());
+    var dgot = crypto.subtle.digest('SHA-1', dv); new Uint8Array(dv.buffer).fill(255);
+    return Promise.all([want, got, dwant, dgot]).then(function (r) {
+        put('copies', [hex(r[0][0]) === hex(r[1][0]), hex(r[0][1]) === hex(r[1][1]), hex(r[0][2]) === hex(r[1][2]), hex(r[2]) === hex(r[3])]);
+    });
+}
+
+// Results: values, error names, what the promise is and when it settles relative to the call.
+function shapes() {
+    var out = {};
+    var r = new Uint8Array(16);
+    out.grvSame = crypto.getRandomValues(r) === r;
+    out.grvTypes = ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'BigInt64Array', 'BigUint64Array', 'Float32Array', 'Float64Array', 'DataView'].map(function (t) {
+        return t + ':' + errName(function () { crypto.getRandomValues(t === 'DataView' ? new DataView(new ArrayBuffer(8)) : new self[t](4)); });
+    });
+    out.grvQuota = [errName(function () { crypto.getRandomValues(new Uint8Array(65536)); }), errName(function () { crypto.getRandomValues(new Uint8Array(65537)); }), errName(function () { crypto.getRandomValues(new Uint32Array(16385)); })];
+    try { crypto.getRandomValues(new Uint8Array(65537)); } catch (e) { out.grvQuotaMsg = e.message; out.grvQuotaCode = e.code; }
+    out.grvMsgs = [new DataView(new ArrayBuffer(8)), new Float32Array(2), new Uint8Array(70000), new BigInt64Array(9000)].map(function (a) { try { crypto.getRandomValues(a); return 'none'; } catch (e) { return e.name + ': ' + e.message; } });
+    out.grvArgs = [errName(function () { crypto.getRandomValues(); }), errName(function () { crypto.getRandomValues(null); }), errName(function () { crypto.getRandomValues([1, 2]); }), errName(function () { crypto.getRandomValues(new ArrayBuffer(4)); })];
+    out.grvEmpty = crypto.getRandomValues(new Uint8Array(0)).length;
+    var u = crypto.randomUUID();
+    out.uuid = [typeof u, u.length, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(u), crypto.randomUUID() !== u];
+    out.lengths = [crypto.getRandomValues.length, crypto.randomUUID.length, crypto.subtle.digest.length, crypto.subtle.encrypt.length, crypto.subtle.importKey.length, crypto.subtle.generateKey.length, crypto.subtle.deriveBits.length, crypto.subtle.sign.length];
+    out.tags = [Object.prototype.toString.call(crypto), Object.prototype.toString.call(crypto.subtle), crypto.subtle === crypto.subtle, crypto.subtle instanceof SubtleCrypto, crypto instanceof Crypto, typeof CryptoKey];
+    out.subtleNew = errName(function () { new SubtleCrypto(); });
+    out.cryptoOwn = Object.getOwnPropertyNames(Crypto.prototype).sort();
+    out.subtleOwn = Object.getOwnPropertyNames(SubtleCrypto.prototype).sort();
+    var p = crypto.subtle.digest('SHA-256', new Uint8Array(1));
+    out.promise = [p instanceof Promise, Object.getPrototypeOf(p) === Promise.prototype];
+    var p2 = crypto.subtle.digest('nope', new Uint8Array(1));
+    var log = [];
+    p2.catch(function (e) { log.push('rej:' + e.name); });
+    Promise.resolve().then(function () { log.push('p'); });
+    p.then(function (b) { log.push('ok:' + (b instanceof ArrayBuffer) + ':' + b.byteLength); });
+    log.push('sync');
+    return quiet(300).then(function () { out.when = log; put('shapes', out); });
+}
+
+async function run() {
+    try {
+        await keys();
+        await quiet(100);
+        await tasks();
+        await listeners();
+        await order('order', false);
+        await order('orderRaf', true);
+        await digests();
+        await copies();
+        await shapes();
+    } catch (e) { put('error', String(e && e.stack || e)); }
+    put('done', 1);
+}
+setTimeout(run, 50);
+</script>
+</body></html>

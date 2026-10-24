@@ -1,0 +1,6 @@
+<!doctype html>
+<title>cache</title>
+<script>
+navigator.serviceWorker.addEventListener('message', (e) => { document.title = 'done:' + e.data; });
+navigator.serviceWorker.register('cache-sw.js').then(() => navigator.serviceWorker.ready).then((reg) => reg.active.postMessage('go'), (e) => { document.title = 'error:' + e; });
+</script>

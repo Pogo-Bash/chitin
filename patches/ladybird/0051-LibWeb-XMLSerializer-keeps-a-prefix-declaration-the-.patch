@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 19:47:14 -0500
+Subject: [PATCH 51/56] LibWeb: XMLSerializer keeps a prefix declaration the
+ element itself makes, and a ShadowRoot's nodeName is #document-fragment
+
+The xmlns attribute step's three conditions are one: a declaration is skipped only when it is not the element's own (absent from the local prefixes map, or another value) and the prefix is already in the map for that namespace. Recording the element's namespace information had already put its own declaration in the map, so <root xmlns:q=...> lost it. A ShadowRoot is a DocumentFragment and has its nodeName, as in Chrome and Firefox.
+---
+ Libraries/LibWeb/DOM/ShadowRoot.h       |  3 ++-
+ Libraries/LibWeb/HTML/XMLSerializer.cpp | 19 ++++++++-----------
+ 2 files changed, 10 insertions(+), 12 deletions(-)
+
+diff --git a/Libraries/LibWeb/DOM/ShadowRoot.h b/Libraries/LibWeb/DOM/ShadowRoot.h
+index 9f34777be1..4cb8cd8d76 100644
+--- a/Libraries/LibWeb/DOM/ShadowRoot.h
++++ b/Libraries/LibWeb/DOM/ShadowRoot.h
+@@ -140,7 +140,8 @@ private:
+     ShadowRoot(Document&, Element& host, ShadowRootMode);
+ 
+     // ^Node
+-    virtual Utf16FlyString node_name() const override { return "#shadow-root"_utf16_fly_string; }
++    // https://dom.spec.whatwg.org/#dom-node-nodename: a ShadowRoot is a DocumentFragment, so its nodeName is DocumentFragment's
++    // ("#document-fragment"), as in Chrome and Firefox.
+     virtual bool is_shadow_root() const final { return true; }
+     virtual void adopted_from(Document&) override;
+ 
+diff --git a/Libraries/LibWeb/HTML/XMLSerializer.cpp b/Libraries/LibWeb/HTML/XMLSerializer.cpp
+index a361aca942..34a37eefac 100644
+--- a/Libraries/LibWeb/HTML/XMLSerializer.cpp
++++ b/Libraries/LibWeb/HTML/XMLSerializer.cpp
+@@ -405,22 +405,19 @@ static WebIDL::ExceptionOr<Utf16String> serialize_element_attributes(DOM::Elemen
+                     continue;
+ 
+                 // - the attr's prefix is not null and either
++                //   - the attr's localName is not a key contained in the local prefixes map, or
++                //   - the attr's localName is present in the local prefixes map but the value of the key does not match attr's value
++                //   and furthermore that the attr's localName (as the prefix to find) is found in the namespace prefix map given the namespace consisting of the attr's value
++                //   (the current namespace prefix definition was exactly defined previously--on an ancestor element not the current element whose attributes are being processed).
++                // These three are one condition: a declaration this element itself makes (its localName is in the local prefixes map with
++                // this value) is kept even though recording it already put it in the namespace prefix map.
+                 if (attribute->prefix().has_value()) {
+-                    // - the attr's localName is not a key contained in the local prefixes map, or
+                     auto name_in_local_prefix_map_iterator = local_prefixes_map.find(attribute->local_name());
+-                    if (name_in_local_prefix_map_iterator == local_prefixes_map.end())
+-                        continue;
+-
+-                    // - the attr's localName is present in the local prefixes map but the value of the key does not match attr's value
+-                    if (name_in_local_prefix_map_iterator->value != attribute_value_namespace)
++                    bool not_declared_here = name_in_local_prefix_map_iterator == local_prefixes_map.end() || name_in_local_prefix_map_iterator->value != attribute_value_namespace;
++                    if (not_declared_here && prefix_is_in_prefix_map(attribute->local_name(), namespace_prefix_map, attribute_value_namespace))
+                         continue;
+                 }
+ 
+-                // and furthermore that the attr's localName (as the prefix to find) is found in the namespace prefix map given the namespace consisting of the attr's value
+-                // (the current namespace prefix definition was exactly defined previously--on an ancestor element not the current element whose attributes are being processed).
+-                if (prefix_is_in_prefix_map(attribute->local_name(), namespace_prefix_map, attribute_value_namespace))
+-                    continue;
+-
+                 // 2. If the require well-formed flag is set (its value is true), and the value of attr's value attribute matches the XMLNS namespace,
+                 //    then throw an exception; the serialization of this attribute would produce invalid XML because the XMLNS namespace is reserved and cannot be applied as an element's namespace via XML parsing.
+                 if (require_well_formed == RequireWellFormed::Yes && attribute->value() == Namespace::XMLNS)
+-- 
+2.50.1 (Apple Git-155)
+

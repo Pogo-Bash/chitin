@@ -1,0 +1,378 @@
+From 0732a858da62316596b533e2eb85aaa53f442daa Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 13:02:19 -0500
+Subject: [PATCH] LibWeb: WebGL image sources upload through a WebGL executor's
+ own upload
+
+An executor whose GL is WebGL itself (an embedder without a GPU process) uploads TexImageSource pixels (img, canvas,
+video, ImageData, ImageBitmap) with the host's own TexImageSource texImage2D/texSubImage2D/texImage3D/texSubImage3D:
+the source's pixels go to it as unpremultiplied RGBA8, and the host converts them to every format and type WebGL
+takes, flips and premultiplies as the unpack state says and applies the WebGL 2 unpack sub-rectangle. The Skia export
+lost colour under zero alpha, turned LUMINANCE into luma, had no LUMINANCE_ALPHA, 5_5_5_1 or WebGL 2 formats (5_5_5_1
+stopped the engine). UNPACK_PREMULTIPLY_ALPHA_WEBGL is ignored for an ImageBitmap, as the spec says.
+texImage2D with null pixels sizes its zeroed data by the unpack alignment (an RGB 2x2 upload was INVALID_OPERATION).
+Deleting a buffer unbinds it everywhere; bindBufferBase/Range also bind the generic binding point; any buffer may be
+bound to the copy targets.
+createImageBitmap honours imageOrientation (flipY, and Chrome's "none") and premultiplyAlpha (none keeps the colours
+unpremultiplied; default and premultiply premultiply), and takes a video's current frame.
+---
+ Libraries/LibWeb/HTML/ImageBitmap.idl         |  6 +-
+ .../LibWeb/HTML/WindowOrWorkerGlobalScope.cpp | 65 +++++++++++++++--
+ .../WebGL/WebGL2RenderingContextImpl.cpp      | 10 +++
+ Libraries/LibWeb/WebGL/WebGLBuffer.cpp        |  5 ++
+ .../WebGL/WebGLRenderingContextBase.cpp       | 10 ++-
+ .../WebGL/WebGLRenderingContextImpl.cpp       | 11 +++
+ .../WebGL/WebGLRenderingContextOverloads.cpp  |  3 +
+ Services/Compositor/HostWebGLContext.cpp      | 69 ++++++++++++++++++-
+ 8 files changed, 166 insertions(+), 13 deletions(-)
+
+diff --git a/Libraries/LibWeb/HTML/ImageBitmap.idl b/Libraries/LibWeb/HTML/ImageBitmap.idl
+index 7a5f91827e..f7655797b0 100644
+--- a/Libraries/LibWeb/HTML/ImageBitmap.idl
++++ b/Libraries/LibWeb/HTML/ImageBitmap.idl
+@@ -12,14 +12,14 @@ typedef (CanvasImageSource or
+          Blob or
+          ImageData) ImageBitmapSource;
+ 
+-enum ImageOrientation { "from-image", "flipY" };
++enum ImageOrientation { "from-image", "flipY", "none" };
+ enum PremultiplyAlpha { "none", "premultiply", "default" };
+ enum ColorSpaceConversion { "none", "default" };
+ enum ResizeQuality { "pixelated", "low", "medium", "high" };
+ 
+ dictionary ImageBitmapOptions {
+-    // FIXME: ImageOrientation imageOrientation = "from-image";
+-    // FIXME: PremultiplyAlpha premultiplyAlpha = "default";
++    ImageOrientation imageOrientation = "from-image";
++    PremultiplyAlpha premultiplyAlpha = "default";
+     // FIXME: ColorSpaceConversion colorSpaceConversion = "default";
+     [EnforceRange] unsigned long resizeWidth;
+     [EnforceRange] unsigned long resizeHeight;
+diff --git a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp
+index cfae4731fc..e1726d7894 100644
+--- a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp
++++ b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp
+@@ -43,6 +43,7 @@
+ #include <LibWeb/HTML/EventLoop/EventLoop.h>
+ #include <LibWeb/HTML/EventSource.h>
+ #include <LibWeb/HTML/HTMLImageElement.h>
++#include <LibWeb/HTML/HTMLVideoElement.h>
+ #include <LibWeb/HTML/LocalNavigable.h>
+ #include <LibWeb/HTML/OffscreenCanvas.h>
+ #include <LibWeb/HTML/PromiseRejectionEvent.h>
+@@ -413,11 +414,42 @@ static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> crop_to_the_source_rectangle_with_for
+         output = TRY(scale_bitmap(compositor_host, *output, size, scaling_pass.mode));
+     }
+ 
+-    // FIXME: 8. If the value of the imageOrientation member of options is "flipY", output must be flipped vertically,
++    // 8. If the value of the imageOrientation member of options is "flipY", output must be flipped vertically,
+     //  disregarding any image orientation metadata of the source (such as EXIF metadata), if any. [EXIF]
++    // 10. Let val be the value of premultiplyAlpha member of options: "premultiply" -> the color channels of output
++    //  are premultiplied by its alpha; "none" -> they are not; "default" -> implementation-specific (premultiplied, as
++    //  in Chrome).
++    // NOTE: Both are done in one pass over the pixels; the format stays the input's, only the alpha type may change.
++    auto flip = options.image_orientation == Bindings::ImageOrientation::FlipY;
++    auto alpha_type = options.premultiply_alpha == Bindings::PremultiplyAlpha::None ? Gfx::AlphaType::Unpremultiplied : Gfx::AlphaType::Premultiplied;
++    if (flip || alpha_type != output->alpha_type()) {
++        auto converted = TRY(Gfx::Bitmap::create(output->format(), alpha_type, output->size()));
++        auto has_alpha = output->format() == Gfx::BitmapFormat::BGRA8888 || output->format() == Gfx::BitmapFormat::RGBA8888;
++        auto unpremultiply = has_alpha && output->alpha_type() == Gfx::AlphaType::Premultiplied && alpha_type == Gfx::AlphaType::Unpremultiplied;
++        auto premultiply = has_alpha && output->alpha_type() == Gfx::AlphaType::Unpremultiplied && alpha_type == Gfx::AlphaType::Premultiplied;
++        for (int y = 0; y < output->height(); ++y) {
++            auto* source_row = output->scanline(y);
++            auto* target_row = converted->scanline(flip ? output->height() - 1 - y : y);
++            for (int x = 0; x < output->width(); ++x) {
++                u32 pixel = source_row[x];
++                u32 a = pixel >> 24;
++                if ((unpremultiply || premultiply) && a != 255) {
++                    // Every format here keeps alpha in the top byte and the colour channels in the three below.
++                    u32 result = pixel & 0xff000000;
++                    for (int shift = 0; shift < 24; shift += 8) {
++                        u32 c = (pixel >> shift) & 0xff;
++                        c = unpremultiply ? (a ? min(255u, (c * 255 + a / 2) / a) : 0) : (c * a + 127) / 255;
++                        result |= c << shift;
++                    }
++                    pixel = result;
++                }
++                target_row[x] = pixel;
++            }
++        }
++        output = move(converted);
++    }
+     // FIXME: 9. If image is an img element or a Blob object, let val be the value of the colorSpaceConversion member
+     //  of options, and then run these substeps:
+-    // FIXME: 10. Let val be the value of premultiplyAlpha member of options, and then run these substeps:
+ 
+     // 11. Return output.
+     return output;
+@@ -613,11 +645,30 @@ void WindowOrWorkerGlobalScopeMixin::create_image_bitmap_impl(JS::Realm& realm,
+                     }));
+                 },
+                 // -> video
+-                [&](GC::Ref<HTMLVideoElement>) {
+-                    dbgln("(STUBBED) createImageBitmap() for HTMLVideoElement");
+-                    auto const error = JS::Error::create(realm, "Not Implemented: createImageBitmap() for HTMLVideoElement"sv);
+-                    TemporaryExecutionContext const context { WebIDL::promise_realm(*p), TemporaryExecutionContext::CallbacksEnabled::Yes };
+-                    WebIDL::reject_promise(*p, error);
++                [&](GC::Ref<HTMLVideoElement> video) {
++                    // 1. If image's networkState attribute is NETWORK_EMPTY, then return a promise rejected with an
++                    //    "InvalidStateError" DOMException. (A video with no current frame is rejected the same way.)
++                    auto frame = video->current_decoded_image_frame();
++                    if (video->network_state() == HTMLMediaElement::NetworkState::Empty || !frame.has_value()) {
++                        WebIDL::reject_promise(*p, WebIDL::InvalidStateError::create("The video has no current frame"_utf16));
++                        return;
++                    }
++                    // 2. Set imageBitmap's bitmap data to a copy of the frame at the current playback position, at the
++                    //    media resource's natural width and natural height, cropped to the source rectangle with formatting.
++                    RefPtr<Gfx::Bitmap const> frame_bitmap = &frame->bitmap();
++                    auto cropped_bitmap_or_error = crop_to_the_source_rectangle_with_formatting(compositor_host_for(realm.global_object()), frame_bitmap, sx, sy, sw, sh, options);
++                    if (cropped_bitmap_or_error.is_error()) {
++                        WebIDL::reject_promise(*p, WebIDL::InvalidStateError::create("Image size is invalid"_utf16));
++                        return;
++                    }
++                    image_bitmap->set_bitmap(cropped_bitmap_or_error.release_value());
++
++                    // 3. Queue a global task, using the bitmap task source, to resolve promise with imageBitmap.
++                    queue_global_task(Task::Source::BitmapTask, realm.global_object(), GC::create_function(GC::Heap::the(), [p, image_bitmap] {
++                        auto& realm = WebIDL::promise_realm(*p);
++                        TemporaryExecutionContext const context { realm, TemporaryExecutionContext::CallbacksEnabled::Yes };
++                        Bindings::resolve_image_bitmap_promise(realm, *p, image_bitmap);
++                    }));
+                 },
+                 // -> img
+                 // -> SVG image
+diff --git a/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp b/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp
+index bcd6cf6e31..2d78223e65 100644
+--- a/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp
++++ b/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp
+@@ -1144,6 +1144,11 @@ void WebGL2RenderingContextImpl::bind_buffer_base(WebIDL::UnsignedLong target, W
+         }
+     }
+     m_indexed_buffer_bindings.set((static_cast<u64>(target) << 32) | index, buffer);
++    // The indexed binding also binds the target's generic binding point (GLES 3.0 2.10.1.1).
++    if (target == GL_UNIFORM_BUFFER)
++        m_uniform_buffer_binding = buffer;
++    else if (target == GL_TRANSFORM_FEEDBACK_BUFFER)
++        m_transform_feedback_buffer_binding = buffer;
+     m_context->bind_buffer_base(target, index, buffer_handle);
+ }
+ 
+@@ -1166,6 +1171,11 @@ void WebGL2RenderingContextImpl::bind_buffer_range(WebIDL::UnsignedLong target,
+         }
+     }
+     m_indexed_buffer_bindings.set((static_cast<u64>(target) << 32) | index, buffer);
++    // The indexed binding also binds the target's generic binding point (GLES 3.0 2.10.1.1).
++    if (target == GL_UNIFORM_BUFFER)
++        m_uniform_buffer_binding = buffer;
++    else if (target == GL_TRANSFORM_FEEDBACK_BUFFER)
++        m_transform_feedback_buffer_binding = buffer;
+     m_context->bind_buffer_range(target, index, buffer_handle, offset, size);
+ }
+ 
+diff --git a/Libraries/LibWeb/WebGL/WebGLBuffer.cpp b/Libraries/LibWeb/WebGL/WebGLBuffer.cpp
+index 6cb44ad879..d405baf375 100644
+--- a/Libraries/LibWeb/WebGL/WebGLBuffer.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLBuffer.cpp
+@@ -8,6 +8,7 @@
+  */
+ 
+ #include <GLES2/gl2.h>
++#include <GLES3/gl3.h>
+ #include <LibJS/Runtime/Realm.h>
+ #include <LibWeb/Bindings/Intrinsics.h>
+ #include <LibWeb/Bindings/WebGLBuffer.h>
+@@ -38,6 +39,10 @@ bool WebGLBuffer::is_compatible_with(GLenum target)
+         return true;
+     }
+ 
++    // Any buffer may be bound to the copy targets (WebGL 2 only targets); binding there does not change its type.
++    if (target == GL_COPY_READ_BUFFER || target == GL_COPY_WRITE_BUFFER)
++        return true;
++
+     if (target == GL_ELEMENT_ARRAY_BUFFER)
+         return m_target.value() == GL_ELEMENT_ARRAY_BUFFER;
+ 
+diff --git a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
+index 6a8b4d29cc..854be51eaa 100644
+--- a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
+@@ -368,17 +368,23 @@ Optional<WebGLRenderingContextBase::TexImageSourceFrame> WebGLRenderingContextBa
+ 
+     // Validate the combination before recording; the pixels travel to the host as shared
+     // memory and the host performs the conversion next to GL.
+-    if (!texture_export_format(format, type).has_value())
++    // A WebGL executor converts with the host's own upload (every format and type WebGL takes; the host validates).
++    if (!executor_is_webgl() && !texture_export_format(format, type).has_value())
+         return OptionalNone {};
+ 
+     // FIXME: Respect unpackColorSpace
++    auto bitmap_is_premultiplied = frame->bitmap().alpha_type() == Gfx::AlphaType::Premultiplied;
+     return TexImageSourceFrame {
+         .frame = frame.release_value(),
+         // The first pixel transferred from the source to the WebGL implementation corresponds to the upper left corner of
+         // the source. This behavior is modified by the UNPACK_FLIP_Y_WEBGL pixel storage parameter, except for ImageBitmap
+         // arguments, as described in the abovementioned section.
+         .flip_y = m_unpack_flip_y && !source.has<GC::Ref<HTML::ImageBitmap>>(),
+-        .premultiply_alpha = m_unpack_premultiply_alpha,
++        // UNPACK_PREMULTIPLY_ALPHA_WEBGL is ignored for an ImageBitmap: its pixels go up as the bitmap holds them
++        // (premultiplied or not, as its premultiplyAlpha option made them).
++        .premultiply_alpha = source.has<GC::Ref<HTML::ImageBitmap>>()
++            ? bitmap_is_premultiplied
++            : m_unpack_premultiply_alpha,
+     };
+ }
+ 
+diff --git a/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp b/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp
+index 19c6006345..c62b04334c 100644
+--- a/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp
+@@ -516,6 +516,17 @@ void WebGLRenderingContextImpl::delete_buffer(GC::Ptr<WebGLBuffer> buffer)
+ 
+     auto handle = buffer_handle.value();
+     m_context->delete_buffers(1, &handle);
++
++    // Deleting a bound buffer resets every binding to it in this context (GLES 3.0 2.10.1, WebGL 2 5.1).
++    for (auto* binding : { &m_array_buffer_binding, &m_element_array_buffer_binding, &m_uniform_buffer_binding, &m_copy_read_buffer_binding,
++             &m_copy_write_buffer_binding, &m_transform_feedback_buffer_binding, &m_pixel_pack_buffer_binding, &m_pixel_unpack_buffer_binding }) {
++        if (*binding == buffer)
++            *binding = nullptr;
++    }
++    for (auto& indexed : m_indexed_buffer_bindings) {
++        if (indexed.value == buffer)
++            indexed.value = nullptr;
++    }
+ }
+ 
+ void WebGLRenderingContextImpl::delete_framebuffer(GC::Ptr<WebGLFramebuffer> framebuffer)
+diff --git a/Libraries/LibWeb/WebGL/WebGLRenderingContextOverloads.cpp b/Libraries/LibWeb/WebGL/WebGLRenderingContextOverloads.cpp
+index 01089b2537..eea060eaa5 100644
+--- a/Libraries/LibWeb/WebGL/WebGLRenderingContextOverloads.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLRenderingContextOverloads.cpp
+@@ -196,6 +196,9 @@ void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, We
+         return;
+     }
+ 
++    // The zeroed data is laid out as the unpack state says (rows padded to UNPACK_ALIGNMENT), as GL reads it.
++    if (auto size = required_2d_texture_data_size(width, height, format, type, m_unpack_state); size.has_value())
++        bytes = *size;
+     auto byte_buffer = MUST(ByteBuffer::create_zeroed(bytes.value_unchecked()));
+     m_context->tex_image2d_robust_angle(target, level, internalformat, width, height, border, format, type, byte_buffer.size(), byte_buffer.data());
+ }
+diff --git a/Services/Compositor/HostWebGLContext.cpp b/Services/Compositor/HostWebGLContext.cpp
+index 25f8079da4..69f46574df 100644
+--- a/Services/Compositor/HostWebGLContext.cpp
++++ b/Services/Compositor/HostWebGLContext.cpp
+@@ -20,6 +20,12 @@
+ // An embedder whose GL is WebGL keeps the page's UNPACK_FLIP_Y / PREMULTIPLY state on its host context, where it
+ // applies to array uploads; image uploads are converted here, so the embedder sets that state aside around them.
+ extern "C" void ganglion_host_webgl_bitmap_upload(int begin);
++// Such an embedder uploads image sources itself: the source's pixels as unpremultiplied RGBA8 go to the host's own
++// texImage2D/texSubImage2D/texImage3D/texSubImage3D taking an ImageData, which converts them to the format and type
++// (every one WebGL takes), flips and premultiplies as the flags say, and applies the unpack sub-rectangle, as the host
++// does for a page. call: 0 texImage2D, 1 texSubImage2D, 2 texImage3D, 3 texSubImage3D; width < 0: the source's size.
++extern "C" void ganglion_host_webgl_tex_source(int call, unsigned target, int level, int internalformat, int xoffset, int yoffset, int zoffset,
++    int width, int height, int depth, unsigned format, unsigned type, u8 const* rgba, int source_width, int source_height, int flip_y, int premultiply_alpha);
+ #endif
+ 
+ namespace Compositor {
+@@ -91,7 +97,52 @@ ErrorOr<void> HostWebGLContext::execute_commands(ReadonlyBytes bytes, Vector<Gfx
+     });
+ }
+ 
+-static ErrorOr<Gfx::BitmapExportResult> convert_bitmap_for_upload(Vector<Gfx::DecodedImageFrame> const& bitmaps, u32 bitmap_index, GLenum format, GLenum type, bool has_explicit_destination_size, GLsizei destination_width, GLsizei destination_height, bool flip_y, bool premultiply_alpha)
++#ifdef AK_OS_EMSCRIPTEN
++// The frame's pixels, top row first, as unpremultiplied RGBA8.
++static ErrorOr<ByteBuffer> unpremultiplied_rgba8(Gfx::Bitmap const& bitmap)
++{
++    auto width = bitmap.width();
++    auto height = bitmap.height();
++    auto buffer = TRY(ByteBuffer::create_uninitialized(static_cast<size_t>(width) * height * 4));
++    auto premultiplied = bitmap.alpha_type() == Gfx::AlphaType::Premultiplied;
++    auto* out = buffer.data();
++    for (int y = 0; y < height; ++y) {
++        for (int x = 0; x < width; ++x, out += 4) {
++            auto pixel = bitmap.get_pixel(x, y);
++            u8 r = pixel.red(), g = pixel.green(), b = pixel.blue(), a = pixel.alpha();
++            if (bitmap.format() == Gfx::BitmapFormat::BGRx8888 || bitmap.format() == Gfx::BitmapFormat::RGBx8888)
++                a = 255;
++            if (premultiplied && a != 255) {
++                auto unpremultiply = [a](u8 c) -> u8 { return a ? static_cast<u8>(min(255u, (c * 255u + a / 2) / a)) : 0; };
++                r = unpremultiply(r);
++                g = unpremultiply(g);
++                b = unpremultiply(b);
++            }
++            out[0] = r;
++            out[1] = g;
++            out[2] = b;
++            out[3] = a;
++        }
++    }
++    return buffer;
++}
++
++static ErrorOr<void> upload_through_host(int call, Vector<Gfx::DecodedImageFrame> const& bitmaps, u32 bitmap_index, unsigned target, int level, int internalformat,
++    int xoffset, int yoffset, int zoffset, bool has_explicit_destination_size, int width, int height, int depth, unsigned format, unsigned type, bool flip_y, bool premultiply_alpha)
++{
++    if (bitmap_index >= bitmaps.size())
++        return Error::from_string_literal("WebGL image upload references an out-of-range bitmap");
++    auto const& bitmap = bitmaps[bitmap_index].bitmap();
++    auto rgba = TRY(unpremultiplied_rgba8(bitmap));
++    if (!has_explicit_destination_size)
++        width = height = -1;
++    ganglion_host_webgl_tex_source(call, target, level, internalformat, xoffset, yoffset, zoffset, width, height, depth, format, type, rgba.data(),
++        bitmap.width(), bitmap.height(), flip_y, premultiply_alpha);
++    return {};
++}
++#endif
++
++[[maybe_unused]] static ErrorOr<Gfx::BitmapExportResult> convert_bitmap_for_upload(Vector<Gfx::DecodedImageFrame> const& bitmaps, u32 bitmap_index, GLenum format, GLenum type, bool has_explicit_destination_size, GLsizei destination_width, GLsizei destination_height, bool flip_y, bool premultiply_alpha)
+ {
+     if (bitmap_index >= bitmaps.size())
+         return Error::from_string_literal("WebGL image upload references an out-of-range bitmap");
+@@ -126,6 +177,10 @@ static ErrorOr<Gfx::BitmapExportResult> convert_bitmap_for_upload(Vector<Gfx::De
+ 
+ ErrorOr<void> HostWebGLContext::tex_image2d_from_bitmap(Commands::TexImage2DFromBitmap const& command, Vector<Gfx::DecodedImageFrame> const& bitmaps)
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    return upload_through_host(0, bitmaps, command.bitmap_index, command.target, command.level, command.internalformat, 0, 0, 0, command.has_explicit_destination_size,
++        command.destination_width, command.destination_height, 0, command.format, command.type, command.flip_y, command.premultiply_alpha);
++#endif
+     BitmapUploadScope upload_scope;
+     auto converted = TRY(convert_bitmap_for_upload(bitmaps, command.bitmap_index, command.format, command.type, command.has_explicit_destination_size, command.destination_width, command.destination_height, command.flip_y, command.premultiply_alpha));
+     m_gl_context->tex_image2d_robust_angle(command.target, command.level, command.internalformat, converted.width, converted.height, 0, command.format, command.type, converted.buffer.size(), converted.buffer.data());
+@@ -134,6 +189,10 @@ ErrorOr<void> HostWebGLContext::tex_image2d_from_bitmap(Commands::TexImage2DFrom
+ 
+ ErrorOr<void> HostWebGLContext::tex_sub_image2d_from_bitmap(Commands::TexSubImage2DFromBitmap const& command, Vector<Gfx::DecodedImageFrame> const& bitmaps)
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    return upload_through_host(1, bitmaps, command.bitmap_index, command.target, command.level, 0, command.xoffset, command.yoffset, 0, command.has_explicit_destination_size,
++        command.destination_width, command.destination_height, 0, command.format, command.type, command.flip_y, command.premultiply_alpha);
++#endif
+     BitmapUploadScope upload_scope;
+     auto converted = TRY(convert_bitmap_for_upload(bitmaps, command.bitmap_index, command.format, command.type, command.has_explicit_destination_size, command.destination_width, command.destination_height, command.flip_y, command.premultiply_alpha));
+     m_gl_context->tex_sub_image2d_robust_angle(command.target, command.level, command.xoffset, command.yoffset, converted.width, converted.height, command.format, command.type, converted.buffer.size(), converted.buffer.data());
+@@ -142,6 +201,10 @@ ErrorOr<void> HostWebGLContext::tex_sub_image2d_from_bitmap(Commands::TexSubImag
+ 
+ ErrorOr<void> HostWebGLContext::tex_image3d_from_bitmap(Commands::TexImage3DFromBitmap const& command, Vector<Gfx::DecodedImageFrame> const& bitmaps)
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    return upload_through_host(2, bitmaps, command.bitmap_index, command.target, command.level, command.internalformat, 0, 0, 0, command.has_explicit_destination_size,
++        command.destination_width, command.destination_height, command.depth, command.format, command.type, command.flip_y, command.premultiply_alpha);
++#endif
+     BitmapUploadScope upload_scope;
+     auto converted = TRY(convert_bitmap_for_upload(bitmaps, command.bitmap_index, command.format, command.type, command.has_explicit_destination_size, command.destination_width, command.destination_height, command.flip_y, command.premultiply_alpha));
+     m_gl_context->tex_image3d_robust_angle(command.target, command.level, command.internalformat, converted.width, converted.height, command.depth, 0, command.format, command.type, converted.buffer.size(), converted.buffer.data());
+@@ -150,6 +213,10 @@ ErrorOr<void> HostWebGLContext::tex_image3d_from_bitmap(Commands::TexImage3DFrom
+ 
+ ErrorOr<void> HostWebGLContext::tex_sub_image3d_from_bitmap(Commands::TexSubImage3DFromBitmap const& command, Vector<Gfx::DecodedImageFrame> const& bitmaps)
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    return upload_through_host(3, bitmaps, command.bitmap_index, command.target, command.level, 0, command.xoffset, command.yoffset, command.zoffset, command.has_explicit_destination_size,
++        command.destination_width, command.destination_height, command.depth, command.format, command.type, command.flip_y, command.premultiply_alpha);
++#endif
+     BitmapUploadScope upload_scope;
+     auto converted = TRY(convert_bitmap_for_upload(bitmaps, command.bitmap_index, command.format, command.type, command.has_explicit_destination_size, command.destination_width, command.destination_height, command.flip_y, command.premultiply_alpha));
+     m_gl_context->tex_sub_image3d_robust_angle(command.target, command.level, command.xoffset, command.yoffset, command.zoffset, converted.width, converted.height, command.depth, command.format, command.type, converted.buffer.size(), converted.buffer.data());
+-- 
+2.50.1 (Apple Git-155)
+

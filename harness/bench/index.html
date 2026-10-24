@@ -1,0 +1,33 @@
+<!doctype html>
+<!--
+  SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+  Copyright (c) 2026 [OWNER NAME]
+  Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
+-->
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chitin call costs</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { --bg: #f4efe6; --ink: #2b2420; --muted: #6c584c; --line: #d8cfc0; --panel: #fbf8f2; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1d1a17; --ink: #ece4d8; --muted: #b5a898; --line: #3a332c; --panel: #26221e; } }
+  body { margin: 0; padding: 16px; font: 13px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p { color: var(--muted); max-width: 70ch; }
+  button { font: inherit; padding: 4px 12px; }
+  .wrap { overflow-x: auto; }
+  table { border-collapse: collapse; margin-top: 12px; min-width: 560px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 4px 10px; text-align: right; font-variant-numeric: tabular-nums; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; }
+  tr.section td { font-weight: 600; text-align: left; padding-top: 14px; }
+  #log { color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; }
+</style>
+<h1>Chitin phase 0: call costs in Chrome</h1>
+<p>Native DOM on this page's main thread, the toy engine through Chitin's bindings in a dedicated Worker (where page JS runs in a segment), and a SharedArrayBuffer + Atomics round trip between two Workers (the cross-thread design Chitin rejected). Close other heavy tabs, keep this tab in front, and do not touch the page while it runs (about a minute).</p>
+<button id="run">Run</button> <button id="copy" disabled>Copy results</button>
+<div id="log"></div>
+<div class="wrap"><table id="out"></table></div>
+<script type="module" src="/bench/bench.js"></script>
+</html>

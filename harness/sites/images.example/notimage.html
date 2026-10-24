@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<!-- An <img> whose bytes are an HTML page (demo.turnstile.workers.dev answers /favicon.ico with its page): a broken image with
+     an error event, as in Chrome, next to a JPEG that decodes. -->
+<html><head><meta charset="utf-8"><title>notimage</title></head>
+<body>
+<img id="n" src="notimage.ico"> <img id="j" src="photo.jpg">
+<script>
+const n = document.getElementById('n');
+let error = false;
+n.addEventListener('error', () => { error = true; });
+window.addEventListener('load', () => { document.title = 'done:' + error + ':' + n.naturalWidth + ':' + document.getElementById('j').naturalWidth; });
+</script>
+</body></html>

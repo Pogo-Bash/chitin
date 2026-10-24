@@ -1,0 +1,606 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 19:16:31 -0500
+Subject: [PATCH] LibWeb: canvas and SVG parity: isPointInStroke, text drawing
+ style attributes, ink-box measureText, WebP serialization, SVG images without
+ a compositor, SVG character positions
+
+isPointInStroke() hit-tests the stroke outline (width, caps, joins, miter
+limit, dashes) through Skia's FillPathWithPaint. wordSpacing, fontKerning,
+fontStretch, fontVariantCaps, textRendering and lang exist with the spec's
+defaults and setter rules (stored; the shaper does not apply them yet).
+measureText's actualBoundingBox* are the glyphs' ink box relative to the
+textAlign point, not the font's ascent and descent. toDataURL/toBlob
+serialize image/webp (lossless). An embedder without a compositor host can
+install an in-process rasterizer for SVG image frames, so drawImage of an
+SVG <img> draws. getStartPositionOfChar was a stub answering (0, 0); it and
+the new getEndPositionOfChar, getRotationOfChar and getCharNumAtPosition
+read the glyph cells layout commits, which now carry their baseline.
+---
+ Libraries/LibGfx/Path.h                       |  3 +
+ Libraries/LibGfx/PathSkia.cpp                 | 20 ++++++
+ .../HTML/Canvas/Canvas2DContextBase.cpp       | 61 +++++++++++++++++--
+ .../LibWeb/HTML/Canvas/Canvas2DContextBase.h  |  3 +
+ Libraries/LibWeb/HTML/Canvas/CanvasDrawPath.h |  2 +
+ .../LibWeb/HTML/Canvas/CanvasDrawPath.idl     |  4 +-
+ .../HTML/Canvas/CanvasTextDrawingStyles.cpp   | 20 ++++++
+ .../HTML/Canvas/CanvasTextDrawingStyles.h     | 16 +++++
+ .../HTML/Canvas/CanvasTextDrawingStyles.idl   | 20 +++---
+ Libraries/LibWeb/HTML/Canvas/DrawingState.h   |  6 ++
+ .../LibWeb/HTML/Canvas/SerializeBitmap.cpp    | 13 ++++
+ .../LibWeb/HTML/Canvas/SerializeBitmap.h      |  1 +
+ .../LibWeb/HTML/CanvasRenderingContext2D.idl  |  4 ++
+ .../Rust/src/layout/svg_formatting_context.rs |  6 ++
+ Libraries/LibWeb/SVG/SVGDecodedImageData.cpp  | 14 ++++-
+ Libraries/LibWeb/SVG/SVGDecodedImageData.h    |  5 ++
+ .../LibWeb/SVG/SVGTextContentElement.cpp      | 51 +++++++++++++++-
+ Libraries/LibWeb/SVG/SVGTextContentElement.h  |  5 +-
+ .../LibWeb/SVG/SVGTextContentElement.idl      |  6 +-
+ 19 files changed, 236 insertions(+), 24 deletions(-)
+
+diff --git a/Libraries/LibGfx/Path.h b/Libraries/LibGfx/Path.h
+index 45bd61c67c..ca21c7493e 100644
+--- a/Libraries/LibGfx/Path.h
++++ b/Libraries/LibGfx/Path.h
+@@ -137,6 +137,9 @@ private:
+     NonnullOwnPtr<PathImpl> m_impl { PathImpl::create() };
+ };
+ 
++// Whether `point` is inside the outline a stroke of `path` with these line styles covers (CanvasRenderingContext2D.isPointInStroke).
++bool path_stroke_contains(Path const&, FloatPoint point, float thickness, Path::CapStyle, Path::JoinStyle, float miter_limit, ReadonlySpan<float> dash_array, float dash_offset);
++
+ }
+ 
+ namespace IPC {
+diff --git a/Libraries/LibGfx/PathSkia.cpp b/Libraries/LibGfx/PathSkia.cpp
+index 7c1ee3b259..26b93f507a 100644
+--- a/Libraries/LibGfx/PathSkia.cpp
++++ b/Libraries/LibGfx/PathSkia.cpp
+@@ -16,7 +16,10 @@
+ #include <core/SkFont.h>
+ #include <core/SkPath.h>
+ #include <core/SkPathBuilder.h>
++#include <core/SkPaint.h>
+ #include <core/SkPathMeasure.h>
++#include <core/SkPathUtils.h>
++#include <effects/SkDashPathEffect.h>
+ #include <utils/SkParsePath.h>
+ 
+ template<>
+@@ -340,4 +343,21 @@ String PathImplSkia::to_svg_string() const
+     return MUST(String::from_utf8(StringView { svg_string.c_str(), svg_string.size() }));
+ }
+ 
++bool path_stroke_contains(Path const& path, FloatPoint point, float thickness, Path::CapStyle cap_style, Path::JoinStyle join_style, float miter_limit, ReadonlySpan<float> dash_array, float dash_offset)
++{
++    if (!(thickness > 0))
++        return false;
++    SkPaint paint;
++    paint.setStyle(SkPaint::kStroke_Style);
++    paint.setStrokeWidth(thickness);
++    paint.setStrokeCap(to_skia_cap(cap_style));
++    paint.setStrokeJoin(to_skia_join(join_style));
++    paint.setStrokeMiter(miter_limit);
++    if (!dash_array.is_empty())
++        paint.setPathEffect(SkDashPathEffect::Make({ dash_array.data(), dash_array.size() }, dash_offset));
++    auto outline = skpathutils::FillPathWithPaint(to_skia_path(path), paint);
++    outline.setFillType(SkPathFillType::kWinding);
++    return outline.contains(point.x(), point.y());
++}
++
+ }
+diff --git a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
+index 81965b81fa..bc9b651478 100644
+--- a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
++++ b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
+@@ -1005,18 +1005,38 @@ GC::Ref<TextMetrics> Canvas2DContextBase::measure_text(Utf16View text)
+ 
+     // width attribute: The width of that inline box, in CSS pixels. (The text's advance width.)
+     metrics->set_width(prepared_text.bounding_box.width());
++    // The "bounding rectangle of the given text" for the actualBoundingBox* attributes is the glyphs' ink: their outlines,
++    // with the baseline at y = 0 (prepare_text shapes at the origin) and the text starting at x = 0.
++    Gfx::Path ink;
++    for (auto const& glyph_run : prepared_text.glyph_runs)
++        ink.glyph_run(*glyph_run);
++    auto ink_box = ink.is_empty() ? Gfx::FloatRect { 0, 0, 0, 0 } : ink.bounding_box();
++    // The alignment point given by textAlign, along the advance (left-to-right text).
++    // FIXME: direction rtl swaps start and end.
++    float alignment_x = 0;
++    switch (drawing_state().text_align) {
++    case Bindings::CanvasTextAlign::Center:
++        alignment_x = prepared_text.bounding_box.width() / 2;
++        break;
++    case Bindings::CanvasTextAlign::Right:
++    case Bindings::CanvasTextAlign::End:
++        alignment_x = prepared_text.bounding_box.width();
++        break;
++    default:
++        break;
++    }
+     // actualBoundingBoxLeft attribute: The distance parallel to the baseline from the alignment point given by the textAlign attribute to the left side of the bounding rectangle of the given text, in CSS pixels; positive numbers indicating a distance going left from the given alignment point.
+-    metrics->set_actual_bounding_box_left(-prepared_text.bounding_box.left());
++    metrics->set_actual_bounding_box_left(alignment_x - ink_box.left());
+     // actualBoundingBoxRight attribute: The distance parallel to the baseline from the alignment point given by the textAlign attribute to the right side of the bounding rectangle of the given text, in CSS pixels; positive numbers indicating a distance going right from the given alignment point.
+-    metrics->set_actual_bounding_box_right(prepared_text.bounding_box.right());
++    metrics->set_actual_bounding_box_right(ink_box.right() - alignment_x);
+     // fontBoundingBoxAscent attribute: The distance from the horizontal line indicated by the textBaseline attribute to the ascent metric of the first available font, in CSS pixels; positive numbers indicating a distance going up from the given baseline.
+     metrics->set_font_bounding_box_ascent(ascent - baseline_offset);
+     // fontBoundingBoxDescent attribute: The distance from the horizontal line indicated by the textBaseline attribute to the descent metric of the first available font, in CSS pixels; positive numbers indicating a distance going down from the given baseline.
+     metrics->set_font_bounding_box_descent(descent + baseline_offset);
+     // actualBoundingBoxAscent attribute: The distance from the horizontal line indicated by the textBaseline attribute to the top of the bounding rectangle of the given text, in CSS pixels; positive numbers indicating a distance going up from the given baseline.
+-    metrics->set_actual_bounding_box_ascent(ascent - baseline_offset);
++    metrics->set_actual_bounding_box_ascent(-ink_box.top() - baseline_offset);
+     // actualBoundingBoxDescent attribute: The distance from the horizontal line indicated by the textBaseline attribute to the bottom of the bounding rectangle of the given text, in CSS pixels; positive numbers indicating a distance going down from the given baseline.
+-    metrics->set_actual_bounding_box_descent(descent + baseline_offset);
++    metrics->set_actual_bounding_box_descent(ink_box.bottom() + baseline_offset);
+     // emHeightAscent attribute: The distance from the horizontal line indicated by the textBaseline attribute to the highest top of the em squares in the inline box, in CSS pixels; positive numbers indicating that the given baseline is below the top of that em square (so this value will usually be positive). Zero if the given baseline is the top of that em square; half the font size if the given baseline is the middle of that em square.
+     metrics->set_em_height_ascent(ascent - baseline_offset);
+     // emHeightDescent attribute: The distance from the horizontal line indicated by the textBaseline attribute to the lowest bottom of the em squares in the inline box, in CSS pixels; positive numbers indicating that the given baseline is above the bottom of that em square. (Zero if the given baseline is the bottom of that em square.)
+@@ -1138,6 +1158,39 @@ static bool is_point_in_path_internal(Gfx::Path path, Gfx::AffineTransform const
+     return path.contains(point, bindings_to_gfx_fill_rule(fill_rule));
+ }
+ 
++// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-ispointinstroke
++bool Canvas2DContextBase::is_point_in_stroke_internal(Gfx::Path const& path, double x, double y)
++{
++    // 1. If x or y are infinite or NaN, then return false.
++    if (!isfinite(x) || !isfinite(y))
++        return false;
++    // 2. Let the point be (x, y), in canvas coordinate space units, unaffected by the current transformation; the path is
++    //    in user space here (as isPointInPath has it), so the point is mapped back through the inverse transform.
++    auto& state = drawing_state();
++    auto point = Gfx::FloatPoint(x, y);
++    if (auto inverse_transform = state.transform.inverse(); inverse_transform.has_value())
++        point = inverse_transform->map(point);
++    else
++        return false;
++    // 3. Return true if the point is inside the path that results from the trace of the path with the line styles; points
++    //    on the outline count as inside.
++    Vector<float> dash_array;
++    dash_array.ensure_capacity(state.dash_list.size());
++    for (auto dash : state.dash_list)
++        dash_array.append(static_cast<float>(dash));
++    return Gfx::path_stroke_contains(path, point, state.line_width, to_gfx_cap(state.line_cap), to_gfx_join(state.line_join), state.miter_limit, dash_array, state.line_dash_offset);
++}
++
++bool Canvas2DContextBase::is_point_in_stroke(double x, double y)
++{
++    return is_point_in_stroke_internal(path(), x, y);
++}
++
++bool Canvas2DContextBase::is_point_in_stroke(Path2D const& path, double x, double y)
++{
++    return is_point_in_stroke_internal(path.path(), x, y);
++}
++
+ static bool image_provider_is_usable_for_canvas(Layout::ImageProvider const& image_provider)
+ {
+     if (!image_provider.is_image_available())
+diff --git a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.h b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.h
+index a3a411d688..f1bb81a262 100644
+--- a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.h
++++ b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.h
+@@ -95,6 +95,9 @@ public:
+ 
+     virtual bool is_point_in_path(double x, double y, Bindings::CanvasFillRule) override;
+     virtual bool is_point_in_path(Path2D const& path, double x, double y, Bindings::CanvasFillRule) override;
++    virtual bool is_point_in_stroke(double x, double y) override;
++    virtual bool is_point_in_stroke(Path2D const& path, double x, double y) override;
++    bool is_point_in_stroke_internal(Gfx::Path const&, double x, double y);
+ 
+     virtual bool image_smoothing_enabled() const override;
+     virtual void set_image_smoothing_enabled(bool) override;
+diff --git a/Libraries/LibWeb/HTML/Canvas/CanvasDrawPath.h b/Libraries/LibWeb/HTML/Canvas/CanvasDrawPath.h
+index e7fde17189..691f44c68a 100644
+--- a/Libraries/LibWeb/HTML/Canvas/CanvasDrawPath.h
++++ b/Libraries/LibWeb/HTML/Canvas/CanvasDrawPath.h
+@@ -30,6 +30,8 @@ public:
+ 
+     virtual bool is_point_in_path(double x, double y, Bindings::CanvasFillRule) = 0;
+     virtual bool is_point_in_path(Path2D const& path, double x, double y, Bindings::CanvasFillRule) = 0;
++    virtual bool is_point_in_stroke(double x, double y) = 0;
++    virtual bool is_point_in_stroke(Path2D const& path, double x, double y) = 0;
+ 
+ protected:
+     CanvasDrawPath() = default;
+diff --git a/Libraries/LibWeb/HTML/Canvas/CanvasDrawPath.idl b/Libraries/LibWeb/HTML/Canvas/CanvasDrawPath.idl
+index 86923a7aa5..99aa29c610 100644
+--- a/Libraries/LibWeb/HTML/Canvas/CanvasDrawPath.idl
++++ b/Libraries/LibWeb/HTML/Canvas/CanvasDrawPath.idl
+@@ -13,6 +13,6 @@ interface mixin CanvasDrawPath {
+     undefined clip(Path2D path, optional CanvasFillRule fillRule = "nonzero");
+     boolean isPointInPath(unrestricted double x, unrestricted double y, optional CanvasFillRule fillRule = "nonzero");
+     boolean isPointInPath(Path2D path, unrestricted double x, unrestricted double y, optional CanvasFillRule fillRule = "nonzero");
+-    [FIXME] boolean isPointInStroke(unrestricted double x, unrestricted double y);
+-    [FIXME] boolean isPointInStroke(Path2D path, unrestricted double x, unrestricted double y);
++    boolean isPointInStroke(unrestricted double x, unrestricted double y);
++    boolean isPointInStroke(Path2D path, unrestricted double x, unrestricted double y);
+ };
+diff --git a/Libraries/LibWeb/HTML/Canvas/CanvasTextDrawingStyles.cpp b/Libraries/LibWeb/HTML/Canvas/CanvasTextDrawingStyles.cpp
+index df6c74b17a..c67e9b4fa3 100644
+--- a/Libraries/LibWeb/HTML/Canvas/CanvasTextDrawingStyles.cpp
++++ b/Libraries/LibWeb/HTML/Canvas/CanvasTextDrawingStyles.cpp
+@@ -183,6 +183,26 @@ void CanvasTextDrawingStyles<CanvasType>::set_letter_spacing(Utf16View letter_sp
+     drawing_state().letter_spacing = parsed.release_nonnull();
+ }
+ 
++// https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-wordspacing
++template<typename CanvasType>
++Utf16String CanvasTextDrawingStyles<CanvasType>::word_spacing() const
++{
++    Utf16StringBuilder builder;
++    drawing_state().word_spacing->serialize(builder, CSS::SerializationMode::Normal);
++    return builder.to_string();
++}
++
++template<typename CanvasType>
++void CanvasTextDrawingStyles<CanvasType>::set_word_spacing(Utf16View word_spacing)
++{
++    // 1. Let parsed be the result of parsing the given value as a CSS <length>. 2. If parsed is failure, then return.
++    auto parsed = parse_css_type(CSS::Parser::ParsingParams { CSS::Parser::SpecialContext::CanvasContextGenericValue }, word_spacing, CSS::ValueType::Length);
++    if (!parsed)
++        return;
++    // 3. Set this's word spacing to parsed.
++    drawing_state().word_spacing = parsed.release_nonnull();
++}
++
+ template<typename CanvasType>
+ float CanvasTextDrawingStyles<CanvasType>::resolved_letter_spacing() const
+ {
+diff --git a/Libraries/LibWeb/HTML/Canvas/CanvasTextDrawingStyles.h b/Libraries/LibWeb/HTML/Canvas/CanvasTextDrawingStyles.h
+index 3621336ffb..e844c9b026 100644
+--- a/Libraries/LibWeb/HTML/Canvas/CanvasTextDrawingStyles.h
++++ b/Libraries/LibWeb/HTML/Canvas/CanvasTextDrawingStyles.h
+@@ -32,6 +32,22 @@ public:
+     void set_letter_spacing(Utf16View);
+     float resolved_letter_spacing() const override;
+ 
++    // NB: stored and returned as the spec says; the text shaper does not apply them yet (word spacing, kerning, stretch,
++    //     variant caps and rendering hints keep their defaults when drawing and measuring).
++    Utf16String word_spacing() const;
++    void set_word_spacing(Utf16View);
++
++    Bindings::CanvasFontKerning font_kerning() const { return drawing_state().font_kerning; }
++    void set_font_kerning(Bindings::CanvasFontKerning value) { drawing_state().font_kerning = value; }
++    Bindings::CanvasFontStretch font_stretch() const { return drawing_state().font_stretch; }
++    void set_font_stretch(Bindings::CanvasFontStretch value) { drawing_state().font_stretch = value; }
++    Bindings::CanvasFontVariantCaps font_variant_caps() const { return drawing_state().font_variant_caps; }
++    void set_font_variant_caps(Bindings::CanvasFontVariantCaps value) { drawing_state().font_variant_caps = value; }
++    Bindings::CanvasTextRendering text_rendering() const { return drawing_state().text_rendering; }
++    void set_text_rendering(Bindings::CanvasTextRendering value) { drawing_state().text_rendering = value; }
++    Utf16String lang() const { return drawing_state().lang; }
++    void set_lang(Utf16String value) { drawing_state().lang = move(value); }
++
+ protected:
+     CanvasTextDrawingStyles() = default;
+ };
+diff --git a/Libraries/LibWeb/HTML/Canvas/CanvasTextDrawingStyles.idl b/Libraries/LibWeb/HTML/Canvas/CanvasTextDrawingStyles.idl
+index 49987a8385..a5f96f4927 100644
+--- a/Libraries/LibWeb/HTML/Canvas/CanvasTextDrawingStyles.idl
++++ b/Libraries/LibWeb/HTML/Canvas/CanvasTextDrawingStyles.idl
+@@ -2,23 +2,23 @@
+ // enum CanvasTextAlign { "start", "end", "left", "right", "center" };
+ // enum CanvasTextBaseline { "top", "hanging", "middle", "alphabetic", "ideographic", "bottom" };
+ // enum CanvasDirection { "ltr", "rtl", "inherit" };
+-enum CanvasFontKerning { "auto", "normal", "none" };
+-enum CanvasFontStretch { "ultra-condensed", "extra-condensed", "condensed", "semi-condensed", "normal", "semi-expanded", "expanded", "extra-expanded", "ultra-expanded" };
+-enum CanvasFontVariantCaps { "normal", "small-caps", "all-small-caps", "petite-caps", "all-petite-caps", "unicase", "titling-caps" };
+-enum CanvasTextRendering { "auto", "optimizeSpeed", "optimizeLegibility", "geometricPrecision" };
++// enum CanvasFontKerning { "auto", "normal", "none" };
++// enum CanvasFontStretch { "ultra-condensed", "extra-condensed", "condensed", "semi-condensed", "normal", "semi-expanded", "expanded", "extra-expanded", "ultra-expanded" };
++// enum CanvasFontVariantCaps { "normal", "small-caps", "all-small-caps", "petite-caps", "all-petite-caps", "unicase", "titling-caps" };
++// enum CanvasTextRendering { "auto", "optimizeSpeed", "optimizeLegibility", "geometricPrecision" };
+ 
+ // https://html.spec.whatwg.org/multipage/canvas.html#canvastextdrawingstyles
+ interface mixin CanvasTextDrawingStyles {
+     // text
+-    [FIXME] attribute DOMString lang; // (default: "inherit")
++    attribute DOMString lang; // (default: "inherit")
+     attribute DOMString font; // (default 10px sans-serif)
+     attribute CanvasTextAlign textAlign; // (default: "start")
+     attribute CanvasTextBaseline textBaseline; // (default: "alphabetic")
+     attribute CanvasDirection direction; // (default: "inherit")
+     attribute DOMString letterSpacing; // (default: "0px")
+-    [FIXME] attribute CanvasFontKerning fontKerning; // (default: "auto")
+-    [FIXME] attribute CanvasFontStretch fontStretch; // (default: "normal")
+-    [FIXME] attribute CanvasFontVariantCaps fontVariantCaps; // (default: "normal")
+-    [FIXME] attribute CanvasTextRendering textRendering; // (default: "auto")
+-    [FIXME] attribute DOMString wordSpacing; // (default: "0px")
++    attribute CanvasFontKerning fontKerning; // (default: "auto")
++    attribute CanvasFontStretch fontStretch; // (default: "normal")
++    attribute CanvasFontVariantCaps fontVariantCaps; // (default: "normal")
++    attribute CanvasTextRendering textRendering; // (default: "auto")
++    attribute DOMString wordSpacing; // (default: "0px")
+ };
+diff --git a/Libraries/LibWeb/HTML/Canvas/DrawingState.h b/Libraries/LibWeb/HTML/Canvas/DrawingState.h
+index 58e9a1ef0e..569934394c 100644
+--- a/Libraries/LibWeb/HTML/Canvas/DrawingState.h
++++ b/Libraries/LibWeb/HTML/Canvas/DrawingState.h
+@@ -88,6 +88,12 @@ struct DrawingState {
+     CanvasTextBaseline text_baseline { CanvasTextBaseline::Alphabetic };
+     CanvasDirection direction { CanvasDirection::Inherit };
+     NonnullRefPtr<CSS::StyleValue const> letter_spacing { CSS::LengthStyleValue::create(CSS::Length::make_px(0)) };
++    NonnullRefPtr<CSS::StyleValue const> word_spacing { CSS::LengthStyleValue::create(CSS::Length::make_px(0)) };
++    Bindings::CanvasFontKerning font_kerning { Bindings::CanvasFontKerning::Auto };
++    Bindings::CanvasFontStretch font_stretch { Bindings::CanvasFontStretch::Normal };
++    Bindings::CanvasFontVariantCaps font_variant_caps { Bindings::CanvasFontVariantCaps::Normal };
++    Bindings::CanvasTextRendering text_rendering { Bindings::CanvasTextRendering::Auto };
++    Utf16String lang { "inherit"_utf16 };
+ 
+     void visit_edges(GC::Cell::Visitor& visitor)
+     {
+diff --git a/Libraries/LibWeb/HTML/Canvas/SerializeBitmap.cpp b/Libraries/LibWeb/HTML/Canvas/SerializeBitmap.cpp
+index 9629ced936..e718128722 100644
+--- a/Libraries/LibWeb/HTML/Canvas/SerializeBitmap.cpp
++++ b/Libraries/LibWeb/HTML/Canvas/SerializeBitmap.cpp
+@@ -9,6 +9,7 @@
+ #include <LibGfx/Bitmap.h>
+ #include <LibGfx/ImageFormats/JPEGWriter.h>
+ #include <LibGfx/ImageFormats/PNGWriter.h>
++#include <LibGfx/ImageFormats/WebPWriter.h>
+ #include <LibWeb/HTML/Canvas/SerializeBitmap.h>
+ 
+ namespace Web::HTML {
+@@ -20,6 +21,8 @@ StringView serialized_bitmap_mime_type_to_byte_string(SerializedBitmapMimeType m
+         return "image/png"sv;
+     case SerializedBitmapMimeType::JPEG:
+         return "image/jpeg"sv;
++    case SerializedBitmapMimeType::WebP:
++        return "image/webp"sv;
+     }
+     VERIFY_NOT_REACHED();
+ }
+@@ -31,6 +34,8 @@ Utf16View serialized_bitmap_mime_type_to_utf16_view(SerializedBitmapMimeType mim
+         return u"image/png"sv;
+     case SerializedBitmapMimeType::JPEG:
+         return u"image/jpeg"sv;
++    case SerializedBitmapMimeType::WebP:
++        return u"image/webp"sv;
+     }
+     VERIFY_NOT_REACHED();
+ }
+@@ -52,6 +57,14 @@ ErrorOr<SerializeBitmapResult> serialize_bitmap(Gfx::Bitmap const& bitmap, Utf16
+         return SerializeBitmapResult { TRY(file.read_until_eof()), SerializedBitmapMimeType::JPEG };
+     }
+ 
++    // "image/webp", as Chrome supports it. FIXME: The writer is lossless only, so quality is ignored (Chrome encodes lossy
++    // below quality 1); the pixels a decoder reads back are the bitmap's own.
++    if (type.equals_ignoring_ascii_case(u"image/webp"sv)) {
++        AllocatingMemoryStream file;
++        TRY(Gfx::WebPWriter::encode(file, bitmap));
++        return SerializeBitmapResult { TRY(file.read_until_eof()), SerializedBitmapMimeType::WebP };
++    }
++
+     // User agents must support PNG ("image/png"). User agents may support other types.
+     // If the user agent does not support the requested type, then it must create the file using the PNG format. [PNG]
+     return SerializeBitmapResult { TRY(Gfx::PNGWriter::encode(bitmap)), SerializedBitmapMimeType::PNG };
+diff --git a/Libraries/LibWeb/HTML/Canvas/SerializeBitmap.h b/Libraries/LibWeb/HTML/Canvas/SerializeBitmap.h
+index 07a4b2b4a6..341bc29123 100644
+--- a/Libraries/LibWeb/HTML/Canvas/SerializeBitmap.h
++++ b/Libraries/LibWeb/HTML/Canvas/SerializeBitmap.h
+@@ -16,6 +16,7 @@ namespace Web::HTML {
+ enum class SerializedBitmapMimeType {
+     PNG,
+     JPEG,
++    WebP,
+ };
+ 
+ struct SerializeBitmapResult {
+diff --git a/Libraries/LibWeb/HTML/CanvasRenderingContext2D.idl b/Libraries/LibWeb/HTML/CanvasRenderingContext2D.idl
+index 248bf61660..f75282ccc1 100644
+--- a/Libraries/LibWeb/HTML/CanvasRenderingContext2D.idl
++++ b/Libraries/LibWeb/HTML/CanvasRenderingContext2D.idl
+@@ -8,6 +8,10 @@ enum CanvasLineJoin { "round", "bevel", "miter" };
+ enum CanvasTextAlign { "start", "end", "left", "right", "center" };
+ enum CanvasTextBaseline { "top", "hanging", "middle", "alphabetic", "ideographic", "bottom" };
+ enum CanvasDirection { "ltr", "rtl", "inherit" };
++enum CanvasFontKerning { "auto", "normal", "none" };
++enum CanvasFontStretch { "ultra-condensed", "extra-condensed", "condensed", "semi-condensed", "normal", "semi-expanded", "expanded", "extra-expanded", "ultra-expanded" };
++enum CanvasFontVariantCaps { "normal", "small-caps", "all-small-caps", "petite-caps", "all-petite-caps", "unicase", "titling-caps" };
++enum CanvasTextRendering { "auto", "optimizeSpeed", "optimizeLegibility", "geometricPrecision" };
+ 
+ // https://html.spec.whatwg.org/multipage/canvas.html#canvasrenderingcontext2d
+ [Exposed=Window]
+diff --git a/Libraries/LibWeb/Rust/src/layout/svg_formatting_context.rs b/Libraries/LibWeb/Rust/src/layout/svg_formatting_context.rs
+index 3a8319885f..bd1183b59d 100644
+--- a/Libraries/LibWeb/Rust/src/layout/svg_formatting_context.rs
++++ b/Libraries/LibWeb/Rust/src/layout/svg_formatting_context.rs
+@@ -35,6 +35,8 @@ pub struct FfiSvgTextCharacterCell {
+     pub y: f32,
+     pub width: f32,
+     pub height: f32,
++    /// The y of the baseline the character's glyph sits on (getStartPositionOfChar/getEndPositionOfChar).
++    pub baseline: f32,
+     /// Whether this code unit is the first, in document order, of the typographic character whose
+     /// cell this is. A later code unit of the same character carries the same cell, unmarked.
+     pub starts_typographic_character: bool,
+@@ -65,6 +67,7 @@ fn append_svg_text_character_cells(
+     run_end_x: f32,
+     top: f32,
+     height: f32,
++    baseline: f32,
+ ) {
+     let mut covered = 0usize;
+     let mut index = 0usize;
+@@ -86,6 +89,7 @@ fn append_svg_text_character_cells(
+             y: top,
+             width: end_x - first.x,
+             height,
++            baseline,
+             starts_typographic_character: true,
+         };
+         cells.push(cell);
+@@ -107,6 +111,7 @@ fn append_svg_text_character_cells(
+             y: top,
+             width: 0.0,
+             height,
++            baseline,
+             starts_typographic_character: false,
+         },
+         length_in_code_units - covered,
+@@ -1226,6 +1231,7 @@ impl<'pass> SvgFormattingContext<'pass> {
+                 run_start_x + shaped.width(),
+                 cell_top,
+                 cell_height,
++                baseline_start.y,
+             );
+             shaped_text.advance += shaped.width();
+             let mut glyph_buffer = shaped.into_glyphs();
+diff --git a/Libraries/LibWeb/SVG/SVGDecodedImageData.cpp b/Libraries/LibWeb/SVG/SVGDecodedImageData.cpp
+index be481dc833..04030dc152 100644
+--- a/Libraries/LibWeb/SVG/SVGDecodedImageData.cpp
++++ b/Libraries/LibWeb/SVG/SVGDecodedImageData.cpp
+@@ -322,10 +322,17 @@ Compositor::CompositorHost* SVGDecodedImageData::host_compositor() const
+     return page->client().compositor_host();
+ }
+ 
++static SVGDecodedImageData::InProcessRasterizer s_in_process_rasterizer;
++
++void SVGDecodedImageData::set_in_process_rasterizer(InProcessRasterizer rasterizer)
++{
++    s_in_process_rasterizer = rasterizer;
++}
++
+ RefPtr<Gfx::Bitmap> SVGDecodedImageData::render_frame(Gfx::IntSize size) const
+ {
+     auto* compositor_host = host_compositor();
+-    if (!compositor_host)
++    if (!compositor_host && !s_in_process_rasterizer)
+         return nullptr;
+ 
+     auto bitmap = Gfx::Bitmap::create_shareable(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, size);
+@@ -337,6 +344,11 @@ RefPtr<Gfx::Bitmap> SVGDecodedImageData::render_frame(Gfx::IntSize size) const
+     if (!display_list.has_value())
+         return nullptr;
+ 
++    if (!compositor_host) {
++        if (!s_in_process_rasterizer(*display_list, resource_storage, *bitmap.value()))
++            return nullptr;
++        return bitmap.release_value();
++    }
+     if (!compositor_host->rasterize_display_list(*display_list, resource_storage, bitmap.value()))
+         return nullptr;
+     return bitmap.release_value();
+diff --git a/Libraries/LibWeb/SVG/SVGDecodedImageData.h b/Libraries/LibWeb/SVG/SVGDecodedImageData.h
+index 0d889532f1..6518870b76 100644
+--- a/Libraries/LibWeb/SVG/SVGDecodedImageData.h
++++ b/Libraries/LibWeb/SVG/SVGDecodedImageData.h
+@@ -29,6 +29,11 @@ public:
+     class SVGPageClient;
+     using DecodePromise = Core::Promise<GC::Root<SVGDecodedImageData>>;
+     static NonnullRefPtr<DecodePromise> decode(GC::Ref<Page>, URL::URL const&, ReadonlyBytes encoded_svg);
++
++    // An embedder whose pages have no compositor host (one that rasterizes display lists in-process itself) installs the
++    // rasterizer an SVG image uses for its frames (drawImage, createImageBitmap of an SVG <img>).
++    using InProcessRasterizer = bool (*)(Compositing::DisplayListResource const&, Compositing::DisplayListResourceStorage const&, Gfx::Bitmap&);
++    static void set_in_process_rasterizer(InProcessRasterizer);
+     virtual ~SVGDecodedImageData() override;
+ 
+     virtual Optional<Gfx::DecodedImageFrame> default_frame(Gfx::IntSize = {}) const override;
+diff --git a/Libraries/LibWeb/SVG/SVGTextContentElement.cpp b/Libraries/LibWeb/SVG/SVGTextContentElement.cpp
+index 581883683a..1321748b8f 100644
+--- a/Libraries/LibWeb/SVG/SVGTextContentElement.cpp
++++ b/Libraries/LibWeb/SVG/SVGTextContentElement.cpp
+@@ -5,6 +5,7 @@
+  * SPDX-License-Identifier: BSD-2-Clause
+  */
+ 
++#include <LibWeb/Bindings/DOMPointReadOnly.h>
+ #include <LibWeb/DOM/Document.h>
+ #include <LibWeb/Geometry/DOMPoint.h>
+ #include <LibWeb/Geometry/DOMRect.h>
+@@ -146,10 +147,54 @@ WebIDL::ExceptionOr<float> SVGTextContentElement::get_sub_string_length(WebIDL::
+     return sub_string_length(cells, charnum, nchars);
+ }
+ 
+-GC::Ref<Geometry::DOMPoint> SVGTextContentElement::get_start_position_of_char(WebIDL::UnsignedLong charnum)
++WebIDL::ExceptionOr<GC::Ref<Geometry::DOMPoint>> SVGTextContentElement::get_start_position_of_char(WebIDL::UnsignedLong charnum)
+ {
+-    dbgln("(STUBBED) SVGTextContentElement::get_start_position_of_char(charnum={}). Called on: {}", charnum, debug_description());
+-    return Geometry::DOMPoint::create();
++    // 1. Let cluster be the result of finding the typographic character for the character at index charnum within the
++    //    current element. 2. If cluster is null, then throw an IndexSizeError.
++    auto cells = character_cells();
++    if (charnum >= cells.size())
++        return WebIDL::IndexSizeError::create("Character index out of range"_utf16);
++    // 3. Return a newly created DOMPoint object representing the start of the glyph's advance on its baseline (the
++    //    alignment point, for horizontal left-to-right text).
++    // FIXME: Right-to-left and vertical text, and text on a path (the cells are not moved onto the path).
++    auto const& cell = cells[charnum];
++    return Geometry::DOMPoint::create(cell.x, cell.baseline, 0, 1);
++}
++
++// https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getEndPositionOfChar
++WebIDL::ExceptionOr<GC::Ref<Geometry::DOMPoint>> SVGTextContentElement::get_end_position_of_char(WebIDL::UnsignedLong charnum)
++{
++    auto cells = character_cells();
++    if (charnum >= cells.size())
++        return WebIDL::IndexSizeError::create("Character index out of range"_utf16);
++    // The point the glyph's advance ends at, on its baseline.
++    auto const& cell = cells[charnum];
++    return Geometry::DOMPoint::create(cell.x + cell.width, cell.baseline, 0, 1);
++}
++
++// https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getRotationOfChar
++WebIDL::ExceptionOr<float> SVGTextContentElement::get_rotation_of_char(WebIDL::UnsignedLong charnum)
++{
++    auto cells = character_cells();
++    if (charnum >= cells.size())
++        return WebIDL::IndexSizeError::create("Character index out of range"_utf16);
++    // FIXME: The rotate attribute and text on a path; layout places every glyph upright.
++    return 0.0f;
++}
++
++// https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getCharNumAtPosition
++WebIDL::Long SVGTextContentElement::get_char_num_at_position(Bindings::DOMPointInit const& point)
++{
++    // Returns the index of the first addressable character whose glyph cell contains the point, or -1.
++    auto cells = character_cells();
++    for (size_t index = 0; index < cells.size(); ++index) {
++        auto const& cell = cells[index];
++        if (!cell.starts_typographic_character)
++            continue;
++        if (point.x >= cell.x && point.x < cell.x + cell.width && point.y >= cell.y && point.y < cell.y + cell.height)
++            return static_cast<WebIDL::Long>(index);
++    }
++    return -1;
+ }
+ 
+ // https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getExtentOfChar
+diff --git a/Libraries/LibWeb/SVG/SVGTextContentElement.h b/Libraries/LibWeb/SVG/SVGTextContentElement.h
+index 5cc0a1f225..4babf5fe5e 100644
+--- a/Libraries/LibWeb/SVG/SVGTextContentElement.h
++++ b/Libraries/LibWeb/SVG/SVGTextContentElement.h
+@@ -24,7 +24,10 @@ public:
+     WebIDL::ExceptionOr<WebIDL::Long> get_number_of_chars();
+     WebIDL::ExceptionOr<float> get_computed_text_length();
+     WebIDL::ExceptionOr<float> get_sub_string_length(WebIDL::UnsignedLong charnum, WebIDL::UnsignedLong nchars);
+-    GC::Ref<Geometry::DOMPoint> get_start_position_of_char(WebIDL::UnsignedLong charnum);
++    WebIDL::ExceptionOr<GC::Ref<Geometry::DOMPoint>> get_start_position_of_char(WebIDL::UnsignedLong charnum);
++    WebIDL::ExceptionOr<GC::Ref<Geometry::DOMPoint>> get_end_position_of_char(WebIDL::UnsignedLong charnum);
++    WebIDL::ExceptionOr<float> get_rotation_of_char(WebIDL::UnsignedLong charnum);
++    WebIDL::Long get_char_num_at_position(Bindings::DOMPointInit const&);
+     WebIDL::ExceptionOr<GC::Ref<Geometry::DOMRect>> get_extent_of_char(WebIDL::UnsignedLong charnum);
+ 
+ protected:
+diff --git a/Libraries/LibWeb/SVG/SVGTextContentElement.idl b/Libraries/LibWeb/SVG/SVGTextContentElement.idl
+index 576b2c9c1b..d276aa809a 100644
+--- a/Libraries/LibWeb/SVG/SVGTextContentElement.idl
++++ b/Libraries/LibWeb/SVG/SVGTextContentElement.idl
+@@ -14,10 +14,10 @@ interface SVGTextContentElement : SVGGraphicsElement {
+     float getComputedTextLength();
+     float getSubStringLength(unsigned long charnum, unsigned long nchars);
+     DOMPoint getStartPositionOfChar(unsigned long charnum);
+-    [FIXME] DOMPoint getEndPositionOfChar(unsigned long charnum);
++    DOMPoint getEndPositionOfChar(unsigned long charnum);
+     DOMRect getExtentOfChar(unsigned long charnum);
+-    [FIXME] float getRotationOfChar(unsigned long charnum);
+-    [FIXME] long getCharNumAtPosition(optional DOMPointInit point = {});
++    float getRotationOfChar(unsigned long charnum);
++    long getCharNumAtPosition(optional DOMPointInit point = {});
+     [FIXME] undefined selectSubString(unsigned long charnum, unsigned long nchars);
+ 
+ };
+-- 
+2.50.1 (Apple Git-155)
+

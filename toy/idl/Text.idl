@@ -1,0 +1,6 @@
+// Chitin phase-0 subset of Ladybird's Libraries/LibWeb/DOM/Text.idl (BSD-2-Clause, the Ladybird developers).
+// Members kept as written upstream; members the toy does not implement are left out.
+// https://dom.spec.whatwg.org/#text
+[Exposed=Window]
+interface Text : CharacterData {
+};

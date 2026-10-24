@@ -1,0 +1,21 @@
+// Chitin phase-0 subset of Ladybird's Libraries/LibWeb/DOM/Element.idl (BSD-2-Clause, the Ladybird developers).
+// Members kept as written upstream; members the toy does not implement are left out.
+// https://dom.spec.whatwg.org/#element
+[Exposed=Window]
+interface Element : Node {
+    readonly attribute [FlyString] DOMString localName;
+    readonly attribute [FlyString] DOMString tagName;
+
+    [CEReactions, Reflect] attribute DOMString id;
+    [CEReactions, Reflect=class] attribute DOMString className;
+
+    DOMString? getAttribute(DOMString qualifiedName);
+    [CEReactions] undefined setAttribute(DOMString qualifiedName, DOMString value);
+    [CEReactions] undefined removeAttribute(DOMString qualifiedName);
+    boolean hasAttribute(DOMString qualifiedName);
+
+    // https://drafts.csswg.org/cssom-view/#extension-to-the-element-interface
+    DOMRect getBoundingClientRect();
+};
+
+Element includes ChildNode;

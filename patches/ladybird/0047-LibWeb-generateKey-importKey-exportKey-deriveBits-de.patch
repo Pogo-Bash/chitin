@@ -1,0 +1,169 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 18:07:48 -0500
+Subject: [PATCH] LibWeb: generateKey, importKey, exportKey, deriveBits,
+ deriveKey, wrapKey and unwrapKey settle their promise in a global task on the
+ crypto task source queued from the in-parallel point, as digest, encrypt,
+ decrypt, sign and verify do; before, they settled from the deferred
+ invocation itself, ahead of every queued crypto task and outside any task
+
+---
+ Libraries/LibWeb/Crypto/SubtleCrypto.cpp | 44 ++++++++++++++++--------
+ 1 file changed, 30 insertions(+), 14 deletions(-)
+
+diff --git a/Libraries/LibWeb/Crypto/SubtleCrypto.cpp b/Libraries/LibWeb/Crypto/SubtleCrypto.cpp
+index 31a8843c66..9f53c242d3 100644
+--- a/Libraries/LibWeb/Crypto/SubtleCrypto.cpp
++++ b/Libraries/LibWeb/Crypto/SubtleCrypto.cpp
+@@ -155,6 +155,22 @@ WebIDL::ExceptionOr<NormalizedAlgorithmAndParameter> normalize_an_algorithm(JS::
+     return normalized_algorithm;
+ }
+ 
++
++// AD-HOC (Chitin): the steps after "return promise and perform the remaining steps in parallel" of the operations whose
++//         spec text settles the promise without naming a task run as a global task on the crypto task source, queued
++//         from the in-parallel point. Digest, encrypt, decrypt, sign and verify already queue theirs; settling these
++//         from the deferred invocation itself put them ahead of every queued crypto task (an importKey started after a
++//         digest settled first) and outside any task (their reactions ran after no task's microtask checkpoint).
++template<typename Steps>
++static void in_parallel_then_crypto_task(JS::Realm& realm, Steps&& steps)
++{
++    auto& global = realm.global_object();
++    auto function = GC::create_function(GC::Heap::the(), forward<Steps>(steps));
++    Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(GC::Heap::the(), [&global, function] {
++        HTML::queue_global_task(HTML::Task::Source::Crypto, global, function);
++    }));
++}
++
+ // https://w3c.github.io/webcrypto/#SubtleCrypto-method-encrypt
+ GC::Ref<WebIDL::Promise> SubtleCrypto::encrypt(JS::Realm& realm, AlgorithmIdentifier const& algorithm, GC::Ref<CryptoKey> key, WebIDL::BufferSourceVariant const& data_parameter)
+ {
+@@ -385,7 +401,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::generate_key(JS::Realm& realm, AlgorithmI
+     auto promise = WebIDL::create_promise(realm);
+ 
+     // 5. Return promise and perform the remaining steps in parallel.
+-    Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(GC::Heap::the(), [&realm, normalized_algorithm = normalized_algorithm.release_value(), promise, extractable, key_usages = move(key_usages)]() -> void {
++    in_parallel_then_crypto_task(realm, [&realm, normalized_algorithm = normalized_algorithm.release_value(), promise, extractable, key_usages = move(key_usages)]() -> void {
+         HTML::TemporaryExecutionContext context(realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+         // 6. If the following steps or referenced procedures say to throw an error, reject promise with
+         //    the returned error and then terminate the algorithm.
+@@ -425,7 +441,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::generate_key(JS::Realm& realm, AlgorithmI
+                 }
+                 WebIDL::resolve_promise(promise, object.release_value());
+             });
+-    }));
++    });
+ 
+     return promise;
+ }
+@@ -466,7 +482,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::import_key(JS::Realm& realm, KeyFormat fo
+     auto promise = WebIDL::create_promise(realm);
+ 
+     // 8. Return promise and perform the remaining steps in parallel.
+-    Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(GC::Heap::the(), [&realm, real_key_data = move(real_key_data), normalized_algorithm = normalized_algorithm.release_value(), promise, format, extractable, key_usages = move(key_usages), algorithm = move(algorithm)]() mutable -> void {
++    in_parallel_then_crypto_task(realm, [&realm, real_key_data = move(real_key_data), normalized_algorithm = normalized_algorithm.release_value(), promise, format, extractable, key_usages = move(key_usages), algorithm = move(algorithm)]() mutable -> void {
+         HTML::TemporaryExecutionContext context(realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+ 
+         // 9. If the following steps or referenced procedures say to throw an error, reject promise with the returned error and then terminate the algorithm.
+@@ -495,7 +511,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::import_key(JS::Realm& realm, KeyFormat fo
+ 
+         // 14. Resolve promise with result.
+         resolve_crypto_key_promise(realm, promise, result);
+-    }));
++    });
+ 
+     return promise;
+ }
+@@ -509,7 +525,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::export_key(JS::Realm& realm, KeyFormat fo
+     auto promise = WebIDL::create_promise(realm);
+ 
+     // 3. Return promise and perform the remaining steps in parallel.
+-    Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(GC::Heap::the(), [&realm, key, promise, format]() -> void {
++    in_parallel_then_crypto_task(realm, [&realm, key, promise, format]() -> void {
+         HTML::TemporaryExecutionContext context(realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+         // 4.  If the following steps or referenced procedures say to throw an error, reject promise with the returned error and then terminate the algorithm.
+ 
+@@ -544,7 +560,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::export_key(JS::Realm& realm, KeyFormat fo
+             return;
+         }
+         WebIDL::resolve_promise(promise, result.release_value());
+-    }));
++    });
+ 
+     return promise;
+ }
+@@ -726,7 +742,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::derive_bits(JS::Realm& realm, AlgorithmId
+     auto promise = WebIDL::create_promise(realm);
+ 
+     // 5. Return promise and perform the remaining steps in parallel.
+-    Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(GC::Heap::the(), [&realm, normalized_algorithm = normalized_algorithm.release_value(), promise, base_key, length_optional]() -> void {
++    in_parallel_then_crypto_task(realm, [&realm, normalized_algorithm = normalized_algorithm.release_value(), promise, base_key, length_optional]() -> void {
+         HTML::TemporaryExecutionContext context(realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+         // 6. If the following steps or referenced procedures say to throw an error, reject promise with the returned error and then terminate the algorithm.
+ 
+@@ -751,7 +767,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::derive_bits(JS::Realm& realm, AlgorithmId
+ 
+         // 10. Resolve promise with result.
+         WebIDL::resolve_promise(promise, JS::ArrayBuffer::create(realm, result.release_value()));
+-    }));
++    });
+ 
+     return promise;
+ }
+@@ -786,7 +802,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::derive_key(JS::Realm& realm, AlgorithmIde
+     auto promise = WebIDL::create_promise(realm);
+ 
+     // 9. Return promise and perform the remaining steps in parallel.
+-    Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(GC::Heap::the(), [&realm, normalized_algorithm = normalized_algorithm.release_value(), promise, normalized_derived_key_algorithm_import = normalized_derived_key_algorithm_import.release_value(), normalized_derived_key_algorithm_length = normalized_derived_key_algorithm_length.release_value(), base_key = move(base_key), extractable, key_usages = move(key_usages)]() mutable -> void {
++    in_parallel_then_crypto_task(realm, [&realm, normalized_algorithm = normalized_algorithm.release_value(), promise, normalized_derived_key_algorithm_import = normalized_derived_key_algorithm_import.release_value(), normalized_derived_key_algorithm_length = normalized_derived_key_algorithm_length.release_value(), base_key = move(base_key), extractable, key_usages = move(key_usages)]() mutable -> void {
+         HTML::TemporaryExecutionContext context(realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+         // 10. If the following steps or referenced procedures say to throw an error, reject promise with the returned error and then terminate the algorithm.
+ 
+@@ -842,7 +858,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::derive_key(JS::Realm& realm, AlgorithmIde
+ 
+         // 19. Resolve promise with result.
+         resolve_crypto_key_promise(realm, promise, result);
+-    }));
++    });
+ 
+     return promise;
+ }
+@@ -881,7 +897,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::wrap_key(JS::Realm& realm, KeyFormat form
+     auto promise = WebIDL::create_promise(realm);
+ 
+     // 7. Return promise and perform the remaining steps in parallel.
+-    Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(GC::Heap::the(), [&realm, normalized_algorithm = move(normalized_algorithm), promise, wrapping_key = move(wrapping_key), key = move(key), format, operation]() mutable -> void {
++    in_parallel_then_crypto_task(realm, [&realm, normalized_algorithm = move(normalized_algorithm), promise, wrapping_key = move(wrapping_key), key = move(key), format, operation]() mutable -> void {
+         HTML::TemporaryExecutionContext context(realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+         // FIXME: 8. If the following steps or referenced procedures say to throw an error, queue a global task on the crypto task source, given realm's global object, to reject promise with the returned error; and then terminate the algorithm.
+ 
+@@ -968,7 +984,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::wrap_key(JS::Realm& realm, KeyFormat form
+         // FIXME: 17. Let result be the result of creating an ArrayBuffer in realm, containing result.
+         // 18. Resolve promise with result.
+         WebIDL::resolve_promise(promise, JS::ArrayBuffer::create(realm, move(result)));
+-    }));
++    });
+ 
+     return promise;
+ }
+@@ -1020,7 +1036,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::unwrap_key(JS::Realm& realm, KeyFormat fo
+     auto promise = WebIDL::create_promise(realm);
+ 
+     // 10. Return promise and perform the remaining steps in parallel.
+-    Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(GC::Heap::the(), [&realm, normalized_algorithm = move(normalized_algorithm), promise, unwrapping_key = unwrapping_key, real_wrapped_key = move(real_wrapped_key), operation, format, extractable, key_usages = move(key_usages), normalized_key_algorithm = move(normalized_key_algorithm)]() mutable -> void {
++    in_parallel_then_crypto_task(realm, [&realm, normalized_algorithm = move(normalized_algorithm), promise, unwrapping_key = unwrapping_key, real_wrapped_key = move(real_wrapped_key), operation, format, extractable, key_usages = move(key_usages), normalized_key_algorithm = move(normalized_key_algorithm)]() mutable -> void {
+         HTML::TemporaryExecutionContext context(realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+         // FIXME: 11. If the following steps or referenced procedures say to throw an error, queue a global task on the crypto task source, given realm's global object, to reject promise with the returned error; and then terminate the algorithm.
+ 
+@@ -1120,7 +1136,7 @@ GC::Ref<WebIDL::Promise> SubtleCrypto::unwrap_key(JS::Realm& realm, KeyFormat fo
+         // FIXME: 21. Let result be the result of converting result to an ECMAScript Object in realm, as defined by [WebIDL].
+         // 22. Resolve promise with result.
+         resolve_crypto_key_promise(realm, promise, result);
+-    }));
++    });
+ 
+     return promise;
+ }
+-- 
+2.50.1 (Apple Git-155)
+

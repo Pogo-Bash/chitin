@@ -1,0 +1,284 @@
+From 3ab78a772735aeefaf7110a8de6ca56478809f81 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 07:22:09 -0500
+Subject: [PATCH 32/34] LibIPC: on Emscripten an in-process TransportSocket
+ pair (create_in_process_pair) for an embedder that serves a protocol in the
+ same thread: no socket, no IO thread; a synchronous request is answered
+ before the sender waits
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Libraries/LibIPC/TransportSocket.cpp | 136 +++++++++++++++++++++++++++
+ Libraries/LibIPC/TransportSocket.h   |  25 ++++-
+ 2 files changed, 160 insertions(+), 1 deletion(-)
+
+diff --git a/Libraries/LibIPC/TransportSocket.cpp b/Libraries/LibIPC/TransportSocket.cpp
+index 84116f0a56..3a0ca7992c 100644
+--- a/Libraries/LibIPC/TransportSocket.cpp
++++ b/Libraries/LibIPC/TransportSocket.cpp
+@@ -10,6 +10,8 @@
+ #include <AK/NonnullOwnPtr.h>
+ #include <AK/ScopeGuard.h>
+ #include <AK/Types.h>
++#include <AK/RefCounted.h>
++#include <LibCore/EventLoop.h>
+ #include <LibCore/Socket.h>
+ #include <LibCore/System.h>
+ #include <LibIPC/Attachment.h>
+@@ -39,6 +41,46 @@ static constexpr size_t MAX_READS_PER_ROUND = 16;
+ Atomic<u32> TransportSocket::s_eof_drain_window_for_test_ms { 0 };
+ Atomic<bool> TransportSocket::s_skip_inloop_read_for_test { false };
+ 
++#ifdef AK_OS_EMSCRIPTEN
++struct TransportSocket::InProcessLink : public RefCounted<TransportSocket::InProcessLink> {
++    TransportSocket* client { nullptr };
++    TransportSocket* server { nullptr };
++
++    TransportSocket* peer_of(TransportSocket const* end) const { return end == client ? server : client; }
++};
++
++TransportSocket::InProcessPair TransportSocket::create_in_process_pair()
++{
++    auto link = adopt_ref(*new InProcessLink);
++    auto client = adopt_own(*new TransportSocket(link, false));
++    auto server = adopt_own(*new TransportSocket(link, true));
++    link->client = client.ptr();
++    link->server = server.ptr();
++    return { move(client), move(server) };
++}
++
++TransportSocket::TransportSocket(RefPtr<InProcessLink> link, bool serves_synchronously)
++    : m_in_process_link(move(link))
++    , m_serves_synchronously(serves_synchronously)
++{
++}
++
++void TransportSocket::schedule_in_process_read_hook()
++{
++    if (!m_on_read_hook || m_in_process_read_hook_scheduled)
++        return;
++    m_in_process_read_hook_scheduled = true;
++    Core::deferred_invoke([link = m_in_process_link, is_client = m_in_process_link->client == this] {
++        auto* self = is_client ? link->client : link->server;
++        if (!self)
++            return;
++        self->m_in_process_read_hook_scheduled = false;
++        if (self->m_on_read_hook)
++            self->m_on_read_hook();
++    });
++}
++#endif
++
+ void TransportSocket::set_eof_drain_window_for_test(u32 milliseconds)
+ {
+     s_eof_drain_window_for_test_ms.store(milliseconds, AK::MemoryOrder::memory_order_relaxed);
+@@ -328,6 +370,19 @@ void TransportSocket::wake_io_thread()
+ 
+ TransportSocket::~TransportSocket()
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    if (m_in_process_link) {
++        if (m_in_process_link->client == this)
++            m_in_process_link->client = nullptr;
++        else
++            m_in_process_link->server = nullptr;
++        if (auto* peer = m_in_process_link->peer_of(this)) {
++            peer->m_incoming_eof = true;
++            peer->schedule_in_process_read_hook();
++        }
++        return;
++    }
++#endif
+     stop_io_thread(IOThreadState::Stopped);
+     m_read_hook_notifier.clear();
+ }
+@@ -351,6 +406,14 @@ void TransportSocket::notify_read_available()
+ 
+ void TransportSocket::set_up_read_hook(Function<void()> hook)
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    if (m_in_process_link) {
++        m_on_read_hook = move(hook);
++        if (!m_incoming_messages.is_empty())
++            schedule_in_process_read_hook();
++        return;
++    }
++#endif
+     m_on_read_hook = move(hook);
+     m_read_hook_notifier = Core::Notifier::construct(m_notify_hook_read_fd->value(), Core::NotificationType::Read);
+     m_read_hook_notifier->on_activation = [this] {
+@@ -377,6 +440,16 @@ bool TransportSocket::is_open() const
+ 
+ void TransportSocket::close()
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    if (m_in_process_link) {
++        m_socket_is_open.store(false, AK::MemoryOrder::memory_order_relaxed);
++        if (auto* peer = m_in_process_link->peer_of(this)) {
++            peer->m_incoming_eof = true;
++            peer->schedule_in_process_read_hook();
++        }
++        return;
++    }
++#endif
+     m_socket_is_open.store(false, AK::MemoryOrder::memory_order_relaxed);
+     stop_io_thread(IOThreadState::Stopped);
+     m_socket->close();
+@@ -384,6 +457,16 @@ void TransportSocket::close()
+ 
+ void TransportSocket::close_after_sending_all_pending_messages()
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    if (m_in_process_link) {
++        m_socket_is_open.store(false, AK::MemoryOrder::memory_order_relaxed);
++        if (auto* peer = m_in_process_link->peer_of(this)) {
++            peer->m_incoming_eof = true;
++            peer->schedule_in_process_read_hook();
++        }
++        return;
++    }
++#endif
+     m_socket_is_open.store(false, AK::MemoryOrder::memory_order_relaxed);
+     stop_io_thread(IOThreadState::SendPendingMessagesAndStop);
+     m_socket->close();
+@@ -391,6 +474,11 @@ void TransportSocket::close_after_sending_all_pending_messages()
+ 
+ void TransportSocket::flush()
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    if (m_in_process_link) {
++        return;
++    }
++#endif
+     if (!m_socket_is_open.load(AK::MemoryOrder::memory_order_relaxed))
+         return;
+     wake_io_thread();
+@@ -411,6 +499,11 @@ bool TransportSocket::incoming_is_behind_socket() const
+ 
+ void TransportSocket::wait_until_incoming_is_current()
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    if (m_in_process_link) {
++        return;
++    }
++#endif
+     MutexLocker locker(m_incoming_mutex);
+     while (!m_incoming_eof && !m_receive_loop_finished
+         && (m_io_thread_state.load() != IOThreadState::Running || incoming_is_behind_socket()))
+@@ -419,6 +512,16 @@ void TransportSocket::wait_until_incoming_is_current()
+ 
+ void TransportSocket::wait_until_readable()
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    if (m_in_process_link) {
++        // Nothing can arrive while this thread waits: an answer that is not queued by now never comes.
++        if (m_incoming_messages.is_empty() && !m_incoming_eof) {
++            dbgln("TransportSocket: an in-process peer left a synchronous request unanswered");
++            m_in_process_starved = true;
++        }
++        return;
++    }
++#endif
+     MutexLocker lock(m_incoming_mutex);
+     while (m_incoming_messages.is_empty() && m_io_thread_state == IOThreadState::Running) {
+         m_incoming_cv.wait();
+@@ -427,6 +530,26 @@ void TransportSocket::wait_until_readable()
+ 
+ ErrorOr<void> TransportSocket::post_message(MessageDataType bytes_to_write, Vector<Attachment>& attachments)
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    if (m_in_process_link) {
++        auto* peer = m_in_process_link->peer_of(this);
++        if (!peer || !is_open())
++            return Error::from_string_literal("The in-process peer is gone");
++        auto message = make<Message>();
++        Vector<u8> payload;
++        TRY(payload.try_append(bytes_to_write.data(), bytes_to_write.size()));
++        message->bytes = ReceivedMessageBytes::from_vector(move(payload));
++        for (auto& attachment : attachments)
++            message->attachments.enqueue(move(attachment));
++        attachments.clear();
++        peer->m_incoming_messages.append(move(message));
++        if (peer->m_serves_synchronously && peer->m_on_read_hook)
++            peer->m_on_read_hook();
++        else
++            peer->schedule_in_process_read_hook();
++        return {};
++    }
++#endif
+     auto num_fds_to_transfer = attachments.size();
+ 
+     SocketMessageHeader header {
+@@ -668,6 +791,14 @@ TransportSocket::MoreToRead TransportSocket::read_incoming_messages()
+ 
+ TransportSocket::ShouldShutdown TransportSocket::read_as_many_messages_as_possible_without_blocking(Function<void(Message&&)>&& callback)
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    if (m_in_process_link) {
++        auto messages = move(m_incoming_messages);
++        for (auto& message : messages)
++            callback(move(*message));
++        return m_incoming_eof || m_in_process_starved ? ShouldShutdown::Yes : ShouldShutdown::No;
++    }
++#endif
+     Vector<NonnullOwnPtr<Message>> messages;
+     bool eof;
+     {
+@@ -682,6 +813,11 @@ TransportSocket::ShouldShutdown TransportSocket::read_as_many_messages_as_possib
+ 
+ ErrorOr<TransportHandle> TransportSocket::release_for_transfer()
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    if (m_in_process_link) {
++        return Error::from_string_literal("An in-process transport cannot be transferred");
++    }
++#endif
+     m_is_being_transferred.store(true, AK::MemoryOrder::memory_order_release);
+     m_socket_is_open.store(false, AK::MemoryOrder::memory_order_relaxed);
+     stop_io_thread(IOThreadState::SendPendingMessagesAndStop);
+diff --git a/Libraries/LibIPC/TransportSocket.h b/Libraries/LibIPC/TransportSocket.h
+index 15a93d6cf7..dc0f04bde7 100644
+--- a/Libraries/LibIPC/TransportSocket.h
++++ b/Libraries/LibIPC/TransportSocket.h
+@@ -90,6 +90,19 @@ public:
+     static ErrorOr<Paired> create_paired();
+     static ErrorOr<NonnullOwnPtr<TransportSocket>> from_socket(NonnullOwnPtr<Core::LocalSocket> socket);
+ 
++#ifdef AK_OS_EMSCRIPTEN
++    // Two ends of a connection inside this process and thread, for an embedder that serves a protocol itself (a wasm
++    // module has no sockets, and no threads without SharedArrayBuffer). There is no IO thread: a message posted on one
++    // end is queued on the other, whose read hook runs from the event loop, or at once on an end that serves
++    // synchronously, so that a synchronous request sent to it has its answer queued before the sender waits.
++    // Attachments travel as they are, since both ends share the descriptor table.
++    struct InProcessPair {
++        NonnullOwnPtr<TransportSocket> client;
++        NonnullOwnPtr<TransportSocket> server;
++    };
++    static InProcessPair create_in_process_pair();
++#endif
++
+     explicit TransportSocket(NonnullOwnPtr<Core::LocalSocket> socket);
+     ~TransportSocket();
+ 
+@@ -160,7 +173,17 @@ private:
+     void notify_read_available();
+     bool incoming_is_behind_socket() const;
+ 
+-    NonnullOwnPtr<Core::LocalSocket> m_socket;
++#ifdef AK_OS_EMSCRIPTEN
++    struct InProcessLink;
++    TransportSocket(RefPtr<InProcessLink>, bool serves_synchronously);
++    void schedule_in_process_read_hook();
++    RefPtr<InProcessLink> m_in_process_link;
++    bool m_serves_synchronously { false };
++    bool m_in_process_read_hook_scheduled { false };
++    bool m_in_process_starved { false };
++#endif
++
++    OwnPtr<Core::LocalSocket> m_socket;
+     Atomic<bool> m_socket_is_open { true };
+ 
+     RefPtr<Threading::Thread> m_io_thread;
+-- 
+2.50.1 (Apple Git-155)
+

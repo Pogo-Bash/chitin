@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+     Copyright (c) 2026 [OWNER NAME]
+     Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
+     A mock identity provider's authorization page (docs/oauth.md): no account, no password; Approve sends the browser
+     to the redirect_uri with a code and the state. -->
+<html><head><meta charset="utf-8"><title>Mock provider</title>
+<style>body{font:16px system-ui;margin:16px} button{width:200px;height:40px}</style></head>
+<body><h1>Mock identity provider</h1><p>Sign in to <b id="client"></b>?</p>
+<button id="approve">Approve</button>
+<script>
+var q = new URLSearchParams(location.search);
+document.getElementById('client').textContent = q.get('client_id');
+document.getElementById('approve').addEventListener('click', function () {
+    var r = new URL(q.get('redirect_uri'));
+    r.searchParams.set('code', 'mock-' + Math.random().toString(36).slice(2, 8));
+    r.searchParams.set('state', q.get('state') || '');
+    location.assign(r.href);
+});
+</script></body></html>

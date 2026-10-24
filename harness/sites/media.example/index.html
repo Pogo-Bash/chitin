@@ -1,0 +1,20 @@
+<!doctype html>
+<title>media errors</title>
+<script>
+window.seen = [];
+function watch(v, name) {
+    v.addEventListener('error', () => seen.push(name + ':error:' + (v.error && v.error.code)));
+}
+</script>
+<video id="a" src="junk.webm"></video>
+<video id="b" src="junk.mp4"></video>
+<audio id="c" src="junk.webm"></audio>
+<script>
+for (const id of ['a', 'b', 'c']) watch(document.getElementById(id), id);
+const d = document.createElement('video');
+watch(d, 'd');
+d.src = 'junk.webm';
+d.muted = true;
+d.play().catch((e) => seen.push('d:play:' + e.name));
+window.mse = typeof MediaSource === 'function' ? ['video/webm; codecs="vp9"', 'video/mp4; codecs="avc1.4d401f"', 'audio/webm; codecs="opus"', 'audio/mp4; codecs="mp4a.40.2"'].map((t) => MediaSource.isTypeSupported(t)) : null;
+</script>

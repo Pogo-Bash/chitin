@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Images</title>
+<style>
+  html { background: #fff; }
+  body { margin: 16px; font-family: "Noto Sans", sans-serif; font-size: 14px; color: #111; }
+  .strip img { width: 96px; height: 96px; margin-right: 8px; vertical-align: top; }
+  .sized { width: 200px; height: 100px; object-fit: cover; }
+  .bg { width: 300px; height: 80px; background: url("img/stripes.bmp") repeat; border: 1px solid #333; margin-top: 12px; }
+  figure { margin: 12px 0; }
+  figcaption { font-size: 12px; color: #555; }
+  .missing { width: 64px; height: 64px; border: 1px dashed #c00; }
+</style>
+</head>
+<body>
+<p>Images decoded by the host, delivered to the engine as frames; the background uses one as a repeating pattern.</p>
+<div class="strip">
+  <img src="img/red.bmp" alt="red"><img src="img/green.bmp" alt="green"><img src="img/blue.bmp" alt="blue"><img src="img/gradient.bmp" alt="gradient"><img src="img/checker.bmp" alt="checker">
+</div>
+<figure><img class="sized" src="img/gradient.bmp" alt="gradient, cover"><figcaption>object-fit: cover into 200×100</figcaption></figure>
+<div class="bg"></div>
+<p>A missing image: <img class="missing" src="img/missing.bmp" alt="missing image alt text"></p>
+</body>
+</html>

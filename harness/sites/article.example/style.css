@@ -1,0 +1,20 @@
+@font-face {
+  font-family: "Site Serif";
+  src: url("https://fonts.example/NotoSerif-Bold.ttf") format("truetype");
+  font-weight: bold;
+}
+html { background: #f7f4ee; }
+body { max-width: 640px; margin: 0 auto; padding: 24px; font-family: "Noto Sans", sans-serif; font-size: 16px; line-height: 1.5; color: #2a2521; }
+header { border-bottom: 2px solid #c9b79c; margin-bottom: 20px; }
+.kicker { font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: #8a6d3b; margin: 0 0 8px; }
+h1, h2 { font-family: "Site Serif", serif; font-weight: bold; margin: 0 0 12px; color: #4a2d12; }
+h1 { font-size: 40px; line-height: 1.1; }
+h2 { font-size: 24px; margin-top: 24px; }
+.byline { font-style: italic; color: #6b5b4b; }
+.lede { font-size: 19px; }
+blockquote { margin: 16px 0; padding: 8px 16px; border-left: 4px solid #c9b79c; background: #efe8da; }
+.pull { float: right; width: 180px; margin: 4px 0 8px 16px; padding: 8px; background: #e2d7c2; font-family: "Site Serif", serif; font-weight: bold; font-size: 15px; }
+code { font-family: "Noto Sans Mono", monospace; background: #ece6da; padding: 0 3px; }
+.mono { font-family: "Noto Sans Mono", monospace; font-size: 14px; }
+a { color: #1d5fa8; }
+footer { margin-top: 32px; font-size: 13px; color: #7a6f63; }

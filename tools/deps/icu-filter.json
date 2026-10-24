@@ -1,0 +1,31 @@
+{
+  "__comment": "ICU data for Ganglion (tools/deps/icu-data.sh): break iteration (line and grapheme segmenters), normalization, converters for LibTextCodec, the core tables, and the root/en locales. No collation, transliteration, time zones, currencies, units or character names: nothing in a static page reaches them, and page JavaScript (Intl) is phase 2.",
+  "localeFilter": { "filterType": "language", "includelist": ["en"] },
+  "featureFilters": {
+    "brkitr_rules": "include",
+    "brkitr_dictionaries": "include",
+    "brkitr_tree": "include",
+    "brkitr_lstm": "exclude",
+    "brkitr_adaboost": "exclude",
+    "normalization": "include",
+    "unicore": "include",
+    "cnvalias": "include",
+    "conversion_mappings": "include",
+    "misc": "include",
+    "locales_tree": "include",
+    "coll_ucadata": "exclude",
+    "coll_tree": "exclude",
+    "confusables": "exclude",
+    "curr_supplemental": "exclude",
+    "curr_tree": "exclude",
+    "lang_tree": "exclude",
+    "region_tree": "exclude",
+    "rbnf_tree": "exclude",
+    "stringprep": "exclude",
+    "translit": "exclude",
+    "unames": "exclude",
+    "unit_tree": "exclude",
+    "zone_supplemental": "exclude",
+    "zone_tree": "exclude"
+  }
+}

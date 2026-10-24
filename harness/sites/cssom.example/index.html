@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><title>cssom</title>
+<!-- The CSSOM serialization diff page (tools/cssom-diff, docs/cssom.md): the same bytes run in Chrome's top-level window and in a
+     Chitin segment; gen.js sets thousands of property/value pairs, reads every serialization back and leaves a JSON string in
+     window.__cssom. -->
+<link rel="stylesheet" href="sheet.css">
+<style>html, body { margin: 0; color: black; background: white; }</style>
+<style id="inl">#u1 { background-image: url(img.png); } #u2 { background-image: url("a b.png"), url('q\'.png'); } #u3 { cursor: url(cur.png) 2 3, auto; }</style>
+<div id="host" style="width: 800px; color: black; background: white; font: 16px serif"><div id="u1"></div><div id="u2"></div><div id="u3"></div><div id="u4"></div><div id="t"></div></div>
+<script src="gen.js"></script>

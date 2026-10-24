@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8"><title>imagedata</title></head><body><script>
+// ImageData.data is the page's own array (tests/engine-js.test.mjs): writes into it reach putImageData, as in Chrome.
+var out = {};
+function put(d, w) { var c = document.createElement('canvas'); c.width = w || 1; c.height = 1; var h = c.getContext('2d'); h.putImageData(d, 0, 0); return Array.from(h.getImageData(0, 0, 1, 1).data).join(','); }
+var a = new Uint8ClampedArray([0, 0, 255, 255]);
+var d = new ImageData(a, 1, 1);
+out.sameArray = d.data === a && d.data === d.data;
+a[1] = 255; out.writeThroughCtorArray = put(d);
+var e = new ImageData(1, 1); e.data[2] = 255; e.data[3] = 255; out.writeFresh = put(e);
+var f = new ImageData(1, 1); f.data.set([9, 8, 7, 255]); out.set = put(f);
+var g = document.createElement('canvas').getContext('2d').createImageData(1, 1); g.data[0] = 255; g.data[3] = 255; out.createImageData = put(g);
+var c = document.createElement('canvas'); c.width = 1; c.height = 1; var h = c.getContext('2d'); h.fillStyle = '#00ff00'; h.fillRect(0, 0, 1, 1);
+var r = h.getImageData(0, 0, 1, 1); r.data[0] = 255; h.putImageData(r, 0, 0); out.roundTrip = Array.from(h.getImageData(0, 0, 1, 1).data).join(',');
+var done = true;
+</script></body></html>

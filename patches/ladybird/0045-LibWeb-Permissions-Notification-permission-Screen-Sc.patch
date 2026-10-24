@@ -1,0 +1,918 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 20:02:54 -0500
+Subject: [PATCH 45/46] LibWeb: Permissions, Notification permission, Screen,
+ ScreenOrientation and NetworkInformation as Chrome answers them
+
+navigator.permissions and PermissionStatus are exposed (they were behind
+[Experimental]). A query knows Chrome's permission names, answers each
+one's state for an origin with no stored decision (granted where Chrome
+grants without asking), reports Chrome's status names (camera is
+"video_capture"), checks push's userVisibleOnly and fullscreen's
+allowWithoutGesture, and rejects unknown or disabled names with
+Chrome's messages. Nothing is granted without a prompt: outside test
+mode a permission request is treated as dismissed (the caller hears
+"denied", nothing is stored, the state stays "prompt").
+
+Notification.permission and Notification.requestPermission() follow
+the notifications permission ("default" while it is "prompt");
+maxActions is 2.
+
+Screen gets availLeft/availTop; the available area, color depth and
+screen count can come from the page client. ScreenOrientation's type
+and angle come from the client (else the screen's shape), lock()
+rejects with Chrome's NotSupportedError message, unlock() does
+nothing, and Screen::orientation_did_change() fires change.
+
+NetworkInformation (navigator.connection): effectiveType, rtt,
+downlink, saveData and onchange, values from the page client.
+
+An AudioContext without a sampleRate option runs at the page client's
+audio output rate (the default output device's, as in Chrome), not 44100.
+---
+ Libraries/LibWeb/CMakeLists.txt               |   1 +
+ Libraries/LibWeb/CSS/Screen.cpp               |  24 +++-
+ Libraries/LibWeb/CSS/Screen.h                 |   3 +
+ Libraries/LibWeb/CSS/Screen.idl               |   3 +
+ Libraries/LibWeb/CSS/ScreenOrientation.cpp    |  17 ++-
+ Libraries/LibWeb/Forward.h                    |   1 +
+ Libraries/LibWeb/HTML/Navigator.cpp           |   9 ++
+ Libraries/LibWeb/HTML/Navigator.h             |   5 +
+ Libraries/LibWeb/HTML/Navigator.idl           |   5 +-
+ Libraries/LibWeb/HTML/NetworkInformation.cpp  |  82 +++++++++++
+ Libraries/LibWeb/HTML/NetworkInformation.h    |  42 ++++++
+ Libraries/LibWeb/HTML/NetworkInformation.idl  |  17 +++
+ Libraries/LibWeb/HTML/WorkerNavigator.idl     |   2 +-
+ .../LibWeb/NotificationsAPI/Notification.cpp  |  63 ++++++++
+ .../LibWeb/NotificationsAPI/Notification.h    |  10 +-
+ .../LibWeb/NotificationsAPI/Notification.idl  |   6 +-
+ Libraries/LibWeb/Page/Page.cpp                |   2 +-
+ Libraries/LibWeb/Page/Page.h                  |  16 +++
+ .../PermissionsAPI/PermissionStatus.cpp       |   7 +-
+ .../LibWeb/PermissionsAPI/PermissionStatus.h  |   2 +-
+ .../PermissionsAPI/PermissionStatus.idl       |   2 +-
+ .../LibWeb/PermissionsAPI/Permissions.cpp     | 134 ++++++++++++++++--
+ .../LibWeb/PermissionsAPI/Permissions.idl     |  10 ++
+ Libraries/LibWeb/WebAudio/AudioContext.cpp    |   5 +-
+ Libraries/LibWeb/idl_files.cmake              |   1 +
+ 25 files changed, 431 insertions(+), 38 deletions(-)
+ create mode 100644 Libraries/LibWeb/HTML/NetworkInformation.cpp
+ create mode 100644 Libraries/LibWeb/HTML/NetworkInformation.h
+ create mode 100644 Libraries/LibWeb/HTML/NetworkInformation.idl
+
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index 302b118daf..5b5d01e889 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -204,6 +204,7 @@ set(SOURCES
+     CSS/ResolvedTransform.cpp
+     CSS/Screen.cpp
+     CSS/ScreenOrientation.cpp
++    HTML/NetworkInformation.cpp
+     CSS/ScrollStateContainerQuery.cpp
+     CSS/Selector.cpp
+     CSS/SelectorMatching.cpp
+diff --git a/Libraries/LibWeb/CSS/Screen.cpp b/Libraries/LibWeb/CSS/Screen.cpp
+index 38fb33dd7f..ab1500f0c5 100644
+--- a/Libraries/LibWeb/CSS/Screen.cpp
++++ b/Libraries/LibWeb/CSS/Screen.cpp
+@@ -8,6 +8,8 @@
+ #include <LibGC/Heap.h>
+ #include <LibGfx/Rect.h>
+ #include <LibWeb/CSS/Screen.h>
++#include <LibWeb/DOM/Event.h>
++#include <LibWeb/HTML/EventNames.h>
+ #include <LibWeb/CSS/ScreenOrientation.h>
+ #include <LibWeb/DOM/Document.h>
+ #include <LibWeb/Page/Page.h>
+@@ -48,6 +50,17 @@ i32 Screen::height() const
+     return window().page().web_exposed_screen_area().height().to_int();
+ }
+ 
++// Not in CSSOM View (Chrome, Firefox): the left and top of the Web-exposed available screen area.
++i32 Screen::avail_left() const
++{
++    return window().page().web_exposed_available_screen_area().x().to_int();
++}
++
++i32 Screen::avail_top() const
++{
++    return window().page().web_exposed_available_screen_area().y().to_int();
++}
++
+ // https://drafts.csswg.org/cssom-view-1/#dom-screen-availwidth
+ i32 Screen::avail_width() const
+ {
+@@ -67,7 +80,7 @@ u32 Screen::color_depth() const
+ {
+     // The colorDepth and pixelDepth attributes should return the number of bits allocated to colors for a pixel in
+     // the output device, excluding the alpha channel.
+-    return 24;
++    return window().page().client().screen_color_depth();
+ }
+ 
+ // https://drafts.csswg.org/cssom-view-1/#dom-screen-pixeldepth
+@@ -75,7 +88,14 @@ u32 Screen::pixel_depth() const
+ {
+     // The colorDepth and pixelDepth attributes should return the number of bits allocated to colors for a pixel in
+     // the output device, excluding the alpha channel.
+-    return 24;
++    return window().page().client().screen_color_depth();
++}
++
++// https://w3c.github.io/screen-orientation/#dfn-screen-orientation-change-steps
++void Screen::orientation_did_change()
++{
++    if (m_orientation)
++        m_orientation->dispatch_event(DOM::Event::create(window().principal_realm().global_object(), HTML::EventNames::change));
+ }
+ 
+ GC::Ref<ScreenOrientation> Screen::orientation()
+diff --git a/Libraries/LibWeb/CSS/Screen.h b/Libraries/LibWeb/CSS/Screen.h
+index f94bbf0e41..1ce9dd8e5d 100644
+--- a/Libraries/LibWeb/CSS/Screen.h
++++ b/Libraries/LibWeb/CSS/Screen.h
+@@ -22,11 +22,14 @@ public:
+ 
+     i32 width() const;
+     i32 height() const;
++    i32 avail_left() const;
++    i32 avail_top() const;
+     i32 avail_width() const;
+     i32 avail_height() const;
+     u32 color_depth() const;
+     u32 pixel_depth() const;
+     GC::Ref<ScreenOrientation> orientation();
++    void orientation_did_change();
+ 
+     bool is_extended() const;
+ 
+diff --git a/Libraries/LibWeb/CSS/Screen.idl b/Libraries/LibWeb/CSS/Screen.idl
+index 1c1e0e95a6..d2add22056 100644
+--- a/Libraries/LibWeb/CSS/Screen.idl
++++ b/Libraries/LibWeb/CSS/Screen.idl
+@@ -1,6 +1,9 @@
+ // https://w3c.github.io/csswg-drafts/cssom-view-1/#screen
+ [Exposed=Window]
+ interface Screen {
++    // Not in CSSOM View; Chrome and Firefox have them: where the available area starts.
++    readonly attribute long availLeft;
++    readonly attribute long availTop;
+     readonly attribute long availWidth;
+     readonly attribute long availHeight;
+     readonly attribute long width;
+diff --git a/Libraries/LibWeb/CSS/ScreenOrientation.cpp b/Libraries/LibWeb/CSS/ScreenOrientation.cpp
+index bf131050a6..04117c4b57 100644
+--- a/Libraries/LibWeb/CSS/ScreenOrientation.cpp
++++ b/Libraries/LibWeb/CSS/ScreenOrientation.cpp
+@@ -8,6 +8,7 @@
+ #include <LibWeb/CSS/ScreenOrientation.h>
+ #include <LibWeb/HTML/EventNames.h>
+ #include <LibWeb/HTML/Window.h>
++#include <LibWeb/Page/Page.h>
+ #include <LibWeb/WebIDL/Promise.h>
+ 
+ namespace Web::CSS {
+@@ -43,27 +44,31 @@ WebIDL::ExceptionOr<GC::Ref<WebIDL::Promise>> ScreenOrientation::lock(Orientatio
+ // https://w3c.github.io/screen-orientation/#lock-method
+ WebIDL::ExceptionOr<void> ScreenOrientation::lock()
+ {
+-    return WebIDL::NotSupportedError::create("FIXME: ScreenOrientation::lock() is not implemented"_utf16);
++    // A user agent that cannot lock the orientation of this device (a desktop) rejects every lock, in the words Chrome uses.
++    return WebIDL::NotSupportedError::create("screen.orientation.lock() is not available on this device."_utf16);
+ }
+ 
+ // https://w3c.github.io/screen-orientation/#unlock-method
+ void ScreenOrientation::unlock()
+ {
+-    dbgln("FIXME: Stubbed ScreenOrientation::unlock()");
++    // Nothing is ever locked (lock() always rejects), so there is nothing to unlock.
+ }
+ 
+ // https://w3c.github.io/screen-orientation/#type-attribute
+ OrientationType ScreenOrientation::type() const
+ {
+-    dbgln("FIXME: Stubbed ScreenOrientation::type()");
+-    return OrientationType::LandscapePrimary;
++    auto& client = m_window->page().client();
++    if (auto type = client.screen_orientation_type(); type.has_value() && *type <= 3)
++        return static_cast<OrientationType>(*type);
++    // Without the embedder's answer: the screen's shape, at its natural angle.
++    auto rect = client.screen_rect();
++    return rect.height() > rect.width() ? OrientationType::PortraitPrimary : OrientationType::LandscapePrimary;
+ }
+ 
+ // https://w3c.github.io/screen-orientation/#angle-attribute
+ WebIDL::UnsignedShort ScreenOrientation::angle() const
+ {
+-    dbgln("FIXME: Stubbed ScreenOrientation::angle()");
+-    return 0;
++    return m_window->page().client().screen_orientation_angle();
+ }
+ 
+ // https://w3c.github.io/screen-orientation/#onchange-event-handler-attribute
+diff --git a/Libraries/LibWeb/Forward.h b/Libraries/LibWeb/Forward.h
+index 5ae4b2562b..a88825de77 100644
+--- a/Libraries/LibWeb/Forward.h
++++ b/Libraries/LibWeb/Forward.h
+@@ -801,6 +801,7 @@ class NavigationHistoryEntry;
+ class NavigationObserver;
+ class NavigationTransition;
+ class Navigator;
++class NetworkInformation;
+ class OffscreenCanvas;
+ class OffscreenCanvasRenderingContext2D;
+ class PageTransitionEvent;
+diff --git a/Libraries/LibWeb/HTML/Navigator.cpp b/Libraries/LibWeb/HTML/Navigator.cpp
+index 6cf45cc2b1..029ba323c1 100644
+--- a/Libraries/LibWeb/HTML/Navigator.cpp
++++ b/Libraries/LibWeb/HTML/Navigator.cpp
+@@ -18,6 +18,7 @@
+ #include <LibWeb/EncryptedMediaExtensions/MediaKeySystemAccess.h>
+ #include <LibWeb/Geolocation/Geolocation.h>
+ #include <LibWeb/HTML/Navigator.h>
++#include <LibWeb/HTML/NetworkInformation.h>
+ #include <LibWeb/HTML/Scripting/Environments.h>
+ #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
+ #include <LibWeb/HTML/Window.h>
+@@ -92,6 +93,7 @@ void Navigator::visit_edges(GC::Cell::Visitor& visitor)
+     visitor.visit(m_credentials);
+     visitor.visit(m_xr);
+     visitor.visit(m_permissions);
++    visitor.visit(m_connection);
+ }
+ 
+ GC::Ref<MimeTypeArray> Navigator::mime_types()
+@@ -212,6 +214,13 @@ void Navigator::start_get_battery_steps(GC::Ref<WebIDL::Promise> promise)
+     }
+ }
+ 
++GC::Ref<NetworkInformation> Navigator::connection()
++{
++    if (!m_connection)
++        m_connection = NetworkInformation::create(*m_window);
++    return *m_connection;
++}
++
+ GC::Ref<PermissionsAPI::Permissions> Navigator::permissions()
+ {
+     if (!m_permissions)
+diff --git a/Libraries/LibWeb/HTML/Navigator.h b/Libraries/LibWeb/HTML/Navigator.h
+index 1b577412b2..8ef6c2be3b 100644
+--- a/Libraries/LibWeb/HTML/Navigator.h
++++ b/Libraries/LibWeb/HTML/Navigator.h
+@@ -73,6 +73,8 @@ public:
+     void start_get_battery_steps(GC::Ref<WebIDL::Promise>);
+     [[nodiscard]] GC::Ref<WebXR::XRSystem> xr();
+     [[nodiscard]] GC::Ref<PermissionsAPI::Permissions> permissions();
++    [[nodiscard]] GC::Ref<NetworkInformation> connection();
++    GC::Ptr<NetworkInformation> connection_if_created() const { return m_connection; }
+     void request_media_key_system_access(Utf16String key_system, Vector<EncryptedMediaExtensions::MediaKeySystemConfiguration> supported_configurations, GC::Ref<WebIDL::Promise>);
+ 
+     GC::Ref<ServiceWorker::ServiceWorkerContainer> service_worker();
+@@ -134,6 +136,9 @@ private:
+     // https://w3c.github.io/permissions/#navigator-and-workernavigator-extension
+     GC::Ptr<PermissionsAPI::Permissions> m_permissions;
+ 
++    // https://wicg.github.io/netinfo/#navigatornetworkinformation-interface
++    GC::Ptr<NetworkInformation> m_connection;
++
+     // https://w3c.github.io/battery/#dom-navigator-getbattery
+     // The [[BatteryPromise]] internal slot. Held strongly (and visited) so its
+     // identity stays stable across getBattery() calls for the Navigator's lifetime.
+diff --git a/Libraries/LibWeb/HTML/Navigator.idl b/Libraries/LibWeb/HTML/Navigator.idl
+index 2b568a9ca5..e14648708c 100644
+--- a/Libraries/LibWeb/HTML/Navigator.idl
++++ b/Libraries/LibWeb/HTML/Navigator.idl
+@@ -37,7 +37,10 @@ interface Navigator {
+     [SecureContext, SameObject] readonly attribute XRSystem xr;
+ 
+     // https://w3c.github.io/permissions/#navigator-and-workernavigator-extension
+-    [SameObject, Experimental] readonly attribute Permissions permissions;
++    [SameObject] readonly attribute Permissions permissions;
++
++    // https://wicg.github.io/netinfo/#navigatornetworkinformation-interface
++    [SameObject] readonly attribute NetworkInformation connection;
+ };
+ 
+ // NOTE: As NavigatorContentUtils, NavigatorCookies, NavigatorPlugins, and NavigatorAutomationInformation
+diff --git a/Libraries/LibWeb/HTML/NetworkInformation.cpp b/Libraries/LibWeb/HTML/NetworkInformation.cpp
+new file mode 100644
+index 0000000000..6d7bd9b867
+--- /dev/null
++++ b/Libraries/LibWeb/HTML/NetworkInformation.cpp
+@@ -0,0 +1,82 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibGC/Heap.h>
++#include <LibWeb/DOM/Event.h>
++#include <LibWeb/HTML/EventNames.h>
++#include <LibWeb/HTML/NetworkInformation.h>
++#include <LibWeb/HTML/Window.h>
++#include <LibWeb/Page/Page.h>
++
++namespace Web::HTML {
++
++GC_DEFINE_ALLOCATOR(NetworkInformation);
++
++NetworkInformation::NetworkInformation(Window& window)
++    : DOM::EventTarget()
++    , m_window(window)
++{
++}
++
++GC::Ref<NetworkInformation> NetworkInformation::create(Window& window)
++{
++    return GC::Heap::the().allocate<NetworkInformation>(window);
++}
++
++void NetworkInformation::visit_edges(Cell::Visitor& visitor)
++{
++    Base::visit_edges(visitor);
++    visitor.visit(m_window);
++}
++
++// https://wicg.github.io/netinfo/#effectivetype-attribute
++EffectiveConnectionType NetworkInformation::effective_type() const
++{
++    auto type = m_window->page().client().network_information().effective_type;
++    if (type == "slow-2g"sv)
++        return EffectiveConnectionType::Slow2g;
++    if (type == "2g"sv)
++        return EffectiveConnectionType::_2g;
++    if (type == "3g"sv)
++        return EffectiveConnectionType::_3g;
++    return EffectiveConnectionType::_4g;
++}
++
++// https://wicg.github.io/netinfo/#rtt-attribute
++double NetworkInformation::rtt() const
++{
++    // The value is rounded to the nearest multiple of 25 milliseconds (NetInfo, "rtt"), as the embedder reports it.
++    return m_window->page().client().network_information().rtt;
++}
++
++// https://wicg.github.io/netinfo/#downlink-attribute
++double NetworkInformation::downlink() const
++{
++    return m_window->page().client().network_information().downlink;
++}
++
++// https://wicg.github.io/netinfo/#savedata-attribute
++bool NetworkInformation::save_data() const
++{
++    return m_window->page().client().network_information().save_data;
++}
++
++void NetworkInformation::set_onchange(GC::Ptr<WebIDL::CallbackType> event_handler)
++{
++    set_event_handler_attribute(EventNames::change, event_handler);
++}
++
++GC::Ptr<WebIDL::CallbackType> NetworkInformation::onchange()
++{
++    return event_handler_attribute(EventNames::change);
++}
++
++void NetworkInformation::did_change()
++{
++    dispatch_event(DOM::Event::create(m_window->principal_realm().global_object(), EventNames::change));
++}
++
++}
+diff --git a/Libraries/LibWeb/HTML/NetworkInformation.h b/Libraries/LibWeb/HTML/NetworkInformation.h
+new file mode 100644
+index 0000000000..7a69aab7a0
+--- /dev/null
++++ b/Libraries/LibWeb/HTML/NetworkInformation.h
+@@ -0,0 +1,42 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <LibWeb/Bindings/NetworkInformation.h>
++#include <LibWeb/DOM/EventTarget.h>
++
++namespace Web::HTML {
++
++using EffectiveConnectionType = Bindings::EffectiveConnectionType;
++
++// https://wicg.github.io/netinfo/#networkinformation-interface
++class NetworkInformation final : public DOM::EventTarget {
++    WEB_WRAPPABLE(NetworkInformation, DOM::EventTarget);
++    GC_DECLARE_ALLOCATOR(NetworkInformation);
++
++public:
++    [[nodiscard]] static GC::Ref<NetworkInformation> create(Window&);
++
++    EffectiveConnectionType effective_type() const;
++    double rtt() const;
++    double downlink() const;
++    bool save_data() const;
++
++    void set_onchange(GC::Ptr<WebIDL::CallbackType>);
++    GC::Ptr<WebIDL::CallbackType> onchange();
++
++    // The embedder's network conditions changed: fire `change` (NetInfo, "underlying connection technology changes").
++    void did_change();
++
++private:
++    explicit NetworkInformation(Window&);
++    virtual void visit_edges(Cell::Visitor&) override;
++
++    GC::Ref<Window> m_window;
++};
++
++}
+diff --git a/Libraries/LibWeb/HTML/NetworkInformation.idl b/Libraries/LibWeb/HTML/NetworkInformation.idl
+new file mode 100644
+index 0000000000..1f09cd7b7c
+--- /dev/null
++++ b/Libraries/LibWeb/HTML/NetworkInformation.idl
+@@ -0,0 +1,17 @@
++// https://wicg.github.io/netinfo/#networkinformation-interface
++[Exposed=Window]
++interface NetworkInformation : EventTarget {
++    attribute EventHandler onchange;
++    readonly attribute EffectiveConnectionType effectiveType;
++    readonly attribute unrestricted double rtt;
++    readonly attribute unrestricted double downlink;
++    readonly attribute boolean saveData;
++};
++
++// https://wicg.github.io/netinfo/#effectiveconnectiontype-enum
++enum EffectiveConnectionType {
++    "2g",
++    "3g",
++    "4g",
++    "slow-2g"
++};
+diff --git a/Libraries/LibWeb/HTML/WorkerNavigator.idl b/Libraries/LibWeb/HTML/WorkerNavigator.idl
+index 711afe0f6d..398eaae5d7 100644
+--- a/Libraries/LibWeb/HTML/WorkerNavigator.idl
++++ b/Libraries/LibWeb/HTML/WorkerNavigator.idl
+@@ -11,7 +11,7 @@ interface WorkerNavigator {
+     [SecureContext, SameObject] readonly attribute ServiceWorkerContainer serviceWorker;
+ 
+     // https://w3c.github.io/permissions/#navigator-and-workernavigator-extension
+-    [SameObject, Experimental] readonly attribute Permissions permissions;
++    [SameObject] readonly attribute Permissions permissions;
+ };
+ 
+ Navigator includes GlobalPrivacyControl;
+diff --git a/Libraries/LibWeb/NotificationsAPI/Notification.cpp b/Libraries/LibWeb/NotificationsAPI/Notification.cpp
+index 69eb36345d..a6abe4a6ae 100644
+--- a/Libraries/LibWeb/NotificationsAPI/Notification.cpp
++++ b/Libraries/LibWeb/NotificationsAPI/Notification.cpp
+@@ -11,7 +11,12 @@
+ #include <LibJS/Runtime/VM.h>
+ #include <LibWeb/HTML/Scripting/Environments.h>
+ #include <LibWeb/HTML/StructuredSerialize.h>
++#include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
++#include <LibWeb/HTML/Window.h>
+ #include <LibWeb/NotificationsAPI/Notification.h>
++#include <LibWeb/PermissionsAPI/Permissions.h>
++#include <LibWeb/WebIDL/AbstractOperations.h>
++#include <LibWeb/WebIDL/Promise.h>
+ #include <LibWeb/ServiceWorker/ServiceWorkerGlobalScope.h>
+ 
+ namespace Web::NotificationsAPI {
+@@ -298,4 +303,62 @@ JS::Value Notification::data(JS::Object const& relevant_global_object) const
+     return JS::js_null();
+ }
+ 
++// https://notifications.spec.whatwg.org/#get-the-notifications-permission-state
++static Bindings::NotificationPermission notifications_permission_state(HTML::EnvironmentSettingsObject& settings)
++{
++    // 1. Let permissionState be the result of getting the current permission state with "notifications" and settings.
++    auto permission_state = PermissionsAPI::get_current_permission_state("notifications"_utf16, settings);
++
++    // 2. If permissionState is "prompt", then return "default".
++    // 3. Return permissionState.
++    switch (permission_state) {
++    case PermissionsAPI::PermissionState::Granted:
++        return Bindings::NotificationPermission::Granted;
++    case PermissionsAPI::PermissionState::Denied:
++        return Bindings::NotificationPermission::Denied;
++    case PermissionsAPI::PermissionState::Prompt:
++        break;
++    }
++    return Bindings::NotificationPermission::Default;
++}
++
++// https://notifications.spec.whatwg.org/#dom-notification-permission
++Bindings::NotificationPermission Notification::permission(JS::VM&)
++{
++    // The static permission getter steps are to return the result of getting the notifications permission state with the
++    // current settings object.
++    return notifications_permission_state(HTML::current_settings_object());
++}
++
++// https://notifications.spec.whatwg.org/#dom-notification-requestpermission
++GC::Ref<WebIDL::Promise> Notification::request_permission(JS::VM&, GC::Ptr<WebIDL::CallbackType> deprecated_callback)
++{
++    // 1. Let global be the current global object.
++    auto& global = HTML::current_global_object();
++    auto& realm = HTML::relevant_realm(global);
++
++    // 2. Let promise be a new promise in this's relevant Realm.
++    auto promise = WebIDL::create_promise(realm);
++
++    // 3. Run these steps in parallel:
++    //    1. Let permissionState be the result of requesting permission to use "notifications".
++    //    NB: Nothing is granted without asking the user, and there is no prompt to ask with: the request is dismissed,
++    //        which leaves the state as it was ("default" for an origin that was never granted or denied).
++    auto permission_state = notifications_permission_state(HTML::current_settings_object());
++
++    //    2. Queue a global task on the DOM manipulation task source given global to run these steps:
++    HTML::queue_global_task(HTML::Task::Source::DOMManipulation, global, GC::create_function(realm.heap(), [&realm, promise, deprecated_callback, permission_state] {
++        HTML::TemporaryExecutionContext context { realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes };
++        auto value = JS::PrimitiveString::create(realm.vm(), Bindings::idl_enum_to_string(permission_state));
++        // 1. If deprecatedCallback is given, then invoke deprecatedCallback with « permissionState » and "report".
++        if (deprecated_callback)
++            (void)WebIDL::invoke_callback(*deprecated_callback, {}, WebIDL::ExceptionBehavior::Report, { { value } });
++        // 2. Resolve promise with permissionState.
++        WebIDL::resolve_promise(realm, promise, value);
++    }));
++
++    // 4. Return promise.
++    return promise;
++}
++
+ }
+diff --git a/Libraries/LibWeb/NotificationsAPI/Notification.h b/Libraries/LibWeb/NotificationsAPI/Notification.h
+index c6808b83ca..d9dc0d4485 100644
+--- a/Libraries/LibWeb/NotificationsAPI/Notification.h
++++ b/Libraries/LibWeb/NotificationsAPI/Notification.h
+@@ -108,11 +108,15 @@ public:
+         URL::URL base_url,
+         HighResolutionTime::EpochTimeStamp fallback_timestamp);
+ 
++    // https://notifications.spec.whatwg.org/#dom-notification-permission
++    static Bindings::NotificationPermission permission(JS::VM&);
++    // https://notifications.spec.whatwg.org/#dom-notification-requestpermission
++    static GC::Ref<WebIDL::Promise> request_permission(JS::VM&, GC::Ptr<WebIDL::CallbackType> deprecated_callback);
++
+     static unsigned long max_actions()
+     {
+-        // FIXME: Change the number of max_actions supported when actions will actually be supported
+-        // It seems like Chrome is 2, Firefox is undefined, Safari is undefined
+-        return 0;
++        // The maximum number of actions a notification shows; Chrome's is 2 (Firefox and Safari have no maxActions).
++        return 2;
+     }
+ 
+     String const& title() const { return m_notification.title; }
+diff --git a/Libraries/LibWeb/NotificationsAPI/Notification.idl b/Libraries/LibWeb/NotificationsAPI/Notification.idl
+index 06d5462dc4..bd97c5e2c1 100644
+--- a/Libraries/LibWeb/NotificationsAPI/Notification.idl
++++ b/Libraries/LibWeb/NotificationsAPI/Notification.idl
+@@ -3,8 +3,8 @@
+ interface Notification : EventTarget {
+     constructor(DOMString title, optional NotificationOptions options = {});
+ 
+-    [FIXME] static readonly attribute NotificationPermission permission;
+-    [FIXME, Exposed=Window] static Promise<NotificationPermission> requestPermission(optional NotificationPermissionCallback deprecatedCallback);
++    static readonly attribute NotificationPermission permission;
++    [Exposed=Window] static Promise<NotificationPermission> requestPermission(optional NotificationPermissionCallback deprecatedCallback);
+ 
+     static readonly attribute unsigned long maxActions;
+ 
+@@ -70,4 +70,4 @@ dictionary NotificationAction {
+     USVString icon;
+ };
+ 
+-[FIXME] callback NotificationPermissionCallback = undefined (NotificationPermission permission);
++callback NotificationPermissionCallback = undefined (NotificationPermission permission);
+diff --git a/Libraries/LibWeb/Page/Page.cpp b/Libraries/LibWeb/Page/Page.cpp
+index 69c1b1365c..1e063ca887 100644
+--- a/Libraries/LibWeb/Page/Page.cpp
++++ b/Libraries/LibWeb/Page/Page.cpp
+@@ -301,7 +301,7 @@ CSSPixelRect Page::web_exposed_available_screen_area() const
+     //    - The area of the output device, in CSS pixels.
+     //    - The area of the viewport, in CSS pixels.
+     // NB: This is the area of the output device, but in device pixels. See note in web_exposed_screen_area()
+-    auto device_pixel_rect = m_client->screen_rect();
++    auto device_pixel_rect = m_client->available_screen_rect().value_or(m_client->screen_rect());
+     return {
+         device_pixel_rect.x().value(),
+         device_pixel_rect.y().value(),
+diff --git a/Libraries/LibWeb/Page/Page.h b/Libraries/LibWeb/Page/Page.h
+index e1ba939034..22c40481e2 100644
+--- a/Libraries/LibWeb/Page/Page.h
++++ b/Libraries/LibWeb/Page/Page.h
+@@ -624,6 +624,22 @@ public:
+     virtual CSS::PreferredContrast preferred_contrast() const = 0;
+     virtual CSS::PreferredMotion preferred_motion() const = 0;
+     virtual size_t screen_count() const = 0;
++    // The output device as the embedder knows it, where that is more than screen_rect(): the area left for windows (the
++    // screen minus a dock or task bar), its color depth, and its orientation (an OrientationType's index and the angle).
++    virtual Optional<DevicePixelRect> available_screen_rect() const { return {}; }
++    // The network conditions navigator.connection reports (Network Information API), rounded as that API says.
++    struct NetworkInformationValues {
++        StringView effective_type { "4g"sv };
++        double rtt { 50 };
++        double downlink { 10 };
++        bool save_data { false };
++    };
++    virtual NetworkInformationValues network_information() const { return {}; }
++    // The sample rate of the default audio output device (an AudioContext without a sampleRate option runs at it).
++    virtual float audio_output_sample_rate() const { return 44100; }
++    virtual u32 screen_color_depth() const { return 24; }
++    virtual Optional<u8> screen_orientation_type() const { return {}; }
++    virtual u16 screen_orientation_angle() const { return 0; }
+     virtual Queue<QueuedInputEvent>& input_event_queue() = 0;
+     virtual void did_handle_input_event([[maybe_unused]] Web::PageId page_id, [[maybe_unused]] InputEvent const&) { }
+     virtual void report_finished_handling_input_event(Web::PageId page_id, u64 event_id, EventResult event_was_handled) = 0;
+diff --git a/Libraries/LibWeb/PermissionsAPI/PermissionStatus.cpp b/Libraries/LibWeb/PermissionsAPI/PermissionStatus.cpp
+index 55c6821caf..00017a799a 100644
+--- a/Libraries/LibWeb/PermissionsAPI/PermissionStatus.cpp
++++ b/Libraries/LibWeb/PermissionsAPI/PermissionStatus.cpp
+@@ -37,13 +37,14 @@ void PermissionStatus::visit_edges(Cell::Visitor& visitor)
+     visitor.visit(m_global_object);
+ }
+ 
+-GC::Ref<PermissionStatus> PermissionStatus::create(GC::Ref<DOM::EventTarget> relevant_global_object, PermissionDescriptor permission_desc)
++GC::Ref<PermissionStatus> PermissionStatus::create(GC::Ref<DOM::EventTarget> relevant_global_object, PermissionDescriptor permission_desc, Optional<Utf16String> status_name)
+ {
+     // 1. Let name be permissionDesc's name.
+-    auto name = permission_desc.name;
++    // NB: Chrome reports some features under its own names (camera's status is "video_capture"); the caller passes those.
++    auto name = status_name.value_or(permission_desc.name);
+ 
+     // 2. Assert: The feature identified by name is supported by the user agent.
+-    VERIFY(is_permission_supported(name));
++    VERIFY(is_permission_supported(permission_desc.name));
+ 
+     // 3. Let status be a new instance of the permission result type identified by name:
+     // FIXME: A permission result type is a PermissionStatus or one of its subtypes.
+diff --git a/Libraries/LibWeb/PermissionsAPI/PermissionStatus.h b/Libraries/LibWeb/PermissionsAPI/PermissionStatus.h
+index d2e6052bfc..6f770e8b7d 100644
+--- a/Libraries/LibWeb/PermissionsAPI/PermissionStatus.h
++++ b/Libraries/LibWeb/PermissionsAPI/PermissionStatus.h
+@@ -17,7 +17,7 @@ class WEB_API PermissionStatus : public DOM::EventTarget {
+     GC_DECLARE_ALLOCATOR(PermissionStatus);
+ 
+ public:
+-    static GC::Ref<PermissionStatus> create(GC::Ref<DOM::EventTarget> relevant_global_object, PermissionDescriptor);
++    static GC::Ref<PermissionStatus> create(GC::Ref<DOM::EventTarget> relevant_global_object, PermissionDescriptor, Optional<Utf16String> status_name = {});
+ 
+     // https://w3c.github.io/permissions/#dom-permissionstatus-state
+     PermissionState state() const;
+diff --git a/Libraries/LibWeb/PermissionsAPI/PermissionStatus.idl b/Libraries/LibWeb/PermissionsAPI/PermissionStatus.idl
+index 11001bf62e..9f783ba0a3 100644
+--- a/Libraries/LibWeb/PermissionsAPI/PermissionStatus.idl
++++ b/Libraries/LibWeb/PermissionsAPI/PermissionStatus.idl
+@@ -1,5 +1,5 @@
+ // https://w3c.github.io/permissions/#permissionstatus-interface
+-[Experimental, Exposed=(Window,Worker)]
++[Exposed=(Window,Worker)]
+ interface PermissionStatus : EventTarget {
+     readonly attribute PermissionState state;
+     readonly attribute DOMString name;
+diff --git a/Libraries/LibWeb/PermissionsAPI/Permissions.cpp b/Libraries/LibWeb/PermissionsAPI/Permissions.cpp
+index 0a50c86066..85c4809dd7 100644
+--- a/Libraries/LibWeb/PermissionsAPI/Permissions.cpp
++++ b/Libraries/LibWeb/PermissionsAPI/Permissions.cpp
+@@ -22,12 +22,74 @@
+ 
+ namespace Web::PermissionsAPI {
+ 
+-bool is_permission_supported(Utf16View name)
++// The powerful features this user agent knows, by the name a page queries, with what a permission query answers for an
++// origin the user never granted or denied anything (no entry in the permission store), and the name the resulting
++// PermissionStatus reports. The names, states and status names are Chrome's (154, a new profile): a page that compares
++// them with Chrome's sees the same answers. A feature whose state is "granted" here is one Chrome grants without asking.
++struct KnownPermission {
++    StringView name;
++    PermissionState default_state;
++    StringView status_name;
++    // A name of the PermissionName enum that is not usable (Chrome: the feature is off): the TypeError's message.
++    StringView disabled_message {};
++};
++
++static constexpr auto k_granted = PermissionState::Granted;
++static constexpr auto k_prompt = PermissionState::Prompt;
++static constexpr auto k_denied = PermissionState::Denied;
++
++static constexpr KnownPermission s_known_permissions[] = {
++    { "accelerometer"sv, k_granted, "sensors"sv },
++    { "ambient-light-sensor"sv, k_prompt, "sensors"sv, "GenericSensorExtraClasses flag is not enabled."sv },
++    { "background-fetch"sv, k_granted, "background_fetch"sv },
++    { "background-sync"sv, k_granted, "background_sync"sv },
++    { "camera"sv, k_prompt, "video_capture"sv },
++    { "captured-surface-control"sv, k_prompt, "captured-surface-control"sv },
++    { "clipboard-read"sv, k_prompt, "clipboard_read"sv },
++    { "clipboard-write"sv, k_granted, "clipboard_write"sv },
++    { "display-capture"sv, k_prompt, "display_capture"sv },
++    { "fullscreen"sv, k_denied, "fullscreen"sv },
++    { "geolocation"sv, k_prompt, "geolocation"sv },
++    { "gyroscope"sv, k_granted, "sensors"sv },
++    { "idle-detection"sv, k_prompt, "idle_detection"sv },
++    { "keyboard-lock"sv, k_granted, "keyboard-lock"sv },
++    { "local-fonts"sv, k_prompt, "local_fonts"sv },
++    { "local-network"sv, k_prompt, "local-network"sv },
++    { "local-network-access"sv, k_prompt, "local-network-access"sv },
++    { "loopback-network"sv, k_prompt, "loopback-network"sv },
++    { "magnetometer"sv, k_granted, "sensors"sv },
++    { "microphone"sv, k_prompt, "audio_capture"sv },
++    { "midi"sv, k_prompt, "midi"sv },
++    { "nfc"sv, k_prompt, "nfc"sv, "Web NFC is not enabled."sv },
++    { "notifications"sv, k_prompt, "notifications"sv },
++    { "payment-handler"sv, k_granted, "payment_handler"sv },
++    { "periodic-background-sync"sv, k_denied, "periodic_background_sync"sv },
++    { "persistent-storage"sv, k_prompt, "durable_storage"sv },
++    { "pointer-lock"sv, k_granted, "pointer-lock"sv },
++    { "push"sv, k_prompt, "push"sv },
++    { "screen-wake-lock"sv, k_granted, "screen_wake_lock"sv },
++    { "speaker-selection"sv, k_prompt, "speaker-selection"sv, "The Speaker Selection API is not enabled."sv },
++    { "storage-access"sv, k_granted, "storage-access"sv },
++    { "system-wake-lock"sv, k_prompt, "system_wake_lock"sv, "System Wake Lock is not enabled."sv },
++    { "top-level-storage-access"sv, k_prompt, "top-level-storage-access"sv, "The requested origin is invalid."sv },
++    { "web-app-installation"sv, k_prompt, "web-app-installation"sv, "The Web App Install API is not enabled."sv },
++    { "window-management"sv, k_prompt, "window-management"sv },
++};
++
++static KnownPermission const* known_permission(Utf16View name)
+ {
+-    if (name == "geolocation"_utf16) {
+-        return true;
++    for (auto const& known : s_known_permissions) {
++        auto known_name = Utf16String::from_utf8(known.name);
++        if (name == known_name.utf16_view())
++            return &known;
+     }
+-    return false;
++    return nullptr;
++}
++
++bool is_permission_supported(Utf16View name)
++{
++    auto const* known = known_permission(name);
++    return known && known->disabled_message.is_empty();
+ }
+ 
+ // https://w3c.github.io/permissions/#dfn-request-permission-to-use
+@@ -44,11 +106,12 @@ PermissionState request_permission(PermissionDescriptor const& descriptor)
+ 
+     // 4. If the user gives express permission to use the powerful feature, set current state to "granted"; otherwise to "denied".
+     // The user's interaction may provide new information about the user's intent for the origin.
+-    if (descriptor.name == "geolocation"_utf16 || HTML::Window::in_test_mode()) {
+-        current_state = PermissionState::Granted;
+-    } else {
+-        current_state = PermissionState::Denied;
+-    }
++    // NB: There is no prompt to ask the user with, and nothing is granted without one. Outside test mode the request is
++    //     treated as dismissed: the caller is told "denied", and nothing is stored, so the feature's state stays "prompt"
++    //     (as a dismissed prompt leaves it in Chrome).
++    if (!HTML::Window::in_test_mode())
++        return PermissionState::Denied;
++    current_state = PermissionState::Granted;
+ 
+     // 5. Let settings be the current settings object.
+     auto& settings = HTML::current_settings_object();
+@@ -100,6 +163,8 @@ PermissionState permission_state(PermissionDescriptor descriptor, Optional<HTML:
+         return entry.release_value().state;
+ 
+     // 8. Return the PermissionState enum value that represents the permission state of feature, taking into account any permission state constraints for descriptor's name.
++    if (auto const* known = known_permission(descriptor.name))
++        return known->default_state;
+     return PermissionState::Prompt;
+ }
+ 
+@@ -131,6 +196,20 @@ void Permissions::query(GC::Ref<JS::Object> permission_desc, GC::Ref<WebIDL::Pro
+ 
+     // 2. Let rootDesc be the object permissionDesc refers to, converted to an IDL value of type PermissionDescriptor.
+     // 3. If the conversion throws an exception, return a promise rejected with that exception.
++    auto reject_with_type_error = [&](StringView message) {
++        auto error = JS::TypeError::create(realm, Utf16String::formatted("Failed to execute 'query' on 'Permissions': {}", message));
++        WebIDL::reject_promise(promise, error);
++    };
++    // NB: The messages are Chrome's, which reads `name` as its PermissionName enum.
++    auto name_value = permission_desc->get(vm.names.name);
++    if (name_value.is_error()) {
++        WebIDL::reject_promise(promise, name_value.release_error().value());
++        return;
++    }
++    if (name_value.value().is_undefined()) {
++        reject_with_type_error("Failed to read the 'name' property from 'PermissionDescriptor': Required member is undefined."sv);
++        return;
++    }
+     auto root_desc_or_error = Bindings::convert_to_idl_value_for_permission_descriptor(vm, permission_desc);
+     if (root_desc_or_error.is_error()) {
+         WebIDL::reject_promise(promise, root_desc_or_error.release_error().value());
+@@ -139,15 +218,42 @@ void Permissions::query(GC::Ref<JS::Object> permission_desc, GC::Ref<WebIDL::Pro
+     auto root_desc = root_desc_or_error.release_value();
+ 
+     // 4. If rootDesc["name"] is not supported, return a promise rejected with a TypeError.
+-    if (!PermissionsAPI::is_permission_supported(root_desc.name)) {
+-        auto error = vm.throw_completion<JS::TypeError>(JS::ErrorType::InvalidEnumerationValue, root_desc.name, "PermissionName"sv);
+-        WebIDL::reject_promise(promise, error.release_error().value());
++    auto const* known = known_permission(root_desc.name);
++    if (!known) {
++        reject_with_type_error(ByteString::formatted("Failed to read the 'name' property from 'PermissionDescriptor': The provided value '{}' is not a valid enum value of type PermissionName.", root_desc.name));
++        return;
++    }
++    if (!known->disabled_message.is_empty()) {
++        reject_with_type_error(known->disabled_message);
+         return;
+     }
+ 
+     // 5. Let typedDescriptor be the object permissionDesc refers to, converted to an IDL value of rootDesc's name's permission descriptor type.
+     // 6. If the conversion throws an exception, return a promise rejected with that exception.
+-    // FIXME: Support specific permission descriptor types. For now, we only support the base PermissionDescriptor.
++    // NB: The members of the typed descriptors Chrome checks: push's userVisibleOnly and fullscreen's allowWithoutGesture.
++    if (root_desc.name == "push"_utf16) {
++        auto push_desc = Bindings::convert_to_idl_value_for_push_permission_descriptor(vm, permission_desc);
++        if (push_desc.is_error()) {
++            WebIDL::reject_promise(promise, push_desc.release_error().value());
++            return;
++        }
++        if (!push_desc.value().user_visible_only) {
++            auto error = WebIDL::NotSupportedError::create(realm, "Failed to execute 'query' on 'Permissions': Push Permission without userVisibleOnly:true isn't supported yet."_utf16);
++            WebIDL::reject_promise(promise, error);
++            return;
++        }
++    }
++    if (root_desc.name == "fullscreen"_utf16) {
++        auto fullscreen_desc = Bindings::convert_to_idl_value_for_fullscreen_permission_descriptor(vm, permission_desc);
++        if (fullscreen_desc.is_error()) {
++            WebIDL::reject_promise(promise, fullscreen_desc.release_error().value());
++            return;
++        }
++        if (!fullscreen_desc.value().allow_without_gesture) {
++            reject_with_type_error("Fullscreen Permission only supports allowWithoutGesture:true."sv);
++            return;
++        }
++    }
+     auto typed_descriptor = root_desc;
+ 
+     // 8. Return promise and continue in parallel:
+@@ -156,7 +262,7 @@ void Permissions::query(GC::Ref<JS::Object> permission_desc, GC::Ref<WebIDL::Pro
+         // 1. Let status be create a PermissionStatus with typedDescriptor.
+         auto* global_scope = HTML::window_or_worker_global_scope_from_global_object(relevant_global_object);
+         VERIFY(global_scope);
+-        auto status = PermissionStatus::create(global_scope->this_impl(), typed_descriptor);
++        auto status = PermissionStatus::create(global_scope->this_impl(), typed_descriptor, Utf16String::from_utf8(known->status_name));
+ 
+         // 2. Let query be status's [[query]] internal slot.
+         auto const& query = status->query();
+diff --git a/Libraries/LibWeb/PermissionsAPI/Permissions.idl b/Libraries/LibWeb/PermissionsAPI/Permissions.idl
+index c58ec7a3d6..969e4bbf5e 100644
+--- a/Libraries/LibWeb/PermissionsAPI/Permissions.idl
++++ b/Libraries/LibWeb/PermissionsAPI/Permissions.idl
+@@ -7,3 +7,13 @@ interface Permissions {
+ dictionary PermissionDescriptor {
+     required DOMString name;
+ };
++
++// https://w3c.github.io/push-api/#pushpermissiondescriptor-dictionary
++dictionary PushPermissionDescriptor : PermissionDescriptor {
++    boolean userVisibleOnly = false;
++};
++
++// https://fullscreen.spec.whatwg.org/#permissions-integration (Chrome's descriptor)
++dictionary FullscreenPermissionDescriptor : PermissionDescriptor {
++    boolean allowWithoutGesture = false;
++};
+diff --git a/Libraries/LibWeb/WebAudio/AudioContext.cpp b/Libraries/LibWeb/WebAudio/AudioContext.cpp
+index 00c67b6856..3025de8660 100644
+--- a/Libraries/LibWeb/WebAudio/AudioContext.cpp
++++ b/Libraries/LibWeb/WebAudio/AudioContext.cpp
+@@ -77,13 +77,14 @@ WebIDL::ExceptionOr<GC::Ref<AudioContext>> AudioContext::create_for_constructor(
+             // FIXME: 1. If sinkId is the empty string or a type of AudioSinkOptions, use the sample rate of the default output device. Abort these substeps.
+             // FIXME: 2. If sinkId is a DOMString, use the sample rate of the output device identified by sinkId. Abort these substeps.
+             // If contextOptions.sampleRate differs from the sample rate of the output device, the user agent MUST resample the audio output to match the sample rate of the output device.
+-            context->set_sample_rate(44100);
++            context->set_sample_rate(settings.responsible_document()->page().client().audio_output_sample_rate());
+         }
+     }
+ 
+     // AD-HOC: Ensure a sample rate is always set, even when no options were passed at all.
++    // NB: The default output device's rate, as the page client knows it.
+     if (context->sample_rate() == 0)
+-        context->set_sample_rate(44100);
++        context->set_sample_rate(settings.responsible_document()->page().client().audio_output_sample_rate());
+ 
+     // 11. If context is allowed to start, send a control message to start processing.
+     // FIXME: The context is currently always allowed to start; this should be gated on sticky activation.
+diff --git a/Libraries/LibWeb/idl_files.cmake b/Libraries/LibWeb/idl_files.cmake
+index d4d362758b..3f9bada9c4 100644
+--- a/Libraries/LibWeb/idl_files.cmake
++++ b/Libraries/LibWeb/idl_files.cmake
+@@ -98,6 +98,7 @@ libweb_js_bindings(CSS/MediaQueryList)
+ libweb_js_bindings(CSS/MediaQueryListEvent)
+ libweb_js_bindings(CSS/Screen)
+ libweb_js_bindings(CSS/ScreenOrientation)
++libweb_js_bindings(HTML/NetworkInformation)
+ libweb_js_bindings(CSS/StylePropertyMap)
+ libweb_js_bindings(CSS/StylePropertyMapReadOnly)
+ libweb_js_bindings(CSS/StyleSheet)

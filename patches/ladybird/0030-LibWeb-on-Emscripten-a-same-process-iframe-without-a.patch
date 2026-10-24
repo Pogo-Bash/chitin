@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 07:23:22 -0500
+Subject: [PATCH 30/34] LibWeb: on Emscripten a same-process iframe without a
+ compositor host gets an in-process compositor context id
+
+The container records DrawCompositedContext with it, as it would for a compositor context, and the embedder's
+resolver finds the content navigable by the id to raster its document. Without it a same-site iframe painted
+nothing in an embedder that paints its own frames.
+---
+ Libraries/LibWeb/Painting/PaintFacts.cpp | 47 ++++++++++++++++++++++++
+ Libraries/LibWeb/Painting/PaintFacts.h   |  8 ++++
+ 2 files changed, 55 insertions(+)
+
+diff --git a/Libraries/LibWeb/Painting/PaintFacts.cpp b/Libraries/LibWeb/Painting/PaintFacts.cpp
+index 8bf8ef7aeb..e0b3077b25 100644
+--- a/Libraries/LibWeb/Painting/PaintFacts.cpp
++++ b/Libraries/LibWeb/Painting/PaintFacts.cpp
+@@ -82,6 +82,46 @@ void push_canvas_paint_facts(HTML::HTMLCanvasElement const& canvas)
+         queue_canvas_paint_facts(canvas);
+ }
+ 
++#ifdef AK_OS_EMSCRIPTEN
++static HashMap<HTML::LocalNavigable const*, u64>& in_process_context_ids()
++{
++    static HashMap<HTML::LocalNavigable const*, u64> ids;
++    return ids;
++}
++static HashMap<u64, GC::Weak<HTML::LocalNavigable>>& in_process_context_navigables()
++{
++    static HashMap<u64, GC::Weak<HTML::LocalNavigable>> navigables;
++    return navigables;
++}
++
++u64 in_process_compositor_context_id(HTML::LocalNavigable const& navigable)
++{
++    // Ids above any page's id (those are small and count from 1).
++    static u64 next_id = 1ull << 48;
++    auto& ids = in_process_context_ids();
++    if (auto it = ids.find(&navigable); it != ids.end()) {
++        auto found = in_process_context_navigables().get(it->value);
++        if (found.has_value() && found->ptr() == &navigable)
++            return it->value;
++    }
++    auto id = next_id++;
++    ids.set(&navigable, id);
++    in_process_context_navigables().set(id, GC::Weak { const_cast<HTML::LocalNavigable&>(navigable) });
++    return id;
++}
++
++HTML::LocalNavigable* local_navigable_for_in_process_compositor_context(u64 id)
++{
++    auto found = in_process_context_navigables().get(id);
++    if (!found.has_value())
++        return nullptr;
++    auto* navigable = found->ptr();
++    if (!navigable || navigable->has_been_destroyed())
++        return nullptr;
++    return navigable;
++}
++#endif
++
+ static Optional<u64> composited_context_id_for_navigable_container(HTML::NavigableContainer const& navigable_container)
+ {
+     auto content_navigable = navigable_container.content_navigable();
+@@ -98,6 +138,13 @@ static Optional<u64> composited_context_id_for_navigable_container(HTML::Navigab
+             if (!hosted_document || !hosted_document->is_render_blocked())
+                 context_id = local_navigable.compositor_context().id();
+         }
++#ifdef AK_OS_EMSCRIPTEN
++        else if (!local_navigable.page().has_compositor_host()) {
++            auto const* hosted_document = navigable_container.content_document_without_origin_check();
++            if (hosted_document && !hosted_document->is_render_blocked())
++                return in_process_compositor_context_id(local_navigable);
++        }
++#endif
+     }
+     if (!context_id.has_value())
+         return {};
+diff --git a/Libraries/LibWeb/Painting/PaintFacts.h b/Libraries/LibWeb/Painting/PaintFacts.h
+index fdb1df7419..88aae3c2d7 100644
+--- a/Libraries/LibWeb/Painting/PaintFacts.h
++++ b/Libraries/LibWeb/Painting/PaintFacts.h
+@@ -30,4 +30,12 @@ WEB_API void push_replaced_image_paint_facts(DOM::Element const&, Layout::ImageP
+ WEB_API void reconcile_navigable_container_paint_facts(Layout::BegunRead const&, DOM::Document const&);
+ WEB_API void publish_image_map_area_facts_if_needed(Layout::BegunRead const&, DOM::Document&);
+ 
++#ifdef AK_OS_EMSCRIPTEN
++// AD-HOC: An embedder without a compositor host paints a same-process iframe itself. Its content navigable gets an
++//         in-process context id, so the container records DrawCompositedContext with it, and the embedder's resolver
++//         finds the navigable again to raster its document.
++WEB_API u64 in_process_compositor_context_id(HTML::LocalNavigable const&);
++WEB_API HTML::LocalNavigable* local_navigable_for_in_process_compositor_context(u64);
++#endif
++
+ }

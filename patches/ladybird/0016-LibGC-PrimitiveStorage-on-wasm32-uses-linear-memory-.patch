@@ -1,0 +1,263 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 15:48:08 -0500
+Subject: [PATCH 16/23] LibGC: PrimitiveStorage on wasm32 uses linear memory as
+ its cage
+
+There is no address space to reserve a cage in: an offset is an address, ranges are page-aligned heap
+allocations, committing is zeroing, and shared memory objects are not supported.
+---
+ Libraries/LibGC/PrimitiveStorage.cpp | 94 +++++++++++++++++++++++++---
+ Libraries/LibGC/PrimitiveStorage.h   |  5 +-
+ 2 files changed, 91 insertions(+), 8 deletions(-)
+
+diff --git a/Libraries/LibGC/PrimitiveStorage.cpp b/Libraries/LibGC/PrimitiveStorage.cpp
+index 092030d5f9..418f428388 100644
+--- a/Libraries/LibGC/PrimitiveStorage.cpp
++++ b/Libraries/LibGC/PrimitiveStorage.cpp
+@@ -9,6 +9,10 @@
+ #include <AK/ScopeGuard.h>
+ #include <LibCore/System.h>
+ #include <LibGC/PrimitiveStorage.h>
++#ifdef AK_OS_EMSCRIPTEN
++#    include <stdlib.h>
++#    include <string.h>
++#endif
+ 
+ extern "C" {
+ GC_API FlatPtr js_primitive_storage_cage_base = 0;
+@@ -27,6 +31,31 @@ static size_t round_up_to_page(size_t value)
+     return align_up_to(value, page);
+ }
+ 
++// Where a cage offset is in memory. On wasm32 there is no address-space reservation to carve the cage out of:
++// linear memory is the cage, an offset is an address, and ranges are aligned allocations (ensure_cage() below).
++static u8* cage_address(u8* cage_base, size_t offset)
++{
++#ifdef AK_OS_EMSCRIPTEN
++    (void)cage_base;
++    return bit_cast<u8*>(static_cast<FlatPtr>(offset));
++#else
++    return cage_base + offset;
++#endif
++}
++
++// Makes the pages of a range usable and zero. Reserved address space is committed by mapping it; on wasm32 the
++// range is heap memory already, and only has to be zeroed (a new slab's first slot relies on that).
++static ErrorOr<void> commit_cage_range(u8* cage_base, size_t offset, size_t size)
++{
++#ifdef AK_OS_EMSCRIPTEN
++    (void)cage_base;
++    memset(cage_address(nullptr, offset), 0, size);
++    return {};
++#else
++    return Core::System::commit_memory(cage_base + offset, size, Core::System::MemoryTag::GarbageCollector);
++#endif
++}
++
+ static Optional<u16> small_size_class_index(size_t size)
+ {
+     auto slot_size = max(size, minimum_small_slot_size);
+@@ -65,6 +94,17 @@ size_t PrimitiveStorage::Allocator::page_size()
+ 
+ ErrorOr<void> PrimitiveStorage::Allocator::ensure_cage()
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    // Linear memory is the cage (cage_address() above): base 0, every address an offset. The interpreter's masked
++    // access (cage_offset_mask) is not used by an embedder without one.
++    if (m_cage_ready)
++        return {};
++    m_cage_base = nullptr;
++    m_cage_size = NumericLimits<size_t>::max();
++    js_primitive_storage_cage_base = 0;
++    m_cage_ready = true;
++    return {};
++#else
+     if (m_cage_base)
+         return {};
+ 
+@@ -83,6 +123,7 @@ ErrorOr<void> PrimitiveStorage::Allocator::ensure_cage()
+     m_cage_base = static_cast<u8*>(mapping);
+     js_primitive_storage_cage_base = bit_cast<FlatPtr>(m_cage_base);
+     return {};
++#endif
+ }
+ 
+ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::allocate(size_t size, size_t capacity, ZeroFillNewBytes zero_fill_new_bytes, size_t guard_size, bool force_large)
+@@ -113,7 +154,7 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::al
+     ++slab.used_slot_count;
+     auto offset = slab.offset + slot_index * slot_size;
+     if (zero_fill_new_bytes == ZeroFillNewBytes::Yes)
+-        __builtin_memset(m_cage_base + offset, 0, size);
++        __builtin_memset(cage_address(m_cage_base, offset), 0, size);
+     return Allocation {
+         .offset = offset,
+         .capacity = slot_size,
+@@ -134,7 +175,7 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::al
+     TRY(slabs_with_free_slots.try_ensure_capacity(slabs.size() + 1));
+ 
+     auto slab_offset = TRY(allocate_cage_range(small_slab_size));
+-    auto commit_result = Core::System::commit_memory(m_cage_base + slab_offset, small_slab_size, Core::System::MemoryTag::GarbageCollector);
++    auto commit_result = commit_cage_range(m_cage_base, slab_offset, small_slab_size);
+     if (commit_result.is_error()) {
+         release_cage_range(slab_offset, small_slab_size);
+         return commit_result.release_error();
+@@ -182,7 +223,7 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::al
+     auto offset = TRY(allocate_cage_range(reservation_size.value()));
+     auto committed_size = round_up_to_page(size);
+     if (committed_size > 0) {
+-        auto commit_result = Core::System::commit_memory(m_cage_base + offset, committed_size, Core::System::MemoryTag::GarbageCollector);
++        auto commit_result = commit_cage_range(m_cage_base, offset, committed_size);
+         if (commit_result.is_error()) {
+             release_cage_range(offset, reservation_size.value());
+             return commit_result.release_error();
+@@ -201,6 +242,11 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::al
+ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::adopt_shared_fd(int fd, size_t size)
+ {
+     VERIFY(size > 0);
++#ifdef AK_OS_EMSCRIPTEN
++    // No shared memory objects to map.
++    (void)fd;
++    return Error::from_errno(ENOTSUP);
++#else
+     TRY(ensure_cage());
+ 
+     auto reservation_size = round_up_to_page(size);
+@@ -221,10 +267,21 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::ad
+         .committed_size = reservation_size,
+         .small_allocation = {},
+     };
++#endif
+ }
+ 
+ ErrorOr<size_t> PrimitiveStorage::Allocator::allocate_cage_range(size_t reservation_size)
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    // A page-aligned heap allocation is the range; its address is the offset.
++    reservation_size = round_up_to_page(reservation_size);
++    if (reservation_size == 0)
++        return m_next_offset;
++    auto* range = aligned_alloc(page_size(), reservation_size);
++    if (!range)
++        return Error::from_errno(ENOMEM);
++    return static_cast<size_t>(bit_cast<FlatPtr>(range));
++#else
+     VERIFY(m_cage_base);
+     reservation_size = round_up_to_page(reservation_size);
+     if (reservation_size == 0)
+@@ -251,6 +308,7 @@ ErrorOr<size_t> PrimitiveStorage::Allocator::allocate_cage_range(size_t reservat
+ 
+     m_next_offset = new_next_offset.value();
+     return next_offset;
++#endif
+ }
+ 
+ ErrorOr<void> PrimitiveStorage::Allocator::resize(Allocation& allocation, size_t old_size, size_t new_size, ZeroFillNewBytes zero_fill_new_bytes)
+@@ -275,7 +333,7 @@ ErrorOr<void> PrimitiveStorage::Allocator::commit_large_storage(Allocation& allo
+ 
+     auto new_committed_size = round_up_to_page(new_size);
+     if (new_committed_size > allocation.committed_size) {
+-        TRY(Core::System::commit_memory(m_cage_base + allocation.offset + allocation.committed_size, new_committed_size - allocation.committed_size, Core::System::MemoryTag::GarbageCollector));
++        TRY(commit_cage_range(m_cage_base, allocation.offset + allocation.committed_size, new_committed_size - allocation.committed_size));
+         allocation.committed_size = new_committed_size;
+     }
+ 
+@@ -287,7 +345,11 @@ void PrimitiveStorage::Allocator::decommit_large_storage(Allocation const& alloc
+     VERIFY(!allocation.small_allocation.has_value());
+     if (allocation.committed_size == 0)
+         return;
++#ifdef AK_OS_EMSCRIPTEN
++    // The range is freed whole by release_cage_range().
++#else
+     MUST(Core::System::decommit_memory(m_cage_base + allocation.offset, allocation.committed_size, Core::System::MemoryTag::GarbageCollector));
++#endif
+ }
+ 
+ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::reallocate(Allocation const& old_allocation, size_t old_size, size_t new_size, size_t new_capacity, ZeroFillNewBytes zero_fill_new_bytes, bool force_large)
+@@ -297,9 +359,9 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::re
+     auto allocation = TRY(allocate(new_size, new_capacity, ZeroFillNewBytes::No, 0, force_large));
+     auto bytes_to_copy = min(old_size, new_size);
+     if (bytes_to_copy > 0)
+-        __builtin_memcpy(m_cage_base + allocation.offset, m_cage_base + old_allocation.offset, bytes_to_copy);
++        __builtin_memcpy(cage_address(m_cage_base, allocation.offset), cage_address(m_cage_base, old_allocation.offset), bytes_to_copy);
+     if (zero_fill_new_bytes == ZeroFillNewBytes::Yes && new_size > old_size && allocation.small_allocation.has_value())
+-        __builtin_memset(m_cage_base + allocation.offset + old_size, 0, new_size - old_size);
++        __builtin_memset(cage_address(m_cage_base, allocation.offset + old_size), 0, new_size - old_size);
+ 
+     return allocation;
+ }
+@@ -332,6 +394,10 @@ void PrimitiveStorage::Allocator::release_cage_range(size_t offset, size_t size)
+     size = round_up_to_page(size);
+     if (size == 0)
+         return;
++#ifdef AK_OS_EMSCRIPTEN
++    ::free(cage_address(nullptr, offset));
++    return;
++#endif
+ 
+     if (offset <= m_next_offset && size == m_next_offset - offset) {
+         m_next_offset = offset;
+@@ -390,6 +456,10 @@ void PrimitiveStorage::Allocator::reclaim_free_ranges_at_top()
+ 
+ bool PrimitiveStorage::Allocator::contains(void const* address, size_t size) const
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    (void)size;
++    return m_cage_ready && address;
++#endif
+     if (!m_cage_base || !address)
+         return false;
+     auto address_value = bit_cast<FlatPtr>(address);
+@@ -406,8 +476,13 @@ bool PrimitiveStorage::Allocator::contains(Allocation const& allocation, void co
+         return false;
+     auto address_value = bit_cast<FlatPtr>(address);
+     auto base = bit_cast<FlatPtr>(m_cage_base);
++#ifdef AK_OS_EMSCRIPTEN
++    if (!m_cage_ready)
++        return false;
++#else
+     if (!m_cage_base || address_value < base)
+         return false;
++#endif
+     auto offset = address_value - base;
+     if (offset < allocation.offset)
+         return false;
+@@ -417,9 +492,14 @@ bool PrimitiveStorage::Allocator::contains(Allocation const& allocation, void co
+ 
+ u8* PrimitiveStorage::Allocator::data(Allocation const& allocation, size_t byte_offset) const
+ {
+-    VERIFY(m_cage_base);
+     VERIFY(allocation.offset != invalid_offset);
++#ifdef AK_OS_EMSCRIPTEN
++    VERIFY(m_cage_ready);
++    return cage_address(nullptr, allocation.offset + byte_offset);
++#else
++    VERIFY(m_cage_base);
+     return m_cage_base + PrimitiveStorage::mask_offset(allocation.offset + byte_offset);
++#endif
+ }
+ 
+ ErrorOr<PrimitiveStorageHandle> PrimitiveStorage::try_allocate(size_t size, ZeroFillNewBytes zero_fill_new_bytes)
+diff --git a/Libraries/LibGC/PrimitiveStorage.h b/Libraries/LibGC/PrimitiveStorage.h
+index e69e414cf0..1584296254 100644
+--- a/Libraries/LibGC/PrimitiveStorage.h
++++ b/Libraries/LibGC/PrimitiveStorage.h
+@@ -30,7 +30,8 @@ public:
+         Yes,
+     };
+ 
+-    // Without 64-bit addresses there is no cage; ensure_cage() reports ENOMEM (the size only has to fit).
++    // Without 64-bit addresses there is no reservation to carve a cage out of: on wasm32 linear memory is the
++    // cage (PrimitiveStorage.cpp, ensure_cage), and the mask is unused by an embedder without an interpreter.
+ #if defined(__wasm32__)
+     static constexpr size_t default_cage_size = 1ull * GiB;
+ #else
+@@ -141,6 +142,8 @@ private:
+ 
+         u8* m_cage_base { nullptr };
+         size_t m_cage_size { 0 };
++        // wasm32: the cage is linear memory, whose base is 0, so readiness is a flag of its own.
++        bool m_cage_ready { false };
+         size_t m_next_offset { 0 };
+         Vector<FreeRange> m_free_ranges;
+         Vector<Slab> m_small_slabs[13];

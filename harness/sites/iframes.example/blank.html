@@ -1,0 +1,12 @@
+<!doctype html>
+<html><head><title>iframe without src</title></head>
+<body>
+<iframe id="f" title="empty"></iframe>
+<script>
+// Frames: tests/iframes.test.mjs. The parent's load event waits for the frame; everything is recorded in order.
+var results = { events: [] };
+document.addEventListener('readystatechange', function () { results.events.push('readyState:' + document.readyState); });
+document.addEventListener('DOMContentLoaded', function () { results.events.push('DOMContentLoaded'); });
+window.addEventListener('load', function () { results.events.push('window load'); });
+</script>
+</body></html>

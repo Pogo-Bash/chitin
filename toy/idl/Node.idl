@@ -1,0 +1,30 @@
+// Chitin phase-0 subset of Ladybird's Libraries/LibWeb/DOM/Node.idl (BSD-2-Clause, the Ladybird developers).
+// Members kept as written upstream; members the toy does not implement are left out.
+// https://dom.spec.whatwg.org/#node
+[Exposed=Window]
+interface Node : EventTarget {
+    const unsigned short ELEMENT_NODE = 1;
+    const unsigned short TEXT_NODE = 3;
+    const unsigned short DOCUMENT_NODE = 9;
+    readonly attribute unsigned short nodeType;
+    readonly attribute [FlyString] DOMString nodeName;
+
+    readonly attribute boolean isConnected;
+    readonly attribute Document? ownerDocument;
+    [DirectGetter] readonly attribute Node? parentNode;
+    readonly attribute Element? parentElement;
+    boolean hasChildNodes();
+    [DirectGetter] readonly attribute Node? firstChild;
+    [DirectGetter] readonly attribute Node? lastChild;
+    [DirectGetter] readonly attribute Node? previousSibling;
+    [DirectGetter] readonly attribute Node? nextSibling;
+
+    [CEReactions] attribute DOMString? nodeValue;
+    [CEReactions] attribute DOMString? textContent;
+
+    boolean contains(Node? other);
+
+    [CEReactions, ImplementedAs=pre_insert] Node insertBefore(Node node, Node? child);
+    [CEReactions] Node appendChild(Node node);
+    [CEReactions, ImplementedAs=pre_remove] Node removeChild(Node child);
+};

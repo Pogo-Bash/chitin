@@ -1,0 +1,23 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>proxy shell</title></head>
+<body>
+<!-- Scramjet/InvisiProxy's shape: the page's own service worker serves proxied pages under /service/, which the page shows in a
+     same-site iframe; the proxied page's script fetches and navigates, and every request goes through that worker. M6 test site. -->
+<div id="state">start</div>
+<script>
+window.frameEvents = [];
+(async () => {
+    const sw = navigator.serviceWorker;
+    await sw.register('sw.js', { scope: './' });
+    await sw.ready;
+    if (!sw.controller)
+        await new Promise((resolve) => sw.addEventListener('controllerchange', resolve, { once: true }));
+    document.getElementById('state').textContent = 'controlled';
+    const f = document.createElement('iframe');
+    f.id = 'f';
+    f.src = '/service/page';
+    f.addEventListener('load', () => window.frameEvents.push('load ' + f.contentDocument.URL));
+    document.body.appendChild(f);
+})();
+</script>
+</body></html>

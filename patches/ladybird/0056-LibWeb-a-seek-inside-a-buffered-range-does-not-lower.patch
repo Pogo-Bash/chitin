@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 19:47:15 -0500
+Subject: [PATCH 56/56] LibWeb: a seek inside a buffered range does not lower
+ readyState
+
+The playback manager reports only current data while it seeks; readyState is about what is buffered, so a paused seek within the buffered range dropped to HAVE_CURRENT_DATA and came back with a second canplay and canplaythrough, which Chrome does not fire.
+---
+ Libraries/LibWeb/HTML/HTMLMediaElement.cpp | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/Libraries/LibWeb/HTML/HTMLMediaElement.cpp b/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
+index a4dbca5395..7cfc94e265 100644
+--- a/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
+@@ -2633,6 +2633,14 @@ void HTMLMediaElement::update_ready_state()
+     auto current_range = ranges.range_at_or_after(current_time);
+     auto available_data = m_playback_manager->available_data();
+ 
++    // AD-HOC: A seek holds the pipeline at "current data" while it decodes the frame at the new position, but readyState is
++    //         about what is buffered: a seek to a position inside a buffered range that runs past it leaves the element
++    //         able to play on, so it does not drop to HAVE_CURRENT_DATA and come back with a second canplay (Chrome keeps
++    //         HAVE_ENOUGH_DATA through such a seek; HTML's seek algorithm does not lower readyState itself).
++    if (m_seeking && available_data == Media::AvailableData::Current && current_range.has_value()
++        && current_range->start <= current_time && current_range->end > current_time)
++        available_data = Media::AvailableData::Future;
++
+     if (available_data == Media::AvailableData::None
+         || (available_data == Media::AvailableData::Current && !current_range.has_value())) {
+         // 1. Set the HTMLMediaElement's readyState attribute to HAVE_METADATA.
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><title>iframe about:blank</title></head>
+<body>
+<iframe id="f" src="about:blank"></iframe>
+<script>
+var results = { events: [] };
+document.getElementById('f').addEventListener('load', function () { results.events.push('frame load'); });
+window.addEventListener('load', function () { results.events.push('window load'); });
+</script>
+</body></html>

@@ -1,0 +1,1 @@
+Promise.resolve().then(function () { return null; }).then(function () { window.seen.push('promise:' + (document.currentScript && document.currentScript.id)); }); queueMicrotask(function () { window.seen.push('qm:' + (document.currentScript && document.currentScript.id)); });

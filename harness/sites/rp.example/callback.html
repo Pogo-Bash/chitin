@@ -1,0 +1,15 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+     Copyright (c) 2026 [OWNER NAME]
+     Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
+     The mock relying party's redirect return page: the state in the URL must match the cookie the sign-in page set. -->
+<html><head><meta charset="utf-8"><title>callback</title></head>
+<body><p id="result">…</p>
+<script>
+var q = new URLSearchParams(location.search);
+var m = /(?:^|; )oauth_state=([^;]*)/.exec(document.cookie);
+var ok = m && q.get('state') && m[1] === q.get('state');
+var results = { signedIn: ok ? 'redirect code=' + q.get('code') : null, error: ok ? null : 'state mismatch' };
+document.getElementById('result').textContent = ok ? 'signed in: ' + results.signedIn : 'state mismatch (not signed in)';
+document.title = ok ? 'signed in' : 'state mismatch';
+</script></body></html>

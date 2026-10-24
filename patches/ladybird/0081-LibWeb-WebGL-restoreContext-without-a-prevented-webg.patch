@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 16:13:58 -0500
+Subject: [PATCH] LibWeb: WebGL restoreContext without a prevented
+ webglcontextlost is INVALID_OPERATION; checkFramebufferStatus of a lost
+ context is FRAMEBUFFER_UNSUPPORTED
+
+---
+ Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp | 9 +++++++++
+ Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp | 3 +++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
+index a6bd709830..97cad9cd79 100644
+--- a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
+@@ -438,6 +438,8 @@ void WebGLRenderingContextBase::lose_context_from_compositor_loss()
+ 
+     // The next getError() must report CONTEXT_LOST_WEBGL (one-shot) per the spec.
+     m_error = CONTEXT_LOST_WEBGL;
++    // Until the webglcontextlost event is dispatched (and not prevented), the context cannot be restored.
++    m_context_restore_requested = false;
+ 
+     HTML::queue_a_task(HTML::Task::Source::WebGL, nullptr, nullptr, GC::create_function(heap(), [this] {
+         // webglcontextlost is cancelable; preventDefault() means the page wants the context
+@@ -467,6 +469,13 @@ void WebGLRenderingContextBase::restore_context_via_extension()
+             m_error = GL_INVALID_OPERATION;
+         return;
+     }
++    // A page that did not preventDefault() the webglcontextlost event (or calls before it fires) cannot restore the
++    // context: INVALID_OPERATION, as Chrome.
++    if (!m_context_restore_requested) {
++        if (m_error == GL_NO_ERROR)
++            m_error = GL_INVALID_OPERATION;
++        return;
++    }
+     HTML::queue_a_task(HTML::Task::Source::WebGL, nullptr, nullptr, GC::create_function(heap(), [this] {
+         if (!m_context_lost || !m_lost_via_extension)
+             return;
+diff --git a/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp b/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp
+index a6564861e7..41d87bbe83 100644
+--- a/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp
+@@ -376,6 +376,9 @@ void WebGLRenderingContextImpl::blend_func_separate(WebIDL::UnsignedLong src_rgb
+ WebIDL::UnsignedLong WebGLRenderingContextImpl::check_framebuffer_status(WebIDL::UnsignedLong target)
+ {
+     m_context->make_current();
++    // "If the context is lost, returns FRAMEBUFFER_UNSUPPORTED" ([WebGLHandlesContextLoss]).
++    if (is_context_lost())
++        return GL_FRAMEBUFFER_UNSUPPORTED;
+     return m_context->check_framebuffer_status(target);
+ }
+ 

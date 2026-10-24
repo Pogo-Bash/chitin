@@ -1,0 +1,764 @@
+From 04bae260634ba5d092e3679374617861283768e5 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 10:37:24 -0500
+Subject: [PATCH] LibWeb: IndexedDB persistence for embedders (a journal of
+ committed changes, replay and snapshot)
+
+The databases live in memory, so a reload started with none. An embedder that keeps them sets a sink:
+after each committed readwrite transaction it gets the records stored and deleted (with their index
+records) and the key generators; after an upgrade transaction the whole database; after a deletion, the
+deletion. import_journal() replays entries before the next page runs; export_snapshot() compacts.
+---
+ Libraries/LibWeb/CMakeLists.txt               |   1 +
+ Libraries/LibWeb/IndexedDB/IDBTransaction.cpp |  12 +
+ Libraries/LibWeb/IndexedDB/IDBTransaction.h   |   1 +
+ .../LibWeb/IndexedDB/Internal/Algorithms.cpp  |   5 +-
+ .../LibWeb/IndexedDB/Internal/Database.cpp    |  21 +
+ .../LibWeb/IndexedDB/Internal/Database.h      |   2 +
+ .../LibWeb/IndexedDB/Internal/MutationLog.cpp |  27 +
+ .../LibWeb/IndexedDB/Internal/MutationLog.h   |   4 +
+ .../LibWeb/IndexedDB/Internal/Persistence.cpp | 494 ++++++++++++++++++
+ .../LibWeb/IndexedDB/Internal/Persistence.h   |  48 ++
+ 10 files changed, 614 insertions(+), 1 deletion(-)
+ create mode 100644 Libraries/LibWeb/IndexedDB/Internal/Persistence.cpp
+ create mode 100644 Libraries/LibWeb/IndexedDB/Internal/Persistence.h
+
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index c95bf28596..c19ea6e1d6 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -722,6 +722,7 @@ set(SOURCES
+     IndexedDB/Internal/Key.cpp
+     IndexedDB/Internal/MutationLog.cpp
+     IndexedDB/Internal/ObjectStore.cpp
++    IndexedDB/Internal/Persistence.cpp
+     IndexedDB/Internal/RequestList.cpp
+     Infra/ByteSequences.cpp
+     Infra/JSON.cpp
+diff --git a/Libraries/LibWeb/IndexedDB/IDBTransaction.cpp b/Libraries/LibWeb/IndexedDB/IDBTransaction.cpp
+index eb22ad472d..ef3a6a17fe 100644
+--- a/Libraries/LibWeb/IndexedDB/IDBTransaction.cpp
++++ b/Libraries/LibWeb/IndexedDB/IDBTransaction.cpp
+@@ -13,6 +13,7 @@
+ #include <LibWeb/IndexedDB/IDBIndex.h>
+ #include <LibWeb/IndexedDB/IDBObjectStore.h>
+ #include <LibWeb/IndexedDB/IDBTransaction.h>
++#include <LibWeb/IndexedDB/Internal/Persistence.h>
+ #include <LibWeb/IndexedDB/Internal/Algorithms.h>
+ #include <LibWeb/Page/Page.h>
+ 
+@@ -246,6 +247,17 @@ void IDBTransaction::discard_mutation_logs()
+     m_store_mutation_logs.clear();
+ }
+ 
++// For an embedder that keeps the databases (Internal/Persistence.h): what this transaction changed, before its logs go.
++void IDBTransaction::persist_committed_changes()
++{
++    if (!has_persistence_sink() || m_mode == TransactionMode::Readonly)
++        return;
++    Vector<CommittedStore> stores;
++    for (auto const& entry : m_store_mutation_logs)
++        stores.append({ entry.store, *entry.log });
++    persist_committed_transaction(*m_connection->associated_database(), is_upgrade_transaction(), stores);
++}
++
+ void IDBTransaction::notify_devtools_of_committed_changes()
+ {
+     auto document = HTML::relevant_settings_object(relevant_global_object()).responsible_document();
+diff --git a/Libraries/LibWeb/IndexedDB/IDBTransaction.h b/Libraries/LibWeb/IndexedDB/IDBTransaction.h
+index 39bc6ef080..a672ab2b63 100644
+--- a/Libraries/LibWeb/IndexedDB/IDBTransaction.h
++++ b/Libraries/LibWeb/IndexedDB/IDBTransaction.h
+@@ -117,6 +117,7 @@ public:
+     WebIDL::CallbackType* onerror();
+ 
+     void notify_devtools_of_committed_changes();
++    void persist_committed_changes();
+ 
+ protected:
+     IDBTransaction(GC::Ref<IDBDatabase>, TransactionMode, TransactionDurability, Vector<GC::Ref<ObjectStore>>);
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp b/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
+index 6f5415d3eb..feaf9f1dc4 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
++++ b/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
+@@ -41,6 +41,7 @@
+ #include <LibWeb/IndexedDB/IDBTransaction.h>
+ #include <LibWeb/IndexedDB/IDBVersionChangeEvent.h>
+ #include <LibWeb/IndexedDB/Internal/Algorithms.h>
++#include <LibWeb/IndexedDB/Internal/Persistence.h>
+ #include <LibWeb/IndexedDB/Internal/ConnectionQueueHandler.h>
+ #include <LibWeb/IndexedDB/Internal/Database.h>
+ #include <LibWeb/IndexedDB/Internal/Index.h>
+@@ -632,6 +633,7 @@ void delete_a_database(JS::Realm& realm, StorageAPI::StorageKey storage_key, Utf
+                     call_completion(queue, on_complete, WebIDL::OperationError::create("Unable to delete database"_utf16));
+                     return;
+                 }
++                persist_database_deleted(storage_key, name);
+ 
+                 // 12. Return version.
+                 call_completion(queue, on_complete, version);
+@@ -969,7 +971,8 @@ void commit_a_transaction(JS::Realm&, GC::Ref<IDBTransaction> transaction)
+             if (transaction->is_upgrade_transaction())
+                 transaction->connection()->associated_database()->set_upgrade_transaction(nullptr);
+ 
+-            // AD-HOC: Discard mutation logs now that changes are permanent.
++            // AD-HOC: Discard mutation logs now that changes are permanent (an embedder that persists gets them first).
++            transaction->persist_committed_changes();
+             transaction->notify_devtools_of_committed_changes();
+             transaction->discard_mutation_logs();
+ 
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Database.cpp b/Libraries/LibWeb/IndexedDB/Internal/Database.cpp
+index 8533e53c5e..15bf048a00 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/Database.cpp
++++ b/Libraries/LibWeb/IndexedDB/Internal/Database.cpp
+@@ -32,6 +32,27 @@ void Database::for_each_database(AK::Function<void(Database&)> const& visitor)
+     }
+ }
+ 
++void Database::for_each_database_with_key(AK::Function<void(StorageAPI::StorageKey const&, Database&)> const& visitor)
++{
++    for (auto const& [key, mapping] : idb_databases()) {
++        for (auto const& [_, database] : mapping) {
++            if (database)
++                visitor(key, *database);
++        }
++    }
++}
++
++Optional<StorageAPI::StorageKey> Database::storage_key_of(Database const& wanted)
++{
++    for (auto const& [key, mapping] : idb_databases()) {
++        for (auto const& [_, database] : mapping) {
++            if (database && &*database == &wanted)
++                return key;
++        }
++    }
++    return {};
++}
++
+ GC_DEFINE_ALLOCATOR(Database);
+ 
+ Database::~Database() = default;
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Database.h b/Libraries/LibWeb/IndexedDB/Internal/Database.h
+index b19359bb09..58b8c180ff 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/Database.h
++++ b/Libraries/LibWeb/IndexedDB/Internal/Database.h
+@@ -51,6 +51,8 @@ public:
+     [[nodiscard]] static ErrorOr<void> delete_for_key_and_name(StorageAPI::StorageKey const&, Utf16String const&);
+ 
+     static void for_each_database(AK::Function<void(Database&)> const& visitor);
++    static void for_each_database_with_key(AK::Function<void(StorageAPI::StorageKey const&, Database&)> const& visitor);
++    [[nodiscard]] static Optional<StorageAPI::StorageKey> storage_key_of(Database const&);
+ 
+     [[nodiscard]] static GC::Ref<Database> create(GC::Heap&, Utf16String const&);
+     virtual ~Database();
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp
+index 1eeeeb140a..314b5ce437 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp
++++ b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp
+@@ -188,6 +188,33 @@ void MutationLog::append_changes(Utf16String const& database_name, Utf16String c
+         changes.deleted.append({ database_name, object_store_name, serialize_key_for_inspection(key) });
+ }
+ 
++void MutationLog::collect_committed_keys(Vector<GC::Ref<Key>>& stored, Vector<GC::Ref<Key>>& deleted, bool& key_generator_changed) const
++{
++    auto remove_key = [](Vector<GC::Ref<Key>>& keys, Key& key) {
++        return keys.remove_first_matching([&](auto const& existing) {
++            return Key::equals(existing, GC::Ref { key });
++        });
++    };
++    for (auto const& entry : m_entries) {
++        entry.visit(
++            [&](KeyGeneratorChanged const&) { key_generator_changed = true; },
++            [&](RecordsDeleted const& e) {
++                for (auto const& record : e.records) {
++                    remove_key(stored, *record.key);
++                    if (!deleted.find_if([&](auto const& k) { return Key::equals(k, record.key); }).is_end())
++                        continue;
++                    deleted.append(record.key);
++                }
++            },
++            [&](RecordStored const& e) {
++                remove_key(deleted, *e.key);
++                if (stored.find_if([&](auto const& k) { return Key::equals(k, e.key); }).is_end())
++                    stored.append(e.key);
++            },
++            [&](auto const&) {});
++    }
++}
++
+ void MutationLog::revert(ObjectStore& store, GC::Ref<Database> database, GC::Ref<IDBDatabase> connection)
+ {
+     revert_entries(store, 0, database, connection);
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.h b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.h
+index f3a4bdff3a..8a9843b20e 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.h
++++ b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.h
+@@ -70,6 +70,10 @@ public:
+ 
+     void append_changes(Utf16String const& database_name, Utf16String const& object_store_name, TransactionChanges&) const;
+ 
++    // The keys of the records a committed transaction left stored and the ones it left deleted (net of each other), and
++    // whether the store's key generator moved: what an embedder that persists the database writes (Persistence.h).
++    void collect_committed_keys(Vector<GC::Ref<Key>>& stored, Vector<GC::Ref<Key>>& deleted, bool& key_generator_changed) const;
++
+     [[nodiscard]] size_t position() const { return m_entries.size(); }
+ 
+ protected:
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Persistence.cpp b/Libraries/LibWeb/IndexedDB/Internal/Persistence.cpp
+new file mode 100644
+index 0000000000..663624681f
+--- /dev/null
++++ b/Libraries/LibWeb/IndexedDB/Internal/Persistence.cpp
+@@ -0,0 +1,494 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <AK/BinarySearch.h>
++#include <LibURL/Parser.h>
++#include <LibWeb/IndexedDB/IDBRecord.h>
++#include <LibWeb/IndexedDB/Internal/Database.h>
++#include <LibWeb/IndexedDB/Internal/Index.h>
++#include <LibWeb/IndexedDB/Internal/Key.h>
++#include <LibWeb/IndexedDB/Internal/MutationLog.h>
++#include <LibWeb/IndexedDB/Internal/ObjectStore.h>
++#include <LibWeb/IndexedDB/Internal/Persistence.h>
++
++namespace Web::IndexedDB {
++
++namespace {
++
++enum class Op : u8 {
++    DatabaseBegin = 1, // name, version: the database (re)made empty at this version
++    Store = 2,         // db, store, key path, auto increment, key generator
++    Index = 3,         // db, store, index, key path, unique, multi entry
++    Put = 4,           // db, store, key, value, n, (index, key)*: the record and its index records
++    Delete = 5,        // db, store, key
++    KeyGenerator = 6,  // db, store, current number
++    DatabaseDelete = 7 // name
++};
++
++constexpr u32 entry_magic = 0x42444943; // "CIDB"
++constexpr u32 entry_version = 1;
++
++PersistenceSink& sink()
++{
++    static NeverDestroyed<PersistenceSink> s;
++    return *s;
++}
++
++struct Writer {
++    ByteBuffer out;
++    void u8_(u8 v) { out.append(v); }
++    void u32_(u32 v) { out.append(&v, 4); }
++    void u64_(u64 v) { out.append(&v, 8); }
++    void f64_(double v) { out.append(&v, 8); }
++    void bytes(ReadonlyBytes b)
++    {
++        u32_(b.size());
++        out.append(b);
++    }
++    void str(StringView s) { bytes(s.bytes()); }
++    void str(Utf16String const& s)
++    {
++        auto utf8 = s.to_utf8();
++        str(utf8.bytes_as_string_view());
++    }
++    void key(Key const& k)
++    {
++        u8_(k.type());
++        switch (k.type()) {
++        case Key::Number:
++        case Key::Date:
++            f64_(k.value_as_double());
++            break;
++        case Key::String:
++            str(k.value_as_string());
++            break;
++        case Key::Binary:
++            bytes(k.value_as_byte_buffer());
++            break;
++        case Key::Array: {
++            auto list = k.value_as_vector();
++            u32_(list.size());
++            for (auto const& sub : list)
++                key(*sub);
++            break;
++        }
++        case Key::Invalid:
++            break;
++        }
++    }
++    void key_path(Optional<KeyPath> const& path)
++    {
++        if (!path.has_value()) {
++            u8_(0);
++            return;
++        }
++        path->visit(
++            [&](Utf16String const& s) { u8_(1); str(s); },
++            [&](Vector<Utf16String> const& list) {
++                u8_(2);
++                u32_(list.size());
++                for (auto const& s : list)
++                    str(s);
++            });
++    }
++    void header(StorageAPI::StorageKey const& storage_key)
++    {
++        u32_(entry_magic);
++        u32_(entry_version);
++        str(storage_key.to_string());
++    }
++};
++
++struct Reader {
++    ReadonlyBytes in;
++    size_t at { 0 };
++    bool ok { true };
++    bool need(size_t n)
++    {
++        if (at + n > in.size())
++            ok = false;
++        return ok;
++    }
++    u8 u8_()
++    {
++        if (!need(1))
++            return 0;
++        return in[at++];
++    }
++    u32 u32_()
++    {
++        u32 v = 0;
++        if (need(4))
++            memcpy(&v, in.data() + at, 4), at += 4;
++        return v;
++    }
++    u64 u64_()
++    {
++        u64 v = 0;
++        if (need(8))
++            memcpy(&v, in.data() + at, 8), at += 8;
++        return v;
++    }
++    double f64_()
++    {
++        double v = 0;
++        if (need(8))
++            memcpy(&v, in.data() + at, 8), at += 8;
++        return v;
++    }
++    ReadonlyBytes bytes()
++    {
++        auto n = u32_();
++        if (!need(n))
++            return {};
++        auto b = in.slice(at, n);
++        at += n;
++        return b;
++    }
++    Utf16String str() { return Utf16String::from_utf8(StringView { bytes() }); }
++    GC::Ref<Key> key(int depth = 0)
++    {
++        auto type = static_cast<Key::KeyType>(u8_());
++        switch (type) {
++        case Key::Number:
++            return Key::create_number(f64_());
++        case Key::Date:
++            return Key::create_date(f64_());
++        case Key::String:
++            return Key::create_string(str());
++        case Key::Binary:
++            return Key::create_binary(MUST(ByteBuffer::copy(bytes())));
++        case Key::Array: {
++            auto n = u32_();
++            auto list = GC::Root { GC::Heap::the().allocate<GC::HeapVector<GC::Ref<Key>>>() };
++            for (u32 i = 0; i < n && ok && depth < 64; ++i)
++                list->elements().append(key(depth + 1));
++            return Key::create_array(list);
++        }
++        default:
++            ok = false;
++            return Key::create_invalid(""_utf16);
++        }
++    }
++    Optional<KeyPath> key_path()
++    {
++        switch (u8_()) {
++        case 1:
++            return KeyPath { str() };
++        case 2: {
++            Vector<Utf16String> list;
++            auto n = u32_();
++            for (u32 i = 0; i < n && ok; ++i)
++                list.append(str());
++            return KeyPath { move(list) };
++        }
++        default:
++            return {};
++        }
++    }
++};
++
++Optional<ObjectStoreRecord const&> record_with_key(ObjectStore& store, GC::Ref<Key> key)
++{
++    auto records = store.records();
++    size_t index = 0;
++    auto* found = AK::binary_search(records, key, &index, [](auto const& needle, auto const& record) {
++        return Key::compare_two_keys(needle, record.key);
++    });
++    if (!found)
++        return {};
++    return *found;
++}
++
++void write_put(Writer& w, Utf16String const& db, ObjectStore& store, ObjectStoreRecord const& record)
++{
++    w.u8_(to_underlying(Op::Put));
++    w.str(db);
++    w.str(store.name());
++    w.key(*record.key);
++    w.bytes(record.value->data);
++    // The index records that point at this record (an index record's value is the record's key).
++    Vector<IndexRecord> refs;
++    Vector<Utf16String> names;
++    for (auto const& [name, index] : store.index_set()) {
++        for (auto const& ir : index->records()) {
++            if (Key::equals(ir.value, record.key)) {
++                refs.append(ir);
++                names.append(name);
++            }
++        }
++    }
++    w.u32_(refs.size());
++    for (size_t i = 0; i < refs.size(); ++i) {
++        w.str(names[i]);
++        w.key(*refs[i].key);
++    }
++}
++
++void write_database(Writer& w, Database& database)
++{
++    w.u8_(to_underlying(Op::DatabaseBegin));
++    w.str(database.name());
++    w.u64_(database.version());
++    for (auto const& store : database.object_stores()) {
++        if (store->is_deleted())
++            continue;
++        w.u8_(to_underlying(Op::Store));
++        w.str(database.name());
++        w.str(store->name());
++        w.key_path(store->key_path());
++        w.u8_(store->uses_a_key_generator() ? 1 : 0);
++        w.u64_(store->uses_a_key_generator() ? store->key_generator().current_number() : 0);
++        for (auto const& [name, index] : store->index_set()) {
++            if (index->is_deleted())
++                continue;
++            w.u8_(to_underlying(Op::Index));
++            w.str(database.name());
++            w.str(store->name());
++            w.str(name);
++            w.key_path(index->key_path());
++            w.u8_(index->unique() ? 1 : 0);
++            w.u8_(index->multi_entry() ? 1 : 0);
++        }
++    }
++    for (auto const& store : database.object_stores()) {
++        if (store->is_deleted())
++            continue;
++        for (auto const& record : store->records())
++            write_put(w, database.name(), *store, record);
++    }
++}
++
++void remove_index_records_of(ObjectStore& store, GC::Ref<Key> primary)
++{
++    for (auto const& [_, index] : store.index_set()) {
++        Vector<IndexRecord> doomed;
++        for (auto const& ir : index->records()) {
++            if (Key::equals(ir.value, primary))
++                doomed.append(ir);
++        }
++        for (auto const& ir : doomed)
++            index->remove_record(ir);
++    }
++}
++
++}
++
++void set_persistence_sink(PersistenceSink s)
++{
++    sink() = move(s);
++}
++
++bool has_persistence_sink()
++{
++    return static_cast<bool>(sink());
++}
++
++void persist_committed_transaction(Database& database, bool is_upgrade, Vector<CommittedStore> const& stores)
++{
++    if (!sink())
++        return;
++    auto storage_key = Database::storage_key_of(database);
++    if (!storage_key.has_value() || storage_key->origin.is_opaque())
++        return;
++    Writer w;
++    w.header(*storage_key);
++    size_t empty = w.out.size();
++    if (is_upgrade) {
++        write_database(w, database);
++    } else {
++        for (auto const& entry : stores) {
++            auto& store = *entry.store;
++            if (store.is_deleted())
++                continue;
++            Vector<GC::Ref<Key>> stored, deleted;
++            bool key_generator_changed = false;
++            entry.log->collect_committed_keys(stored, deleted, key_generator_changed);
++            for (auto const& key : deleted) {
++                w.u8_(to_underlying(Op::Delete));
++                w.str(database.name());
++                w.str(store.name());
++                w.key(*key);
++            }
++            for (auto const& key : stored) {
++                auto record = record_with_key(store, key);
++                if (!record.has_value())
++                    continue;
++                write_put(w, database.name(), store, *record);
++            }
++            if (store.uses_a_key_generator() && (key_generator_changed || !stored.is_empty())) {
++                w.u8_(to_underlying(Op::KeyGenerator));
++                w.str(database.name());
++                w.str(store.name());
++                w.u64_(store.key_generator().current_number());
++            }
++        }
++    }
++    if (w.out.size() == empty)
++        return;
++    sink()(move(w.out));
++}
++
++void persist_database_deleted(StorageAPI::StorageKey const& storage_key, Utf16String const& name)
++{
++    if (!sink() || storage_key.origin.is_opaque())
++        return;
++    Writer w;
++    w.header(storage_key);
++    w.u8_(to_underlying(Op::DatabaseDelete));
++    w.str(name);
++    sink()(move(w.out));
++}
++
++ByteBuffer export_snapshot()
++{
++    HashMap<String, Writer> by_key;
++    Vector<String> order;
++    Database::for_each_database_with_key([&](StorageAPI::StorageKey const& key, Database& database) {
++        if (key.origin.is_opaque())
++            return;
++        auto name = key.to_string();
++        auto& w = by_key.ensure(name, [&] {
++            order.append(name);
++            Writer fresh;
++            fresh.header(key);
++            return fresh;
++        });
++        write_database(w, database);
++    });
++    ByteBuffer out;
++    for (auto const& name : order)
++        out.append(by_key.get(name)->out);
++    return out;
++}
++
++ErrorOr<void> import_journal(ReadonlyBytes data)
++{
++    Reader r { data };
++    Optional<StorageAPI::StorageKey> storage_key;
++    auto find_store = [&](Utf16String const& db, Utf16String const& name) -> GC::Ptr<ObjectStore> {
++        auto database = Database::for_key_and_name(*storage_key, db);
++        if (!database.has_value())
++            return nullptr;
++        return database->object_store_with_name(name);
++    };
++    while (r.ok && r.at < data.size()) {
++        // An entry starts with its header; operations follow until the next header or the end.
++        if (r.at + 4 <= data.size()) {
++            u32 magic = 0;
++            memcpy(&magic, data.data() + r.at, 4);
++            if (magic == entry_magic) {
++                r.at += 4;
++                if (r.u32_() != entry_version)
++                    return Error::from_string_literal("IndexedDB journal: unknown entry version");
++                auto origin_text = r.str().to_utf8();
++                auto url = URL::Parser::basic_parse(origin_text);
++                if (!url.has_value())
++                    return Error::from_string_literal("IndexedDB journal: bad storage key");
++                storage_key = StorageAPI::StorageKey { url->origin() };
++                continue;
++            }
++        }
++        if (!storage_key.has_value())
++            return Error::from_string_literal("IndexedDB journal: operation before a header");
++        auto op = static_cast<Op>(r.u8_());
++        switch (op) {
++        case Op::DatabaseBegin: {
++            auto name = r.str();
++            auto version = r.u64_();
++            (void)Database::delete_for_key_and_name(*storage_key, name);
++            auto database = TRY(Database::create_for_key_and_name(GC::Heap::the(), *storage_key, name));
++            database->set_version(version);
++            break;
++        }
++        case Op::DatabaseDelete:
++            (void)Database::delete_for_key_and_name(*storage_key, r.str());
++            break;
++        case Op::Store: {
++            auto db = r.str();
++            auto name = r.str();
++            auto path = r.key_path();
++            bool auto_increment = r.u8_() != 0;
++            auto generator = r.u64_();
++            auto database = Database::for_key_and_name(*storage_key, db);
++            if (!database.has_value() || !r.ok)
++                break;
++            auto store = database->object_store_with_name(name);
++            if (!store) {
++                store = ObjectStore::create(*database, name, auto_increment, path); // adds itself to the database
++            }
++            if (store->uses_a_key_generator())
++                store->key_generator().set(generator);
++            break;
++        }
++        case Op::Index: {
++            auto db = r.str();
++            auto store_name = r.str();
++            auto name = r.str();
++            auto path = r.key_path();
++            bool unique = r.u8_() != 0;
++            bool multi_entry = r.u8_() != 0;
++            auto store = find_store(db, store_name);
++            if (!store || !r.ok || !path.has_value() || store->index_set().contains(name))
++                break;
++            (void)Index::create(*store, name, *path, unique, multi_entry); // adds itself to the store's index set
++            break;
++        }
++        case Op::Put: {
++            auto db = r.str();
++            auto store_name = r.str();
++            auto key = r.key();
++            auto value = r.bytes();
++            auto n = r.u32_();
++            Vector<Utf16String> names;
++            Vector<GC::Ref<Key>> index_keys;
++            for (u32 i = 0; i < n && r.ok; ++i) {
++                names.append(r.str());
++                index_keys.append(r.key());
++            }
++            auto store = find_store(db, store_name);
++            if (!store || !r.ok)
++                break;
++            store->remove_record_with_key(key);
++            remove_index_records_of(*store, key);
++            store->store_a_record(ObjectStoreRecord { key, make<HTML::StorageSerializationRecord>(TRY(ByteBuffer::copy(value))) });
++            for (size_t i = 0; i < names.size(); ++i) {
++                auto index = store->index_set().get(names[i]);
++                if (index.has_value())
++                    (*index)->store_a_record(IndexRecord { index_keys[i], key });
++            }
++            break;
++        }
++        case Op::Delete: {
++            auto db = r.str();
++            auto store_name = r.str();
++            auto key = r.key();
++            auto store = find_store(db, store_name);
++            if (!store || !r.ok)
++                break;
++            store->remove_record_with_key(key);
++            remove_index_records_of(*store, key);
++            break;
++        }
++        case Op::KeyGenerator: {
++            auto db = r.str();
++            auto store_name = r.str();
++            auto value = r.u64_();
++            auto store = find_store(db, store_name);
++            if (store && r.ok && store->uses_a_key_generator())
++                store->key_generator().set(value);
++            break;
++        }
++        default:
++            return Error::from_string_literal("IndexedDB journal: unknown operation");
++        }
++    }
++    if (!r.ok)
++        return Error::from_string_literal("IndexedDB journal: truncated");
++    return {};
++}
++
++}
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Persistence.h b/Libraries/LibWeb/IndexedDB/Internal/Persistence.h
+new file mode 100644
+index 0000000000..d7d945486d
+--- /dev/null
++++ b/Libraries/LibWeb/IndexedDB/Internal/Persistence.h
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/ByteBuffer.h>
++#include <AK/Function.h>
++#include <AK/Vector.h>
++#include <LibGC/Ptr.h>
++#include <LibWeb/Export.h>
++#include <LibWeb/Forward.h>
++#include <LibWebCommon/StorageAPI/StorageKey.h>
++
++namespace Web::IndexedDB {
++
++class Database;
++class MutationLog;
++class ObjectStore;
++
++// Persistence for embedders that keep IndexedDB themselves (the databases otherwise live in memory only, and a reload
++// starts with none). After each committed transaction and each deleted database the sink gets a journal entry: the
++// operations that bring a copy up to date (records stored and deleted, key generators; for an upgrade transaction the
++// whole database). An embedder appends the entries to its own storage and, before the next page of the origin runs,
++// replays them with import_journal(); export_snapshot() gives the same state as one entry, for compaction.
++//
++// Entry: "CIDB" u32 version 1, the storage key's origin (string), then operations to the end. Strings are u32 length
++// + UTF-8, numbers little-endian. Values are LibWeb's storage serialization records as they are (LBSC, versioned).
++using PersistenceSink = Function<void(ByteBuffer)>;
++WEB_API void set_persistence_sink(PersistenceSink);
++[[nodiscard]] bool has_persistence_sink();
++
++struct CommittedStore {
++    GC::Ref<ObjectStore> store;
++    GC::Ref<MutationLog> log;
++};
++void persist_committed_transaction(Database&, bool is_upgrade, Vector<CommittedStore> const&);
++void persist_database_deleted(StorageAPI::StorageKey const&, Utf16String const& name);
++
++// Replays a sequence of journal entries (concatenated). Databases with open connections are not touched; nothing
++// may be open yet when an embedder restores at start.
++WEB_API ErrorOr<void> import_journal(ReadonlyBytes);
++// Every database of every storage key, one entry per key, concatenated.
++WEB_API ByteBuffer export_snapshot();
++
++}
+-- 
+2.50.1 (Apple Git-155)
+

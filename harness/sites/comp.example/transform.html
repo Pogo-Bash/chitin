@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>a running transform animation and an opacity group</title>
+<style>
+body { margin: 0; font: 16px/1.4 sans-serif; background: #fdfcf8; }
+.mover { position: absolute; left: 40px; top: 60px; width: 200px; height: 120px; background: #e76f51; color: #fff; padding: 10px; box-sizing: border-box;
+         animation: slide 2s linear infinite alternate; }
+@keyframes slide { from { transform: translateX(0); } to { transform: translateX(300px); } }
+.group { position: absolute; left: 40px; top: 260px; opacity: 0.6; }
+.group div { width: 160px; height: 60px; margin: 6px; background: #264653; }
+.group .over { position: absolute; left: 60px; top: 20px; background: #2a9d8f; }
+</style>
+<div class="mover">animated transform</div>
+<div class="group"><div></div><div class="over"></div><div></div></div>

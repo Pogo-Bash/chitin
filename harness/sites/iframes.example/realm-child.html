@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><title>realm child</title>
+<script>
+var hoisted = typeof laterFn;
+function laterFn() { return 'laterFn ' + counter; }
+var counter = 1;
+let shared = 'lexical';
+const sharedConst = 42;
+class Thing { kind() { return 'thing'; } }
+var info = {
+    thisIsWindow: this === window,
+    selfIsWindow: self === window,
+    globalThisIsWindow: globalThis === window,
+    windowIsNotParent: window !== parent,
+    topIsParent: top === parent,
+    parentOnlyType: typeof parentOnly,
+    parentFnType: typeof parentFn,
+    docTitle: document.title,
+    frameElementId: window.frameElement && window.frameElement.id,
+    readParentVar: parent.parentOnly,
+    parentDocTitle: parent.document.title,
+};
+try { undeclaredName; info.ref = 'no error'; } catch (e) { info.ref = e.name; }
+implicitGlobal = 'implicit';
+info.fnLocation = Function('return location.pathname')();
+parent.results.fromChild.push('script 1');
+</script>
+<script>
+"use strict";
+var strictVar = 'strict ' + shared + ' ' + sharedConst + ' ' + new Thing().kind() + ' ' + laterFn();
+counter = 2;
+parent.results.fromChild.push('script 2');
+</script>
+</head>
+<body>
+<p id="c">realm child</p>
+<button id="b" onclick="clicked = document.title + ' ' + this.id + ' ' + typeof parentOnly">b</button>
+<script>
+setTimeout(function () { parent.results.fromChild.push('timer ' + document.title); }, 0);
+document.title = 'realm child ran';
+window.addEventListener('load', function () { parent.results.fromChild.push('child load'); });
+</script>
+</body></html>

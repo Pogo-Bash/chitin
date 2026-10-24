@@ -1,0 +1,198 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 14:38:26 -0500
+Subject: [PATCH] LibWeb: on Emscripten an OfflineAudioContext renders on the
+ control thread's event loop, a slice of render quanta per turn, instead of on
+ a rendering thread; before, startRendering trapped in Thread::start
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../Rendering/OfflineAudioRenderer.cpp        | 122 +++++++++++++-----
+ .../WebAudio/Rendering/OfflineAudioRenderer.h |  10 ++
+ 2 files changed, 103 insertions(+), 29 deletions(-)
+
+diff --git a/Libraries/LibWeb/WebAudio/Rendering/OfflineAudioRenderer.cpp b/Libraries/LibWeb/WebAudio/Rendering/OfflineAudioRenderer.cpp
+index 214c7d40a5..7009e3d315 100644
+--- a/Libraries/LibWeb/WebAudio/Rendering/OfflineAudioRenderer.cpp
++++ b/Libraries/LibWeb/WebAudio/Rendering/OfflineAudioRenderer.cpp
+@@ -54,6 +54,15 @@ void OfflineAudioRenderer::clear_callbacks()
+ void OfflineAudioRenderer::start_rendering()
+ {
+     VERIFY(!m_thread);
++#ifdef AK_OS_EMSCRIPTEN
++    // One thread: the rendering runs on the control thread's event loop, a slice of render quanta per turn, and a
++    // suspension ends the slices until resume() (a rendering thread cannot be created, and nothing could wait in one).
++    VERIFY(!m_rendering_on_event_loop);
++    m_rendering_on_event_loop = true;
++    m_graph.set_destination(m_destination_node_id);
++    schedule_render_slice();
++    return;
++#endif
+     m_graph.set_destination(m_destination_node_id);
+     m_thread = MUST(Threading::Thread::try_create("OfflineAudioRenderer"sv, [self = NonnullRefPtr(*this)] {
+         return self->render_thread_main();
+@@ -84,6 +93,13 @@ bool OfflineAudioRenderer::request_suspend(u64 frame)
+ void OfflineAudioRenderer::resume()
+ {
+     MutexLocker locker(m_suspend_mutex);
++#ifdef AK_OS_EMSCRIPTEN
++    bool was_suspended = m_suspended;
++    m_suspended = false;
++    if (was_suspended && m_rendering_on_event_loop && !m_shutting_down)
++        schedule_render_slice();
++    return;
++#endif
+     m_suspended = false;
+     m_resume_signal.broadcast();
+ }
+@@ -95,6 +111,82 @@ void OfflineAudioRenderer::post_to_control_thread(Function<void(OfflineAudioRend
+     });
+ }
+ 
++void OfflineAudioRenderer::render_one_quantum(u64 current_frame)
++{
++    m_graph.apply_control_messages(m_control_message_queue->drain());
++
++    RenderContext context {
++        .sample_rate = m_sample_rate,
++        .quantum_size = m_quantum_size,
++        .quantum_start_frame = current_frame,
++    };
++    m_graph.render_quantum(context);
++
++    // Copy the destination's captured output into the rendered buffer.
++    if (auto* destination_node = m_graph.destination()) {
++        auto const& destination_output = destination_node->output(0);
++        auto frames_to_copy = min(m_quantum_size, m_length - current_frame);
++        for (size_t channel_index = 0; channel_index < m_number_of_channels; ++channel_index) {
++            if (channel_index >= destination_output.channel_count())
++                break;
++            auto samples = destination_output.channel(channel_index);
++            for (size_t frame = 0; frame < frames_to_copy; ++frame)
++                m_rendered_channels[channel_index][current_frame + frame] = samples[frame];
++        }
++    }
++
++    if (auto ended_nodes = m_graph.take_ended_nodes(); !ended_nodes.is_empty()) {
++        post_to_control_thread([ended_nodes = move(ended_nodes)](OfflineAudioRenderer& renderer) {
++            if (renderer.m_on_sources_ended)
++                renderer.m_on_sources_ended(ended_nodes);
++        });
++    }
++}
++
++#ifdef AK_OS_EMSCRIPTEN
++void OfflineAudioRenderer::schedule_render_slice()
++{
++    m_main_thread_event_loop.deferred_invoke([self = NonnullRefPtr(*this)] {
++        self->render_slice();
++    });
++}
++
++// The steps of render_thread_main for up to a slice of render quanta, on the control thread.
++void OfflineAudioRenderer::render_slice()
++{
++    static constexpr size_t quanta_per_slice = 64;
++    u64 current_frame = m_frames_rendered.load();
++    for (size_t i = 0; i < quanta_per_slice && current_frame < m_length; ++i) {
++        {
++            MutexLocker locker(m_suspend_mutex);
++            if (m_shutting_down || m_suspended)
++                return;
++            m_next_suspend_check_frame = current_frame + m_quantum_size;
++            if (m_suspend_frames.remove(current_frame)) {
++                m_suspended = true;
++                auto suspend_time = current_frame / static_cast<double>(m_sample_rate);
++                post_to_control_thread([suspend_time](OfflineAudioRenderer& renderer) {
++                    if (renderer.m_on_suspended)
++                        renderer.m_on_suspended(suspend_time);
++                });
++                return;
++            }
++        }
++        render_one_quantum(current_frame);
++        current_frame += m_quantum_size;
++        m_frames_rendered.store(current_frame);
++    }
++    if (current_frame < m_length) {
++        schedule_render_slice();
++        return;
++    }
++    post_to_control_thread([](OfflineAudioRenderer& renderer) {
++        if (renderer.m_on_complete)
++            renderer.m_on_complete();
++    });
++}
++#endif
++
+ intptr_t OfflineAudioRenderer::render_thread_main()
+ {
+     u64 current_frame = 0;
+@@ -118,37 +210,9 @@ intptr_t OfflineAudioRenderer::render_thread_main()
+             }
+         }
+ 
+-        m_graph.apply_control_messages(m_control_message_queue->drain());
+-
+-        RenderContext context {
+-            .sample_rate = m_sample_rate,
+-            .quantum_size = m_quantum_size,
+-            .quantum_start_frame = current_frame,
+-        };
+-        m_graph.render_quantum(context);
+-
+-        // Copy the destination's captured output into the rendered buffer.
+-        if (auto* destination_node = m_graph.destination()) {
+-            auto const& destination_output = destination_node->output(0);
+-            auto frames_to_copy = min(m_quantum_size, m_length - current_frame);
+-            for (size_t channel_index = 0; channel_index < m_number_of_channels; ++channel_index) {
+-                if (channel_index >= destination_output.channel_count())
+-                    break;
+-                auto samples = destination_output.channel(channel_index);
+-                for (size_t frame = 0; frame < frames_to_copy; ++frame)
+-                    m_rendered_channels[channel_index][current_frame + frame] = samples[frame];
+-            }
+-        }
+-
++        render_one_quantum(current_frame);
+         current_frame += m_quantum_size;
+         m_frames_rendered.store(current_frame);
+-
+-        if (auto ended_nodes = m_graph.take_ended_nodes(); !ended_nodes.is_empty()) {
+-            post_to_control_thread([ended_nodes = move(ended_nodes)](OfflineAudioRenderer& renderer) {
+-                if (renderer.m_on_sources_ended)
+-                    renderer.m_on_sources_ended(ended_nodes);
+-            });
+-        }
+     }
+ 
+     post_to_control_thread([](OfflineAudioRenderer& renderer) {
+diff --git a/Libraries/LibWeb/WebAudio/Rendering/OfflineAudioRenderer.h b/Libraries/LibWeb/WebAudio/Rendering/OfflineAudioRenderer.h
+index 1838700e83..fab4b7cd0d 100644
+--- a/Libraries/LibWeb/WebAudio/Rendering/OfflineAudioRenderer.h
++++ b/Libraries/LibWeb/WebAudio/Rendering/OfflineAudioRenderer.h
+@@ -54,7 +54,11 @@ public:
+     bool request_suspend(u64 frame);
+     void resume();
+ 
++#ifdef AK_OS_EMSCRIPTEN
++    bool is_rendering_started() const { return m_thread != nullptr || m_rendering_on_event_loop; }
++#else
+     bool is_rendering_started() const { return m_thread != nullptr; }
++#endif
+     u64 frames_rendered() const { return m_frames_rendered.load(); }
+ 
+     // Only safe to access on the control thread after the completion callback was invoked.
+@@ -64,6 +68,12 @@ private:
+     OfflineAudioRenderer(NonnullRefPtr<ControlMessageQueue>, NodeID destination_node_id, size_t number_of_channels, size_t length, float sample_rate, size_t quantum_size);
+ 
+     intptr_t render_thread_main();
++    void render_one_quantum(u64 current_frame);
++#ifdef AK_OS_EMSCRIPTEN
++    void schedule_render_slice();
++    void render_slice();
++    bool m_rendering_on_event_loop { false };
++#endif
+     void post_to_control_thread(Function<void(OfflineAudioRenderer&)>);
+ 
+     NonnullRefPtr<ControlMessageQueue> m_control_message_queue;

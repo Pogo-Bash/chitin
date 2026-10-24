@@ -1,0 +1,12 @@
+// Chitin phase-0 subset of Ladybird's Libraries/LibWeb/CSS/CSSStyleDeclaration.idl (BSD-2-Clause, the Ladybird developers).
+// Members kept as written upstream; members the toy does not implement are left out.
+// https://drafts.csswg.org/cssom/#cssstyledeclaration
+[Exposed=Window]
+interface CSSStyleDeclaration {
+    [CEReactions] attribute CSSOMString cssText;
+    readonly attribute unsigned long length;
+
+    CSSOMString getPropertyValue(CSSOMString property);
+    [CEReactions] undefined setProperty(CSSOMString property, [LegacyNullToEmptyString] CSSOMString value, optional [LegacyNullToEmptyString] CSSOMString priority = "");
+    [CEReactions] CSSOMString removeProperty(CSSOMString property);
+};

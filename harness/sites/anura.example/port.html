@@ -1,0 +1,19 @@
+<!doctype html>
+<title>port</title>
+<script>
+const got = [];
+const finish = () => { if (got.length === 4) document.title = 'done:' + got.slice().sort().join('|'); };
+navigator.serviceWorker.addEventListener('message', (e) => {
+    const b = e.data.back;
+    got.push('back is port ' + (b === e.ports[0]) + ' ' + Object.prototype.toString.call(b));
+    b.onmessage = (m) => { got.push(m.data); finish(); };
+    b.postMessage('pong');
+});
+function go() {
+    const { port1, port2 } = new MessageChannel();
+    port1.onmessage = (e) => { got.push(e.data); if (e.data.includes(',')) port1.postMessage('ping'); finish(); };
+    navigator.serviceWorker.controller.postMessage({ target: 'init', value: port2 }, [port2]);
+}
+navigator.serviceWorker.addEventListener('controllerchange', go);
+navigator.serviceWorker.register('port-sw.js').catch((e) => { document.title = 'error:' + e; });
+</script>

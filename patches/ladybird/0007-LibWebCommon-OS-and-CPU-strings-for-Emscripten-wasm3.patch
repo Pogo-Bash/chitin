@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 13:49:29 -0500
+Subject: [PATCH 07/23] LibWebCommon: OS and CPU strings for Emscripten/wasm32
+ in UserAgent.h
+
+---
+ Libraries/LibWebCommon/Loader/UserAgent.h | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/Libraries/LibWebCommon/Loader/UserAgent.h b/Libraries/LibWebCommon/Loader/UserAgent.h
+index bb044b829c..c9b0fbcc4c 100644
+--- a/Libraries/LibWebCommon/Loader/UserAgent.h
++++ b/Libraries/LibWebCommon/Loader/UserAgent.h
+@@ -25,6 +25,8 @@ namespace Web {
+ #    define CPU_STRING "PowerPC 64"
+ #elif ARCH(PPC)
+ #    define CPU_STRING "PowerPC"
++#elif ARCH(WASM32)
++#    define CPU_STRING "wasm32"
+ #else
+ #    error Unknown architecture
+ #endif
+@@ -55,6 +57,8 @@ namespace Web {
+ #    define OS_STRING "Haiku"
+ #elif defined(AK_OS_GNU_HURD)
+ #    define OS_STRING "GNU/Hurd"
++#elif defined(AK_OS_EMSCRIPTEN)
++#    define OS_STRING "WebAssembly"
+ #else
+ #    error Unknown OS
+ #endif

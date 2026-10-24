@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><title>srcdoc</title></head>
+<body>
+<iframe id="f" srcdoc="<p id=s>from srcdoc</p>"></iframe>
+<script>
+var results = { events: [] };
+document.getElementById('f').addEventListener('load', function () { results.events.push('frame load'); });
+window.addEventListener('load', function () { results.events.push('window load'); });
+</script>
+</body></html>

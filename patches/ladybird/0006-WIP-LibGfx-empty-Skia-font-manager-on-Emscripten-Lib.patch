@@ -1,0 +1,199 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 13:33:23 -0500
+Subject: [PATCH 06/23] WIP: LibGfx empty Skia font manager on Emscripten;
+ LibWasm pointer/u64 casts for wasm32, no Cranelift trap messages without
+ compiled code
+
+---
+ Libraries/LibGfx/Font/TypefaceSkia.cpp        |  5 ++++
+ .../LibWasm/AbstractMachine/AbstractMachine.h | 12 ++++-----
+ .../AbstractMachine/BytecodeInterpreter.cpp   | 25 +++++++++++--------
+ 3 files changed, 25 insertions(+), 17 deletions(-)
+
+diff --git a/Libraries/LibGfx/Font/TypefaceSkia.cpp b/Libraries/LibGfx/Font/TypefaceSkia.cpp
+index 2c869c9339..8d30305a21 100644
+--- a/Libraries/LibGfx/Font/TypefaceSkia.cpp
++++ b/Libraries/LibGfx/Font/TypefaceSkia.cpp
+@@ -31,6 +31,9 @@
+ #elif defined(AK_OS_WINDOWS)
+ #    include <ports/SkFontMgr_empty.h>
+ #    include <ports/SkTypeface_win.h>
++#elif defined(AK_OS_EMSCRIPTEN)
++// No system fonts: every typeface is made from bytes the embedder provides.
++#    include <ports/SkFontMgr_empty.h>
+ #else
+ #    include <ports/SkFontMgr_fontconfig.h>
+ #    include <ports/SkFontScanner_FreeType.h>
+@@ -110,6 +113,8 @@ static SkFontMgr& font_manager()
+             font_manager = SkFontMgr_New_Custom_Empty();
+         else
+             font_manager = SkFontMgr_New_DirectWrite();
++#elif defined(AK_OS_EMSCRIPTEN)
++        font_manager = SkFontMgr_New_Custom_Empty();
+ #else
+         if (!font_manager) {
+             font_manager = SkFontMgr_New_FontConfig(nullptr, SkFontScanner_Make_FreeType());
+diff --git a/Libraries/LibWasm/AbstractMachine/AbstractMachine.h b/Libraries/LibWasm/AbstractMachine/AbstractMachine.h
+index 384ad2a99f..07ea556373 100644
+--- a/Libraries/LibWasm/AbstractMachine/AbstractMachine.h
++++ b/Libraries/LibWasm/AbstractMachine/AbstractMachine.h
+@@ -188,7 +188,7 @@ public:
+         // 10: a host externref viewed as a value in the any hierarchy (any.convert_extern)
+         // anything else: funcref, where high is the defining Module* (null for host functions)
+         ref.ref().visit(
+-            [&](Reference::Func const& func) { m_value = u128(bit_cast<u64>(func.address), bit_cast<u64>(func.source_module.ptr())); },
++            [&](Reference::Func const& func) { m_value = u128(bit_cast<u64>(func.address), static_cast<u64>(reinterpret_cast<FlatPtr>(func.source_module.ptr()))); },
+             [&](Reference::Extern const& func) { m_value = u128(bit_cast<u64>(func.address), 1); },
+             [&](Reference::Null const& null) {
+                 switch (null.type.kind()) {
+@@ -211,7 +211,7 @@ public:
+             },
+             [&](Reference::Exception const& exn) { m_value = u128(bit_cast<u64>(exn.address), 5); },
+             [&](Reference::I31 const& i31) { m_value = u128(static_cast<u64>(i31.value & 0x7fffffff), 7); },
+-            [&](Reference::GcObject const& object) { m_value = u128(bit_cast<u64>(object.ptr.ptr()), 6); });
++            [&](Reference::GcObject const& object) { m_value = u128(static_cast<u64>(reinterpret_cast<FlatPtr>(object.ptr.ptr())), 6); });
+     }
+ 
+     // The gc cell behind this value if it holds a gc object reference, otherwise null.
+@@ -220,7 +220,7 @@ public:
+         // A gc object, either plain (tag 6) or externalized by extern.convert_any (tag 9
+         // wrapping tag 6).
+         if (m_value.high() == 6 || m_value.high() == (9 | (6 << 8)))
+-            return bit_cast<GC::Cell*>(m_value.low());
++            return reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(m_value.low()));
+         return nullptr;
+     }
+ 
+@@ -269,14 +269,14 @@ public:
+             case 5:
+                 return Reference { Reference::Exception { bit_cast<ExceptionAddress>(m_value.low()) } };
+             case 6:
+-                return Reference { Reference::GcObject { bit_cast<GC::Cell*>(m_value.low()) } };
++                return Reference { Reference::GcObject { reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(m_value.low())) } };
+             case 7:
+                 return Reference { Reference::I31 { static_cast<u32>(m_value.low()) } };
+             case 8:
+                 return Reference { Reference::Null { ValueType(ValueType::Kind::AnyReference) } };
+             case 9 | (6 << 8):
+                 // An externalized gc object; boxing drops the extern.convert_any wrapper.
+-                return Reference { Reference::GcObject { bit_cast<GC::Cell*>(m_value.low()) } };
++                return Reference { Reference::GcObject { reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(m_value.low())) } };
+             case 9 | (7 << 8):
+                 // An externalized i31; boxing drops the extern.convert_any wrapper.
+                 return Reference { Reference::I31 { static_cast<u32>(m_value.low()) } };
+@@ -284,7 +284,7 @@ public:
+                 // A host externref internalized by any.convert_extern; boxing drops the wrapper.
+                 return Reference { Reference::Extern { bit_cast<ExternAddress>(m_value.low()) } };
+             default:
+-                return Reference { Reference::Func { bit_cast<FunctionAddress>(m_value.low()), bit_cast<Wasm::Module*>(m_value.high()) } };
++                return Reference { Reference::Func { bit_cast<FunctionAddress>(m_value.low()), reinterpret_cast<Wasm::Module*>(static_cast<FlatPtr>(m_value.high())) } };
+             }
+         }
+         VERIFY_NOT_REACHED();
+diff --git a/Libraries/LibWasm/AbstractMachine/BytecodeInterpreter.cpp b/Libraries/LibWasm/AbstractMachine/BytecodeInterpreter.cpp
+index 89823c8e02..3bbc882b67 100644
+--- a/Libraries/LibWasm/AbstractMachine/BytecodeInterpreter.cpp
++++ b/Libraries/LibWasm/AbstractMachine/BytecodeInterpreter.cpp
+@@ -271,6 +271,9 @@ static void install_compiled_fault_handlers()
+ 
+ static void install_compiled_fault_handlers() { }
+ 
++// No compiled code runs on such platforms, so no Cranelift trap can be recovered from.
++[[maybe_unused]] static StringView cranelift_trap_message(u8) { return "unreachable executed"sv; }
++
+ #endif
+ 
+ }
+@@ -5946,7 +5949,7 @@ static bool reference_matches_type(Value const& value, ValueType const& target,
+     case 5: // an exception
+         return target.kind() == ValueType::ExceptionReference;
+     case 6: { // a struct or array instance
+-        auto& cell = *bit_cast<GC::Cell*>(value.value().low());
++        auto& cell = *reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(value.value().low()));
+         switch (target.kind()) {
+         case ValueType::AnyReference:
+         case ValueType::EqReference:
+@@ -6090,7 +6093,7 @@ static bool struct_get_impl(BytecodeInterpreter& interpreter, Configuration& con
+     auto& slot = configuration.source_value<mix>(0, addresses.sources); // bounds checked by verifier.
+     if (is_null_gc_reference(slot)) [[unlikely]]
+         return interpreter.set_trap("null structure reference"sv);
+-    auto& instance = *static_cast<StructInstance*>(bit_cast<GC::Cell*>(slot.value().low()));
++    auto& instance = *static_cast<StructInstance*>(reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(slot.value().low())));
+     auto const& field_types = configuration.frame().module().canonical_types()[args.type_index.value()]->expansion().get<StructType>().fields();
+     slot = unpack_from_field(field_types[args.field_index].type(), instance.fields()[args.field_index], sign_extend);
+     return false;
+@@ -6133,7 +6136,7 @@ HANDLE_INSTRUCTION(struct_set)
+     auto value = configuration.take_source<source_address_mix>(0, addresses.sources);
+     auto reference = configuration.take_source<source_address_mix>(1, addresses.sources);
+     GC_TRAP_IF(is_null_gc_reference(reference), "null structure reference");
+-    auto& instance = *static_cast<StructInstance*>(bit_cast<GC::Cell*>(reference.value().low()));
++    auto& instance = *static_cast<StructInstance*>(reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(reference.value().low())));
+     auto const& field_types = configuration.frame().module().canonical_types()[args.type_index.value()]->expansion().get<StructType>().fields();
+     instance.fields()[args.field_index] = pack_into_field(field_types[args.field_index].type(), value);
+     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
+@@ -6264,7 +6267,7 @@ static bool array_get_impl(BytecodeInterpreter& interpreter, Configuration& conf
+     auto& slot = configuration.source_value<mix>(1, addresses.sources);
+     if (is_null_gc_reference(slot)) [[unlikely]]
+         return interpreter.set_trap("null array reference"sv);
+-    auto& instance = *static_cast<ArrayInstance*>(bit_cast<GC::Cell*>(slot.value().low()));
++    auto& instance = *static_cast<ArrayInstance*>(reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(slot.value().low())));
+     if (index >= instance.elements().size()) [[unlikely]]
+         return interpreter.set_trap("out of bounds array access"sv);
+     auto const& field_type = configuration.frame().module().canonical_types()[instruction->arguments().get<TypeIndex>().value()]->expansion().get<ArrayType>().type();
+@@ -6309,7 +6312,7 @@ HANDLE_INSTRUCTION(array_set)
+     auto index = configuration.take_source<source_address_mix>(1, addresses.sources).template to<u32>();
+     auto reference = configuration.take_source<source_address_mix>(2, addresses.sources);
+     GC_TRAP_IF(is_null_gc_reference(reference), "null array reference");
+-    auto& instance = *static_cast<ArrayInstance*>(bit_cast<GC::Cell*>(reference.value().low()));
++    auto& instance = *static_cast<ArrayInstance*>(reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(reference.value().low())));
+     GC_TRAP_IF(index >= instance.elements().size(), "out of bounds array access");
+     auto const& field_type = configuration.frame().module().canonical_types()[instruction->arguments().get<TypeIndex>().value()]->expansion().get<ArrayType>().type();
+     instance.elements()[index] = pack_into_field(field_type.type(), value);
+@@ -6323,7 +6326,7 @@ HANDLE_INSTRUCTION(array_len)
+     LOAD_ADDRESSES();
+     auto& slot = configuration.source_value<source_address_mix>(0, addresses.sources); // bounds checked by verifier.
+     GC_TRAP_IF(is_null_gc_reference(slot), "null array reference");
+-    auto& instance = *static_cast<ArrayInstance*>(bit_cast<GC::Cell*>(slot.value().low()));
++    auto& instance = *static_cast<ArrayInstance*>(reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(slot.value().low())));
+     slot = Value(static_cast<i32>(instance.elements().size()));
+     TAILCALL return continue_(HANDLER_PARAMS(DECOMPOSE_PARAMS_NAME_ONLY));
+ }
+@@ -6338,7 +6341,7 @@ HANDLE_INSTRUCTION(array_fill)
+     auto offset = value_stack.take_last().to<u32>();
+     auto reference = value_stack.take_last();
+     GC_TRAP_IF(is_null_gc_reference(reference), "null array reference");
+-    auto& instance = *static_cast<ArrayInstance*>(bit_cast<GC::Cell*>(reference.value().low()));
++    auto& instance = *static_cast<ArrayInstance*>(reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(reference.value().low())));
+     GC_TRAP_IF(static_cast<u64>(offset) + count > instance.elements().size(), "out of bounds array access");
+     auto const& field_type = configuration.frame().module().canonical_types()[instruction->arguments().get<TypeIndex>().value()]->expansion().get<ArrayType>().type();
+     auto const element = pack_into_field(field_type.type(), value);
+@@ -6359,8 +6362,8 @@ HANDLE_INSTRUCTION(array_copy)
+     auto destination_reference = value_stack.take_last();
+     GC_TRAP_IF(is_null_gc_reference(destination_reference), "null array reference");
+     GC_TRAP_IF(is_null_gc_reference(source_reference), "null array reference");
+-    auto& destination = *static_cast<ArrayInstance*>(bit_cast<GC::Cell*>(destination_reference.value().low()));
+-    auto& source = *static_cast<ArrayInstance*>(bit_cast<GC::Cell*>(source_reference.value().low()));
++    auto& destination = *static_cast<ArrayInstance*>(reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(destination_reference.value().low())));
++    auto& source = *static_cast<ArrayInstance*>(reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(source_reference.value().low())));
+     GC_TRAP_IF(static_cast<u64>(destination_offset) + count > destination.elements().size(), "out of bounds array access");
+     GC_TRAP_IF(static_cast<u64>(source_offset) + count > source.elements().size(), "out of bounds array access");
+     if (destination_offset <= source_offset) {
+@@ -6384,7 +6387,7 @@ HANDLE_INSTRUCTION(array_init_data)
+     auto destination_offset = value_stack.take_last().to<u32>();
+     auto reference = value_stack.take_last();
+     GC_TRAP_IF(is_null_gc_reference(reference), "null array reference");
+-    auto& instance = *static_cast<ArrayInstance*>(bit_cast<GC::Cell*>(reference.value().low()));
++    auto& instance = *static_cast<ArrayInstance*>(reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(reference.value().low())));
+     GC_TRAP_IF(static_cast<u64>(destination_offset) + count > instance.elements().size(), "out of bounds array access");
+     auto const& field_type = configuration.frame().module().canonical_types()[args.type_index.value()]->expansion().get<ArrayType>().type();
+     auto const element_size = storage_type_byte_width(field_type.type());
+@@ -6407,7 +6410,7 @@ HANDLE_INSTRUCTION(array_init_elem)
+     auto destination_offset = value_stack.take_last().to<u32>();
+     auto reference = value_stack.take_last();
+     GC_TRAP_IF(is_null_gc_reference(reference), "null array reference");
+-    auto& instance = *static_cast<ArrayInstance*>(bit_cast<GC::Cell*>(reference.value().low()));
++    auto& instance = *static_cast<ArrayInstance*>(reinterpret_cast<GC::Cell*>(static_cast<FlatPtr>(reference.value().low())));
+     GC_TRAP_IF(static_cast<u64>(destination_offset) + count > instance.elements().size(), "out of bounds array access");
+     auto const& references = configuration.store().get(configuration.frame().module().elements()[args.element_index.value()])->references();
+     GC_TRAP_IF(static_cast<u64>(source_offset) + count > references.size(), "out of bounds table access");

@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 14:02:15 -0500
+Subject: [PATCH 09/23] LibWeb/Rust: PositionSet size check in words, so it
+ holds on 32-bit targets
+
+---
+ Libraries/LibWeb/Rust/src/css/style/prefix/relation.rs | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/Libraries/LibWeb/Rust/src/css/style/prefix/relation.rs b/Libraries/LibWeb/Rust/src/css/style/prefix/relation.rs
+index 95c33504b3..d3e2efcf8c 100644
+--- a/Libraries/LibWeb/Rust/src/css/style/prefix/relation.rs
++++ b/Libraries/LibWeb/Rust/src/css/style/prefix/relation.rs
+@@ -96,8 +96,9 @@ enum PositionSet {
+     Bits { words: Vec<u64>, len: u32 },
+ }
+ 
+-// The dense table holds a set per compound and per step, most of them empty.
+-const _: () = assert!(size_of::<PositionSet>() == 32);
++// The dense table holds a set per compound and per step, most of them empty: a set is a Vec and a tag, which the
++// niche in the Vec's capacity absorbs, so it is four words (32 bytes on a 64-bit target, 16 on wasm32).
++const _: () = assert!(size_of::<PositionSet>() <= 4 * size_of::<usize>());
+ 
+ impl Default for PositionSet {
+     fn default() -> Self {

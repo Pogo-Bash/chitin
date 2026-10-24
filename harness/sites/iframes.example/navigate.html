@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><title>iframe navigated by script</title></head>
+<body>
+<iframe id="f"></iframe>
+<script>
+var results = { events: [] };
+var f = document.getElementById('f');
+f.addEventListener('load', function () { results.events.push('frame load ' + f.contentDocument.URL); });
+window.addEventListener('load', function () { results.events.push('window load'); });
+</script>
+</body></html>

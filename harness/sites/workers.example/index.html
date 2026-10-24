@@ -1,0 +1,40 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>start</title></head>
+<body>
+<p>Page dedicated Workers (tests/chrome/run.mjs workersGroup; tests/workers.test.mjs runs the same cases under Node).</p>
+<script>
+// Each case puts its outcome in results[name]; the title is "done" once all four have one. Chrome's values: docs/captcha.md.
+var results = {};
+var finish = (name, value) => { results[name] = value; if (Object.keys(results).length === 4) document.title = 'done'; };
+(() => {
+    const w = new Worker('w.js', { name: 'calc' });
+    const buf = new ArrayBuffer(8);
+    w.onmessage = (e) => finish('http', e.data.join(',') + ':' + buf.byteLength + ':' + (e.target === w) + ':' + Object.prototype.toString.call(w));
+    w.onerror = (e) => finish('http', 'error:' + e.message);
+    w.postMessage({ n: 20, buf }, [buf]);
+})();
+(() => {
+    const src = 'onmessage = (e) => { e.ports[0].postMessage("port:" + e.data); };';
+    const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    const ch = new MessageChannel();
+    const got = [];
+    const done = () => { if (got.length === 2) finish('blob', got.sort().join(',')); };
+    ch.port1.onmessage = (e) => { got.push(e.data); done(); };
+    w.postMessage('blob', [ch.port2]);
+    const d = new Worker('data:text/javascript,postMessage("data:" + location.protocol)');
+    d.onmessage = (e) => { got.push(e.data); done(); };
+})();
+(() => {
+    const out = [];
+    try { new Worker('https://other.example/w.js'); } catch (e) { out.push(e.name); }
+    try { new Worker('w.js', { type: 'shared' }); } catch (e) { out.push(e.name); }
+    try { Worker('w.js'); } catch (e) { out.push(e.name); }
+    const w = new Worker('missing.js');
+    w.onerror = (e) => finish('checks', out.join(',') + ':' + e.constructor.name + ':' + (e instanceof ErrorEvent));
+})();
+(() => {
+    const w = new Worker('throws.js');
+    w.onerror = (e) => { finish('uncaught', (e instanceof ErrorEvent) + ':' + e.message + ':' + e.filename + ':' + e.lineno); w.terminate(); w.postMessage('after terminate'); };
+})();
+</script>
+</body></html>

@@ -1,0 +1,14 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+     Copyright (c) 2026 [OWNER NAME]
+     Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
+     A same-site iframe's pixels in the parent's frame (patch 0030, engine/platform/Host.cpp paint_child_context): the child's
+     teal, an element of the parent drawn over the frame's corner, and a change in the child repainted. -->
+<html><head><title>paint a same-site frame</title><style>
+body{margin:0;background:#fff}
+iframe{position:absolute;left:20px;top:40px;width:200px;height:100px;border:0}
+#over{position:absolute;left:180px;top:120px;width:60px;height:40px;background:#e76f51}
+</style></head>
+<body><iframe id="f" src="child.html"></iframe><div id="over"></div>
+<script>var results = { events: [] }; window.addEventListener('load', function () { results.events.push('window load'); });</script>
+</body></html>

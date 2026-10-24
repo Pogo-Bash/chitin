@@ -1,0 +1,113 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+     Copyright (c) 2026 [OWNER NAME]
+     Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
+     MessagePorts in a transfer, inside one page and between a page and its same-site frame (docs/architecture.md, "Frame realms").
+     Every answer goes to `seen` as name=JSON; done=1 last. Chrome on the same files is the reference (tests/chrome/run.mjs). -->
+<html><head><title>ports</title></head>
+<body>
+<script>
+var seen = [];
+function put(name, v) { seen.push(name + '=' + JSON.stringify(v)); }
+function next(port) { return new Promise(function (resolve) { port.addEventListener('message', function h(e) { port.removeEventListener('message', h); resolve(e); }); port.start(); }); }
+function timeout(p, ms) { return Promise.race([p, new Promise(function (r) { setTimeout(function () { r('timeout'); }, ms || 3000); })]); }
+function errName(f) { try { f(); return 'none'; } catch (e) { return e.name; } }
+function carry(port) {
+    // Moves `port` over a new channel and gives the port that arrives.
+    var c = new MessageChannel();
+    var got = next(c.port2).then(function (e) { return e.ports[0]; });
+    c.port1.postMessage('carry', [port]);
+    return got;
+}
+async function run() {
+    // A port moved over another channel keeps talking to its twin, both ways, and gets what was queued before the move.
+    var ch = new MessageChannel();
+    ch.port1.postMessage('queued before');
+    var p = await carry(ch.port2);
+    ch.port1.postMessage('after');
+    var a = [];
+    p.onmessage = function (e) { a.push(e.data); if (a.length === 2) p.postMessage('back'); };
+    var back = await timeout(next(ch.port1));
+    put('relay', [a, back.data, p instanceof MessagePort, p === ch.port2]);
+
+    // Moved twice before anyone listens.
+    var ch2 = new MessageChannel();
+    var q = await carry(await carry(ch2.port2));
+    ch2.port1.postMessage('twice');
+    put('twice', (await timeout(next(q))).data);
+
+    // Both ends moved.
+    var ch3 = new MessageChannel();
+    var x = await carry(ch3.port1), y = await carry(ch3.port2);
+    x.postMessage('both');
+    put('both', (await timeout(next(y))).data);
+
+    // structuredClone with a port in the transfer list.
+    var ch4 = new MessageChannel();
+    var cl = structuredClone({ port: ch4.port2 }, { transfer: [ch4.port2] });
+    ch4.port1.postMessage('cloned');
+    put('clone', [cl.port instanceof MessagePort, (await timeout(next(cl.port))).data]);
+
+    // window.postMessage to itself with a port.
+    var ch5 = new MessageChannel();
+    var self = new Promise(function (resolve) { window.addEventListener('message', function h(e) { if (e.data !== 'self') return; window.removeEventListener('message', h); resolve(e); }); });
+    window.postMessage('self', '*', [ch5.port2]);
+    var se = await timeout(self);
+    ch5.port1.postMessage('to self');
+    put('frozen', [Object.isFrozen(se.ports), se.ports === se.ports, errName(function () { 'use strict'; se.ports.push(1); })]);
+    put('self', [se.ports.length, (await timeout(next(se.ports[0]))).data, se.source === window]);
+
+    // Errors.
+    var ch6 = new MessageChannel();
+    put('dup', errName(function () { new MessageChannel().port1.postMessage('x', [ch6.port1, ch6.port1]); }));
+    put('itself', errName(function () { ch6.port1.postMessage('x', [ch6.port1]); }));
+    var ch7 = new MessageChannel();
+    new MessageChannel().port1.postMessage('x', [ch7.port2]);
+    put('again', errName(function () { new MessageChannel().port1.postMessage('x', [ch7.port2]); }));
+    // A port posted to its own twin dooms the channel: nothing arrives.
+    var ch8 = new MessageChannel();
+    var doomed = [];
+    ch8.port2.onmessage = function (e) { doomed.push(e.data); };
+    ch8.port1.postMessage('doomed', [ch8.port2]);
+    await new Promise(function (r) { setTimeout(r, 200); });
+    put('doomed', doomed);
+    // Closed twin: the moved port gets nothing.
+    var ch9 = new MessageChannel();
+    var moved = await carry(ch9.port2);
+    var closedGot = [];
+    moved.onmessage = function (e) { closedGot.push(e.data); };
+    ch9.port1.close();
+    ch9.port1.postMessage('after close');
+    await new Promise(function (r) { setTimeout(r, 200); });
+    put('closed', closedGot);
+
+    // The frame: a port to it, a port from it.
+    var f = document.getElementById('f');
+    if (!f.contentWindow.ready) await new Promise(function (r) { f.addEventListener('load', r); });
+    var ch10 = new MessageChannel();
+    f.contentWindow.postMessage('take', '*', [ch10.port2]);
+    ch10.port1.postMessage('ping');
+    var pong = await timeout(next(ch10.port1));
+    var fromFrame = new Promise(function (resolve) { window.addEventListener('message', function h(e) { if (e.data !== 'yours') return; window.removeEventListener('message', h); resolve(e); }); });
+    f.contentWindow.postMessage('give', '*');
+    var fe = await timeout(fromFrame);
+    var fp = fe.ports[0];
+    fp.postMessage('hello frame');
+    var reply = await timeout(next(fp));
+    put('frame', [pong.data, fe.source === f.contentWindow, fe.ports.length, reply.data]);
+    // Plain objects across the frame boundary are plain objects of the receiver (both ways).
+    var objFrom = new Promise(function (resolve) { window.addEventListener('message', function h(e) { if (!e.data || e.data.kind !== 'obj') return; window.removeEventListener('message', h); resolve(e); }); });
+    f.contentWindow.postMessage({ kind: 'obj-please', nested: { list: [1, { deep: true }] } }, '*');
+    var oe = await timeout(objFrom);
+    put('objects', [Object.getPrototypeOf(oe.data) === Object.prototype, JSON.stringify(oe.data), oe.data === oe.data, Object.keys(oe.data.nested).join()]);
+    // A port the frame received from the page, handed back to the page.
+    f.contentWindow.postMessage('return', '*');
+    var rp = await timeout(next(ch10.port1));
+    put('roundtrip', rp.data);
+}
+window.addEventListener('load', function () {
+    run().then(function () { seen.push('done=1'); }, function (e) { seen.push('error=' + JSON.stringify(String(e && e.stack || e))); });
+});
+</script>
+<iframe id="f" src="child.html"></iframe>
+</body></html>

@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 16:30:50 -0500
+Subject: [PATCH 38/39] LibWebCommon: a site-compatibility rule's user_agent
+ can hide the Chitin product (hide_Chitin), as hide_Ladybird hides Ladybird's
+
+---
+ Libraries/LibWebCommon/Loader/SiteCompatibility.cpp | 11 ++++++++---
+ Libraries/LibWebCommon/Loader/SiteCompatibility.h   |  1 +
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/Libraries/LibWebCommon/Loader/SiteCompatibility.cpp b/Libraries/LibWebCommon/Loader/SiteCompatibility.cpp
+index 781a410cf3..e8bd191250 100644
+--- a/Libraries/LibWebCommon/Loader/SiteCompatibility.cpp
++++ b/Libraries/LibWebCommon/Loader/SiteCompatibility.cpp
+@@ -47,6 +47,8 @@ static ErrorOr<Vector<UserAgentTransformation>> parse_user_agent_transformations
+             return Error::from_string_literal("User-Agent transformations must be strings");
+         if (transformation.as_string() == "hide_Ladybird"sv)
+             TRY(result.try_append(UserAgentTransformation::HideLadybird));
++        else if (transformation.as_string() == "hide_Chitin"sv)
++            TRY(result.try_append(UserAgentTransformation::HideChitin));
+         else
+             return Error::from_string_literal("Unknown User-Agent transformation");
+     }
+@@ -130,12 +132,12 @@ bool SiteCompatibilityRule::matches(URL::URL const& url) const
+     return false;
+ }
+ 
+-static String remove_ladybird_product(StringView user_agent)
++static String remove_product(StringView user_agent, StringView product_prefix)
+ {
+     StringBuilder builder;
+     bool first = true;
+     for (auto product : user_agent.split_view(' ')) {
+-        if (product.starts_with("Ladybird/"sv))
++        if (product.starts_with(product_prefix))
+             continue;
+         if (!first)
+             builder.append(' ');
+@@ -151,7 +153,10 @@ String SiteCompatibilityRule::apply_user_agent_transformations(StringView user_a
+     for (auto transformation : m_user_agent_transformations) {
+         switch (transformation) {
+         case UserAgentTransformation::HideLadybird:
+-            transformed_user_agent = remove_ladybird_product(transformed_user_agent);
++            transformed_user_agent = remove_product(transformed_user_agent, "Ladybird/"sv);
++            break;
++        case UserAgentTransformation::HideChitin:
++            transformed_user_agent = remove_product(transformed_user_agent, "Chitin/"sv);
+             break;
+         }
+     }
+diff --git a/Libraries/LibWebCommon/Loader/SiteCompatibility.h b/Libraries/LibWebCommon/Loader/SiteCompatibility.h
+index af7059cb01..acfb59417d 100644
+--- a/Libraries/LibWebCommon/Loader/SiteCompatibility.h
++++ b/Libraries/LibWebCommon/Loader/SiteCompatibility.h
+@@ -18,6 +18,7 @@ namespace Web {
+ 
+ enum class UserAgentTransformation : u8 {
+     HideLadybird,
++    HideChitin,
+ };
+ 
+ class WEBCOMMON_API SiteCompatibilityRule {
+-- 
+2.50.1 (Apple Git-155)
+

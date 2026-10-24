@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>coded frame</title>
+<!-- A cross-site frame for scroll.example: 8 px rows whose colour codes the row (docs/scroll.md "Position-coded pages"). -->
+<style>html, body { margin: 0; overflow: hidden; } div { height: 8px; }</style>
+<body><script>
+for (let row = 0; row < 64; row++) {
+    const d = document.createElement('div');
+    d.style.background = `rgb(${row & 255},${row >> 8},${10 * 16 + 8})`;
+    document.body.appendChild(d);
+}
+</script>

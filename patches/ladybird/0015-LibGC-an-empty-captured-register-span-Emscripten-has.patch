@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 15:04:17 -0500
+Subject: [PATCH 15/23] LibGC: an empty captured-register span (Emscripten) has
+ nothing to bounds-check
+
+---
+ Libraries/LibGC/Heap.cpp | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/Libraries/LibGC/Heap.cpp b/Libraries/LibGC/Heap.cpp
+index c42e834dce..40b3dc0968 100644
+--- a/Libraries/LibGC/Heap.cpp
++++ b/Libraries/LibGC/Heap.cpp
+@@ -957,8 +957,11 @@ NO_SANITIZE_ADDRESS void Heap::gather_conservative_roots(ConservativeScanOrigin
+     // The captured registers are a buffer in the entry point's frame, so they fall inside the range scanned below.
+     auto captured_registers_start = bit_cast<FlatPtr>(origin.callee_saved_registers.data());
+     auto captured_registers_end = captured_registers_start + origin.callee_saved_registers.size() * sizeof(FlatPtr);
+-    VERIFY(captured_registers_start % sizeof(FlatPtr) == 0);
+-    VERIFY(captured_registers_start >= stack_reference && captured_registers_end <= stack_top);
++    // An empty span (Emscripten, which captures no registers) has nothing to check.
++    if (!origin.callee_saved_registers.is_empty()) {
++        VERIFY(captured_registers_start % sizeof(FlatPtr) == 0);
++        VERIFY(captured_registers_start >= stack_reference && captured_registers_end <= stack_top);
++    }
+ 
+     {
+         ScopedPhaseTimer timer { g_recording_phase_timings, g_phase_timings.conservative_register_scan_us };

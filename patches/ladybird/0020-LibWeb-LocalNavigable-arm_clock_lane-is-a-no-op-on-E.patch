@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 20:01:44 -0500
+Subject: [PATCH 20/23] LibWeb: LocalNavigable::arm_clock_lane() is a no-op on
+ Emscripten (no threads, no Compositor; the RenderClock would start its thread
+ before the compositor-context check)
+
+---
+ Libraries/LibWeb/HTML/LocalNavigable.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/Libraries/LibWeb/HTML/LocalNavigable.cpp b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+index f9609c857e..690c659930 100644
+--- a/Libraries/LibWeb/HTML/LocalNavigable.cpp
++++ b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+@@ -7009,6 +7009,12 @@ bool LocalNavigable::note_clock_lane(ClockAnimations animations)
+ // them.
+ void LocalNavigable::arm_clock_lane(TickNow tick_now)
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    // No threads, and no Compositor process: an embedder that paints its own frames has no clock lanes to arm. The
++    // RenderClock would start its thread on first use, before the compositor-context check below.
++    (void)tick_now;
++    return;
++#endif
+     // A test injects its ticks itself. The lanes of a same-process iframe's document still hear of the pointer moves the
+     // lane of the document around it hands them, which wait for a tick the test injects.
+     bool const manual = Compositor::RenderClock::the().is_manual_for_testing();

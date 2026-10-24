@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 19:47:14 -0500
+Subject: [PATCH 52/56] LibWeb: removing the focused element makes the viewport
+ the focused area (HTML removing steps 1-2)
+
+Before, the removed element stayed the document's focused area: activeElement answered it and the next focus event named it as relatedTarget, where Chrome gives null.
+---
+ Libraries/LibWeb/HTML/HTMLElement.cpp | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/Libraries/LibWeb/HTML/HTMLElement.cpp b/Libraries/LibWeb/HTML/HTMLElement.cpp
+index 0346456088..6bc9de7bf1 100644
+--- a/Libraries/LibWeb/HTML/HTMLElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLElement.cpp
+@@ -46,6 +46,7 @@
+ #include <LibWeb/HTML/PopoverTargetAttributes.h>
+ #include <LibWeb/HTML/Scripting/Environments.h>
+ #include <LibWeb/HTML/ToggleEvent.h>
++#include <LibWeb/HTML/Navigation.h>
+ #include <LibWeb/HTML/Window.h>
+ #include <LibWeb/HighResolutionTime/TimeOrigin.h>
+ #include <LibWeb/Layout/Box.h>
+@@ -2213,9 +2214,18 @@ void HTMLElement::removed_from(IsSubtreeRoot is_subtree_root, Node* old_ancestor
+ {
+     Element::removed_from(is_subtree_root, old_ancestor, old_root);
+ 
+-    // FIXME: 1. Let document be removedNode's node document.
+-    // FIXME: 2. If document's focused area is removedNode, then set document's focused area to document's viewport,
++    // 1. Let document be removedNode's node document.
++    auto& node_document = document();
++
++    // 2. If document's focused area is removedNode, then set document's focused area to document's viewport,
+     //   and set document's relevant global object's navigation API's focus changed during ongoing navigation to false.
++    // NB: A null focused area is the viewport. Without this the removed element stayed the focused area: activeElement
++    //     answered it and the next focus event named it as its relatedTarget, where Chrome gives null.
++    if (node_document.focused_area().ptr() == this) {
++        node_document.set_focused_area(nullptr);
++        if (auto window = node_document.window())
++            window->navigation()->set_focus_changed_during_ongoing_navigation(false);
++    }
+ 
+     // 3. If removedNode is an element whose namespace is the HTML namespace, and this standard defines HTML element
+     //    removing steps for removedNode's local name, then run the corresponding HTML element removing steps given
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>render-blocking stylesheet</title>
+<!-- FOUC test (docs/scroll.md "FOUC"): the stylesheet arrives 1.5 s late. Unstyled, the page is black text on white
+     with a 40 px blue box; styled, the background is rgb(200, 30, 60) and the box green. A browser that honours
+     render-blocking shows nothing of the document (or the previous page) until it is styled. -->
+<link rel="stylesheet" href="style.css?delay=1500">
+<body>
+<h1>Styled or not</h1>
+<div style="width:40px;height:40px;background:blue" id="box"></div>
+<p>Lorem ipsum dolor sit amet.</p>
+<p><a href="next.html">next page</a></p>
+<script>
+// ?go: a same-site navigation to next.html 2.5 s after load (paint holding: this page should stay up until it paints).
+if (location.search.includes('go')) addEventListener('load', () => setTimeout(() => { location.href = 'next.html'; }, 2500));
+</script>
+</body>

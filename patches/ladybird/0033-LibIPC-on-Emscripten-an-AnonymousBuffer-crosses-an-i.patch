@@ -1,0 +1,80 @@
+From 5b8516f81bad91d17da7cf1ac12de0d5e1a8d733 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 07:22:09 -0500
+Subject: [PATCH 33/34] LibIPC: on Emscripten an AnonymousBuffer crosses an
+ in-process transport as a reference (a wasm module's buffers have no
+ descriptor)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Libraries/LibCore/AnonymousBuffer.h |  7 +++++++
+ Libraries/LibIPC/Decoder.cpp        | 11 +++++++++++
+ Libraries/LibIPC/Encoder.cpp        |  4 ++++
+ 3 files changed, 22 insertions(+)
+
+diff --git a/Libraries/LibCore/AnonymousBuffer.h b/Libraries/LibCore/AnonymousBuffer.h
+index 13d1f9104b..0d88b303c5 100644
+--- a/Libraries/LibCore/AnonymousBuffer.h
++++ b/Libraries/LibCore/AnonymousBuffer.h
+@@ -84,6 +84,13 @@ public:
+         return (T const*)m_impl->data();
+     }
+ 
++#ifdef AK_OS_EMSCRIPTEN
++    // A wasm module's buffer is ordinary memory with no descriptor, so IPC inside the module (an in-process transport)
++    // carries a reference to it: the sender leaks one, the receiver adopts it.
++    AnonymousBufferImpl* leak_ref_for_in_process_transfer() const { return m_impl ? &NonnullRefPtr(*m_impl).leak_ref() : nullptr; }
++    static AnonymousBuffer adopt_from_in_process_transfer(AnonymousBufferImpl& impl) { return AnonymousBuffer(adopt_ref(impl)); }
++#endif
++
+ private:
+     explicit AnonymousBuffer(NonnullRefPtr<AnonymousBufferImpl> impl)
+         : m_impl(move(impl))
+diff --git a/Libraries/LibIPC/Decoder.cpp b/Libraries/LibIPC/Decoder.cpp
+index e81a4e406e..7f20423ba5 100644
+--- a/Libraries/LibIPC/Decoder.cpp
++++ b/Libraries/LibIPC/Decoder.cpp
+@@ -190,6 +190,16 @@ ErrorOr<Core::AnonymousBuffer> decode(Decoder& decoder)
+         return Error::from_string_literal("Anonymous buffer size does not fit on this platform");
+ 
+     auto size = static_cast<size_t>(encoded_size);
++#ifdef AK_OS_EMSCRIPTEN
++    // See AnonymousBuffer::leak_ref_for_in_process_transfer().
++    auto address = TRY(decoder.decode<u64>());
++    if (address == 0)
++        return Error::from_string_literal("Anonymous buffer reference is null");
++    auto transferred = Core::AnonymousBuffer::adopt_from_in_process_transfer(*reinterpret_cast<Core::AnonymousBufferImpl*>(static_cast<uintptr_t>(address)));
++    if (transferred.size() != size)
++        return Error::from_string_literal("Anonymous buffer size does not match its reference");
++    return transferred;
++#else
+     auto anon_file = TRY(decoder.decode<IPC::File>());
+ 
+     // The size is the sender's claim. Touching a mapping past the end of the file it maps raises SIGBUS, so a sender that
+@@ -197,6 +207,7 @@ ErrorOr<Core::AnonymousBuffer> decode(Decoder& decoder)
+     auto buffer = TRY(Core::AnonymousBuffer::create_from_anon_fd(anon_file.take_fd(), size));
+     TRY(buffer.validate_backing_size());
+     return buffer;
++#endif
+ }
+ 
+ }
+diff --git a/Libraries/LibIPC/Encoder.cpp b/Libraries/LibIPC/Encoder.cpp
+index 19ce90aa78..56b1abc43d 100644
+--- a/Libraries/LibIPC/Encoder.cpp
++++ b/Libraries/LibIPC/Encoder.cpp
+@@ -206,7 +206,11 @@ ErrorOr<void> encode(Encoder& encoder, Core::AnonymousBuffer const& buffer)
+ 
+     if (buffer.is_valid()) {
+         TRY(encoder.encode(static_cast<u64>(buffer.size())));
++#ifdef AK_OS_EMSCRIPTEN
++        TRY(encoder.encode(static_cast<u64>(reinterpret_cast<uintptr_t>(buffer.leak_ref_for_in_process_transfer()))));
++#else
+         TRY(encoder.encode(TRY(IPC::File::clone_fd(buffer.fd()))));
++#endif
+     }
+ 
+     return {};
+-- 
+2.50.1 (Apple Git-155)
+

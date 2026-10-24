@@ -1,0 +1,357 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 15:39:58 -0500
+Subject: [PATCH] LibWeb: WebGL 2 isQuery, isSampler, isSync,
+ isTransformFeedback, getFragDataLocation and copyTexSubImage3D
+
+---
+ .../LibCompositing/WebGL/GLFunctions.json     | 108 ++++++++++++++++++
+ .../WebGL/WebGL2RenderingContextBase.idl      |  12 +-
+ .../WebGL/WebGL2RenderingContextImpl.cpp      |  92 +++++++++++++++
+ .../LibWeb/WebGL/WebGL2RenderingContextImpl.h |   6 +
+ Libraries/LibWeb/WebGL/WebGLSync.cpp          |   8 ++
+ Libraries/LibWeb/WebGL/WebGLSync.h            |   1 +
+ 6 files changed, 221 insertions(+), 6 deletions(-)
+
+diff --git a/Libraries/LibCompositing/WebGL/GLFunctions.json b/Libraries/LibCompositing/WebGL/GLFunctions.json
+index 21b76eea5a..0456df99b6 100644
+--- a/Libraries/LibCompositing/WebGL/GLFunctions.json
++++ b/Libraries/LibCompositing/WebGL/GLFunctions.json
+@@ -935,6 +935,49 @@
+         ],
+         "category": "command"
+     },
++    {
++        "name": "glCopyTexSubImage3D",
++        "return": "void",
++        "args": [
++            {
++                "type": "GLenum",
++                "name": "target"
++            },
++            {
++                "type": "GLint",
++                "name": "level"
++            },
++            {
++                "type": "GLint",
++                "name": "xoffset"
++            },
++            {
++                "type": "GLint",
++                "name": "yoffset"
++            },
++            {
++                "type": "GLint",
++                "name": "zoffset"
++            },
++            {
++                "type": "GLint",
++                "name": "x"
++            },
++            {
++                "type": "GLint",
++                "name": "y"
++            },
++            {
++                "type": "GLsizei",
++                "name": "width"
++            },
++            {
++                "type": "GLsizei",
++                "name": "height"
++            }
++        ],
++        "category": "command"
++    },
+     {
+         "name": "glCreateProgram",
+         "return": "GLuint",
+@@ -1950,6 +1993,23 @@
+         ],
+         "category": "sync"
+     },
++    {
++        "name": "glGetFragDataLocation",
++        "return": "GLint",
++        "args": [
++            {
++                "type": "GLuint",
++                "name": "program",
++                "object": true
++            },
++            {
++                "type": "GLchar const*",
++                "name": "name",
++                "string": true
++            }
++        ],
++        "category": "sync"
++    },
+     {
+         "name": "glGetBooleanvRobustANGLE",
+         "return": "void",
+@@ -2915,6 +2975,54 @@
+         ],
+         "category": "sync"
+     },
++    {
++        "name": "glIsQuery",
++        "return": "GLboolean",
++        "args": [
++            {
++                "type": "GLuint",
++                "name": "id",
++                "object": true
++            }
++        ],
++        "category": "sync"
++    },
++    {
++        "name": "glIsSampler",
++        "return": "GLboolean",
++        "args": [
++            {
++                "type": "GLuint",
++                "name": "sampler",
++                "object": true
++            }
++        ],
++        "category": "sync"
++    },
++    {
++        "name": "glIsSync",
++        "return": "GLboolean",
++        "args": [
++            {
++                "type": "GLsync",
++                "name": "sync",
++                "object": true
++            }
++        ],
++        "category": "sync"
++    },
++    {
++        "name": "glIsTransformFeedback",
++        "return": "GLboolean",
++        "args": [
++            {
++                "type": "GLuint",
++                "name": "id",
++                "object": true
++            }
++        ],
++        "category": "sync"
++    },
+     {
+         "name": "glIsVertexArrayOES",
+         "return": "GLboolean",
+diff --git a/Libraries/LibWeb/WebGL/WebGL2RenderingContextBase.idl b/Libraries/LibWeb/WebGL/WebGL2RenderingContextBase.idl
+index ab2e52dcf8..10eefcca51 100644
+--- a/Libraries/LibWeb/WebGL/WebGL2RenderingContextBase.idl
++++ b/Libraries/LibWeb/WebGL/WebGL2RenderingContextBase.idl
+@@ -308,7 +308,7 @@ interface mixin WebGL2RenderingContextBase {
+ 
+     undefined texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, [AllowShared] ArrayBufferView? srcData, optional unsigned long long srcOffset = 0);
+ 
+-    [FIXME] undefined copyTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x, GLint y, GLsizei width, GLsizei height);
++    undefined copyTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x, GLint y, GLsizei width, GLsizei height);
+ 
+     undefined compressedTexImage3D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLsizei imageSize, GLintptr offset);
+     undefined compressedTexImage3D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, [AllowShared] ArrayBufferView srcData, optional unsigned long long srcOffset = 0, optional GLuint srcLengthOverride = 0);
+@@ -317,7 +317,7 @@ interface mixin WebGL2RenderingContextBase {
+     undefined compressedTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, [AllowShared] ArrayBufferView srcData, optional unsigned long long srcOffset = 0, optional GLuint srcLengthOverride = 0);
+ 
+     // Programs and shaders
+-    [FIXME] GLint getFragDataLocation(WebGLProgram program, DOMString name); // [WebGLHandlesContextLoss]
++    GLint getFragDataLocation(WebGLProgram program, DOMString name); // [WebGLHandlesContextLoss]
+ 
+     // Uniforms
+     undefined uniform1ui(WebGLUniformLocation? location, GLuint v0);
+@@ -363,7 +363,7 @@ interface mixin WebGL2RenderingContextBase {
+     // Query Objects
+     WebGLQuery createQuery();
+     undefined deleteQuery(WebGLQuery? query);
+-    [FIXME] GLboolean isQuery(WebGLQuery? query); // [WebGLHandlesContextLoss]
++    GLboolean isQuery(WebGLQuery? query); // [WebGLHandlesContextLoss]
+     undefined beginQuery(GLenum target, WebGLQuery query);
+     undefined endQuery(GLenum target);
+     WebGLQuery? getQuery(GLenum target, GLenum pname);
+@@ -372,7 +372,7 @@ interface mixin WebGL2RenderingContextBase {
+     // Sampler Objects
+     WebGLSampler createSampler();
+     undefined deleteSampler(WebGLSampler? sampler);
+-    [FIXME] GLboolean isSampler(WebGLSampler? sampler); // [WebGLHandlesContextLoss]
++    GLboolean isSampler(WebGLSampler? sampler); // [WebGLHandlesContextLoss]
+     undefined bindSampler(GLuint unit, WebGLSampler? sampler);
+     undefined samplerParameteri(WebGLSampler sampler, GLenum pname, GLint param);
+     undefined samplerParameterf(WebGLSampler sampler, GLenum pname, GLfloat param);
+@@ -380,7 +380,7 @@ interface mixin WebGL2RenderingContextBase {
+ 
+     // Sync objects
+     WebGLSync? fenceSync(GLenum condition, GLbitfield flags);
+-    [FIXME] GLboolean isSync(WebGLSync? sync); // [WebGLHandlesContextLoss]
++    GLboolean isSync(WebGLSync? sync); // [WebGLHandlesContextLoss]
+     undefined deleteSync(WebGLSync? sync);
+     GLenum clientWaitSync(WebGLSync sync, GLbitfield flags, GLuint64 timeout);
+     undefined waitSync(WebGLSync sync, GLbitfield flags, GLint64 timeout);
+@@ -389,7 +389,7 @@ interface mixin WebGL2RenderingContextBase {
+     // Transform Feedback
+     WebGLTransformFeedback createTransformFeedback();
+     undefined deleteTransformFeedback(WebGLTransformFeedback? tf);
+-    [FIXME] GLboolean isTransformFeedback(WebGLTransformFeedback? tf); // [WebGLHandlesContextLoss]
++    GLboolean isTransformFeedback(WebGLTransformFeedback? tf); // [WebGLHandlesContextLoss]
+     undefined bindTransformFeedback(GLenum target, WebGLTransformFeedback? tf);
+     undefined beginTransformFeedback(GLenum primitiveMode);
+     undefined endTransformFeedback();
+diff --git a/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp b/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp
+index b7ad424fe2..b4368d2e67 100644
+--- a/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp
++++ b/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp
+@@ -1407,6 +1407,98 @@ bool WebGL2RenderingContextImpl::is_vertex_array(GC::Ptr<WebGLVertexArrayObject>
+     return m_context->is_vertex_array(vertex_array_handle.value());
+ }
+ 
++bool WebGL2RenderingContextImpl::is_query(GC::Ptr<WebGLQuery> query)
++{
++    m_context->make_current();
++
++    if (!query)
++        return false;
++
++    auto handle_or_error = query->handle_for_query(this);
++    if (handle_or_error.is_error()) {
++        set_error(GL_INVALID_OPERATION);
++        return false;
++    }
++    auto handle = handle_or_error.release_value();
++    if (!handle.has_value())
++        return false;
++    return m_context->is_query(handle.value());
++}
++
++bool WebGL2RenderingContextImpl::is_sampler(GC::Ptr<WebGLSampler> sampler)
++{
++    m_context->make_current();
++
++    if (!sampler)
++        return false;
++
++    auto handle_or_error = sampler->handle_for_query(this);
++    if (handle_or_error.is_error()) {
++        set_error(GL_INVALID_OPERATION);
++        return false;
++    }
++    auto handle = handle_or_error.release_value();
++    if (!handle.has_value())
++        return false;
++    return m_context->is_sampler(handle.value());
++}
++
++bool WebGL2RenderingContextImpl::is_transform_feedback(GC::Ptr<WebGLTransformFeedback> transform_feedback)
++{
++    m_context->make_current();
++
++    if (!transform_feedback)
++        return false;
++
++    auto handle_or_error = transform_feedback->handle_for_query(this);
++    if (handle_or_error.is_error()) {
++        set_error(GL_INVALID_OPERATION);
++        return false;
++    }
++    auto handle = handle_or_error.release_value();
++    if (!handle.has_value())
++        return false;
++    return m_context->is_transform_feedback(handle.value());
++}
++
++bool WebGL2RenderingContextImpl::is_sync(GC::Ptr<WebGLSync> sync)
++{
++    m_context->make_current();
++
++    if (!sync)
++        return false;
++
++    // A deleted sync is not a sync, without an error (as Chrome); one from another context is INVALID_OPERATION.
++    auto handle_or_error = sync->sync_handle_for_query(this);
++    if (handle_or_error.is_error()) {
++        set_error(GL_INVALID_OPERATION);
++        return false;
++    }
++    auto handle = handle_or_error.release_value();
++    if (!handle.has_value())
++        return false;
++    return m_context->is_sync(static_cast<GLsync>(handle.value()));
++}
++
++WebIDL::Long WebGL2RenderingContextImpl::get_frag_data_location(GC::Ref<WebGLProgram> program, Utf16String name)
++{
++    m_context->make_current();
++
++    auto handle_or_error = program->handle(this);
++    if (handle_or_error.is_error()) {
++        set_error(GL_INVALID_OPERATION);
++        return -1;
++    }
++    auto name_null_terminated = null_terminated_utf8_string(name.utf16_view());
++    return m_context->get_frag_data_location(handle_or_error.release_value(), name_null_terminated.data());
++}
++
++void WebGL2RenderingContextImpl::copy_tex_sub_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long zoffset, WebIDL::Long x, WebIDL::Long y, WebIDL::Long width, WebIDL::Long height)
++{
++    m_context->make_current();
++    m_context->copy_tex_sub_image3d(target, level, xoffset, yoffset, zoffset, x, y, width, height);
++}
++
+ void WebGL2RenderingContextImpl::bind_vertex_array(GC::Ptr<WebGLVertexArrayObject> array)
+ {
+     m_context->make_current();
+diff --git a/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.h b/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.h
+index 94ad054d13..e6a4218049 100644
+--- a/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.h
++++ b/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.h
+@@ -109,6 +109,12 @@ public:
+     GC::Ref<WebGLVertexArrayObject> create_vertex_array();
+     void delete_vertex_array(GC::Ptr<WebGLVertexArrayObject> vertex_array);
+     bool is_vertex_array(GC::Ptr<WebGLVertexArrayObject> vertex_array);
++    bool is_query(GC::Ptr<WebGLQuery> query);
++    bool is_sampler(GC::Ptr<WebGLSampler> sampler);
++    bool is_sync(GC::Ptr<WebGLSync> sync);
++    bool is_transform_feedback(GC::Ptr<WebGLTransformFeedback> transform_feedback);
++    WebIDL::Long get_frag_data_location(GC::Ref<WebGLProgram> program, Utf16String name);
++    void copy_tex_sub_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long zoffset, WebIDL::Long x, WebIDL::Long y, WebIDL::Long width, WebIDL::Long height);
+     void bind_vertex_array(GC::Ptr<WebGLVertexArrayObject> array);
+     void tex_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long depth, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, WebIDL::LongLong pbo_offset);
+     void tex_sub_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long zoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::Long depth, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, WebIDL::LongLong pbo_offset);
+diff --git a/Libraries/LibWeb/WebGL/WebGLSync.cpp b/Libraries/LibWeb/WebGL/WebGLSync.cpp
+index b9c9f423da..da75b2a714 100644
+--- a/Libraries/LibWeb/WebGL/WebGLSync.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLSync.cpp
+@@ -37,6 +37,14 @@ ErrorOr<GLsyncInternal> WebGLSync::sync_handle(WebGLRenderingContextBase const*
+     return m_sync_handle;
+ }
+ 
++ErrorOr<Optional<GLsyncInternal>> WebGLSync::sync_handle_for_query(WebGLRenderingContextBase const* context) const
++{
++    TRY(validate_context(context));
++    if (invalidated_for_context(context))
++        return Optional<GLsyncInternal> {};
++    return Optional<GLsyncInternal> { m_sync_handle };
++}
++
+ ErrorOr<Optional<GLsyncInternal>> WebGLSync::sync_handle_for_deletion(WebGLRenderingContextBase const* context)
+ {
+     TRY(validate_context(context));
+diff --git a/Libraries/LibWeb/WebGL/WebGLSync.h b/Libraries/LibWeb/WebGL/WebGLSync.h
+index e73a3e8413..1d9432236f 100644
+--- a/Libraries/LibWeb/WebGL/WebGLSync.h
++++ b/Libraries/LibWeb/WebGL/WebGLSync.h
+@@ -22,6 +22,7 @@ public:
+ 
+     ErrorOr<GLsyncInternal> sync_handle(WebGLRenderingContextBase const* context) const;
+     ErrorOr<Optional<GLsyncInternal>> sync_handle_for_deletion(WebGLRenderingContextBase const* context);
++    ErrorOr<Optional<GLsyncInternal>> sync_handle_for_query(WebGLRenderingContextBase const* context) const;
+ 
+ protected:
+     explicit WebGLSync(JS::Realm&, GC::Ref<WebGLRenderingContextBase>, GLsyncInternal handle);

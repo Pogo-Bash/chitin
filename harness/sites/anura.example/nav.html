@@ -1,0 +1,5 @@
+<!doctype html>
+<title>nav</title>
+<script>
+navigator.serviceWorker.register('nav-sw.js').then(() => navigator.serviceWorker.ready).then(() => { document.title = 'registered'; }, (e) => { document.title = 'error:' + e; });
+</script>

@@ -1,0 +1,63 @@
+<!doctype html><!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<meta charset=utf-8><title>coi shared memory over messages</title>
+<p id=s>running</p>
+<script>
+// Shared memory over the page's own message channels (docs/user-tests/plasma.md): window.postMessage to itself, a MessageChannel,
+// a BroadcastChannel, structuredClone, a same-origin frame's postMessage. The receiver writes into what it got; "shared" when the
+// sender sees the write, "copied" when it does not. Also a shared WebAssembly.Memory over a MessageChannel.
+const out = {};
+const probe = (name, send, listen) => new Promise((resolve) => {
+    const sab = new SharedArrayBuffer(8), i32 = new Int32Array(sab);
+    listen((d) => {
+        try {
+            const view = d instanceof SharedArrayBuffer ? new Int32Array(d) : d instanceof WebAssembly.Memory ? new Int32Array(d.buffer) : d && d.v instanceof Int32Array ? d.v : null;
+            if (!view) { out[name] = 'got ' + Object.prototype.toString.call(d); return resolve(); }
+            Atomics.store(view, 1, 42);
+            out[name] = Atomics.load(i32, 1) === 42 ? 'shared' : 'copied';
+        } catch (e) { out[name] = e.name; }
+        resolve();
+    });
+    try { send(sab, i32); } catch (e) { out[name] = 'throws ' + e.name; resolve(); }
+});
+(async () => {
+    {
+        let h;
+        addEventListener('message', (e) => { if (h) { const f = h; h = null; f(e.data); } });
+        await probe('window', (sab) => postMessage(sab, '*'), (f) => { h = f; });
+        await probe('windowView', (sab, i32) => postMessage({ v: i32 }, '*'), (f) => { h = f; });
+    }
+    {
+        const ch = new MessageChannel();
+        let h;
+        ch.port2.onmessage = (e) => { const f = h; h = null; f(e.data); };
+        await probe('port', (sab) => ch.port1.postMessage(sab), (f) => { h = f; });
+        const mem = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+        await new Promise((resolve) => {
+            ch.port2.onmessage = (e) => { new Int32Array(e.data.buffer)[0] = 7; out.portMemory = new Int32Array(mem.buffer)[0] === 7 ? 'shared' : 'copied'; resolve(); };
+            ch.port1.postMessage(mem);
+        });
+    }
+    {
+        const a = new BroadcastChannel('coi-share'), b = new BroadcastChannel('coi-share');
+        const sab = new SharedArrayBuffer(8), i32 = new Int32Array(sab);
+        await Promise.race([new Promise((resolve) => {
+            b.onmessage = (e) => { try { Atomics.store(new Int32Array(e.data), 1, 42); out.broadcast = Atomics.load(i32, 1) === 42 ? 'shared' : 'copied'; } catch (x) { out.broadcast = x.name; } resolve(); };
+            b.onmessageerror = () => { out.broadcast = 'messageerror'; resolve(); };
+            try { a.postMessage(sab); } catch (e) { out.broadcast = 'throws ' + e.name; resolve(); }
+        }), new Promise((r) => setTimeout(r, 3000))]);
+        if (out.broadcast === undefined) out.broadcast = 'nothing';
+    }
+    {
+        const sab = new SharedArrayBuffer(8);
+        const c = structuredClone(sab);
+        new Int32Array(c)[1] = 42;
+        out.structuredClone = new Int32Array(sab)[1] === 42 ? 'shared' : 'copied';
+    }
+    // Chrome delivers null for shared memory over a BroadcastChannel (Chitin shares it): a known difference, kept out of the
+    // comparison (docs/user-tests/plasma.md).
+    window.extra = { broadcast: out.broadcast };
+    delete out.broadcast;
+    window.result = out;
+    document.getElementById('s').textContent = 'done';
+})();
+</script>

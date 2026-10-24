@@ -1,0 +1,39 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<!-- The frames section's child document, served on all three origins. -->
+<html><head><meta charset="utf-8"><title>wb frame</title></head><body style="margin:0;background:#ffd">frame
+<script>
+const role = new URLSearchParams(location.search).get('role');
+const tryName = (f) => { try { f(); return 'ok'; } catch (e) { return e.name; } };
+if (role !== 'storage') {
+  const info = {
+    wbframe: role, origin: location.origin.replace(/:\d+$/, ''), referrer: document.referrer.replace(/:\d+/, '').replace(/\?.*/, '?'),
+    parentDoc: tryName(() => parent.document.title), parentLocHref: tryName(() => parent.location.href),
+    parentLocAssignable: typeof parent.location.replace, topIsParent: top === parent, frameElement: tryName(() => String(window.frameElement && window.frameElement.tagName)),
+    ancestorOrigins: location.ancestorOrigins ? [...location.ancestorOrigins].map((o) => o.replace(/:\d+$/, '')) : 'n/a',
+    name: window.name, cookieEnabled: navigator.cookieEnabled, storageAccess: typeof document.hasStorageAccess,
+    isSecureContext, crossOriginIsolated,
+  };
+  addEventListener('message', (e) => {
+    const d = e.data;
+    if (d && d.op === 'port') {
+      const port = e.ports[0];
+      port.onmessage = (m) => {
+        const v = m.data;
+        if (v.buf) port.postMessage({ len: new Uint8Array(v.buf).length, first: new Uint8Array(v.buf)[0], via: 'port' }, []);
+        else port.postMessage({ echo: v, via: 'port' });
+      };
+      port.postMessage({ hello: 'from ' + role, source: e.source === parent, origin: e.origin.replace(/:\d+$/, '') });
+    } else if (d && d.op === 'buf') {
+      e.source.postMessage({ wbframe: role, gotLen: d.buf.byteLength, transferBack: true, buf: d.buf }, e.origin, [d.buf]);
+    } else if (d && d.op === 'bc') {
+      const bc = new BroadcastChannel('wb-bc-' + d.mode);
+      bc.postMessage('from-frame-' + role);
+      bc.close();
+    }
+  });
+  parent.postMessage(info, '*');
+}
+</script></body></html>

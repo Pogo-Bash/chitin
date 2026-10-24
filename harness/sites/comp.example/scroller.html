@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>an inner scroller</title>
+<style>
+body { margin: 0; font: 15px/1.45 sans-serif; background: #f4f1ea; color: #222; }
+.top { height: 50px; background: #2a9d8f; color: #fff; line-height: 50px; padding: 0 16px; }
+#s { position: absolute; left: 40px; top: 80px; width: 520px; height: 420px; overflow: auto; background: #fff; border: 1px solid #999; }
+#s p { margin: 0 12px 10px; }
+.side { position: absolute; left: 600px; top: 80px; width: 160px; height: 420px; background: #e9c46a; }
+</style>
+<script src="lorem.js"></script>
+<div class="top">The page does not scroll; the box does</div>
+<div id="s"></div>
+<div class="side">beside the scroller</div>
+<script>fill(document.getElementById('s'), 150);</script>

@@ -1,0 +1,60 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+     Copyright (c) 2026 [OWNER NAME]
+     Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<!-- Monospace stacks against Chrome (docs/fonts.md, "Metric-compatible aliases"): the plasmaontheweb.com terminal's stack and
+     the names it reaches. Each block is five lines; tests/chrome/run.mjs and tests/fonts-alias.test.mjs measure them. -->
+<meta charset="utf-8">
+<title>monofont</title>
+<style>
+body { margin: 8px; }
+pre { margin: 0 0 8px; display: inline-block; }
+#term { font-family: courier-new, courier, monospace; }
+#cnew { font-family: "Courier New"; }
+#cnewlc { font-family: "courier new"; }
+#cour { font-family: Courier; }
+#mono { font-family: monospace; }
+#mono16 { font-family: monospace, monospace; }
+#bold { font-family: "Courier New"; font-weight: bold; }
+#italic { font-family: "Courier New"; font-style: italic; }
+</style>
+<pre id="term">root@plasma:~# ls -la
+total 48
+drwx------ 1 root root 4096 Oct 23 12:00 .
+drwxr-xr-x 1 root root 4096 Oct 23 12:00 ..
+-rw-r--r-- 1 root root  571 Oct 23 12:00 .bashrc</pre><br>
+<pre id="cnew">root@plasma:~# ls -la
+total 48
+drwx------ 1 root root 4096 Oct 23 12:00 .
+drwxr-xr-x 1 root root 4096 Oct 23 12:00 ..
+-rw-r--r-- 1 root root  571 Oct 23 12:00 .bashrc</pre><br>
+<pre id="cnewlc">root@plasma:~# ls -la
+total 48
+drwx------ 1 root root 4096 Oct 23 12:00 .
+drwxr-xr-x 1 root root 4096 Oct 23 12:00 ..
+-rw-r--r-- 1 root root  571 Oct 23 12:00 .bashrc</pre><br>
+<pre id="cour">root@plasma:~# ls -la
+total 48
+drwx------ 1 root root 4096 Oct 23 12:00 .
+drwxr-xr-x 1 root root 4096 Oct 23 12:00 ..
+-rw-r--r-- 1 root root  571 Oct 23 12:00 .bashrc</pre><br>
+<pre id="mono">root@plasma:~# ls -la
+total 48
+drwx------ 1 root root 4096 Oct 23 12:00 .
+drwxr-xr-x 1 root root 4096 Oct 23 12:00 ..
+-rw-r--r-- 1 root root  571 Oct 23 12:00 .bashrc</pre><br>
+<pre id="mono16">root@plasma:~# ls -la
+total 48
+drwx------ 1 root root 4096 Oct 23 12:00 .
+drwxr-xr-x 1 root root 4096 Oct 23 12:00 ..
+-rw-r--r-- 1 root root  571 Oct 23 12:00 .bashrc</pre><br>
+<pre id="bold">root@plasma:~# ls -la
+total 48
+drwx------ 1 root root 4096 Oct 23 12:00 .
+drwxr-xr-x 1 root root 4096 Oct 23 12:00 ..
+-rw-r--r-- 1 root root  571 Oct 23 12:00 .bashrc</pre><br>
+<pre id="italic">root@plasma:~# ls -la
+total 48
+drwx------ 1 root root 4096 Oct 23 12:00 .
+drwxr-xr-x 1 root root 4096 Oct 23 12:00 ..
+-rw-r--r-- 1 root root  571 Oct 23 12:00 .bashrc</pre>

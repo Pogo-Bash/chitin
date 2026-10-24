@@ -1,0 +1,43 @@
+<!doctype html><!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<meta charset=utf-8><title>coi idle</title>
+<p id=s>running</p>
+<script>
+// After an idle spell, a page Worker's message must wake what its handler schedules: a timer, an animation frame, a microtask,
+// a MessageChannel message, as soon as in Chrome (nothing else in the page runs meanwhile).
+const w = new Worker('idle-worker.js');
+const rounds = [], woken = [];
+const sab = new SharedArrayBuffer(8), i32 = new Int32Array(sab);
+const waitOn = (v) => {
+    const r = Atomics.waitAsync(i32, 0, v);
+    r.value.then(() => {
+        const t0 = performance.now(), x = { v: v + 1 };
+        woken.push(x);
+        setTimeout(() => { x.timeout = performance.now() - t0; }, 0);
+        requestAnimationFrame(() => { x.raf = performance.now() - t0; });
+        if (v < 2) waitOn(v + 1);
+    });
+};
+waitOn(0);
+w.postMessage(sab);
+const mc = new MessageChannel();
+let mcAt = 0, cur = null;
+mc.port1.onmessage = () => { cur.channel = performance.now() - mcAt; };
+w.onmessage = (e) => {
+    const t0 = performance.now();
+    const r = cur = { i: e.data.i };
+    rounds.push(r);
+    Promise.resolve().then(() => { r.microtask = performance.now() - t0; });
+    setTimeout(() => { r.timeout = performance.now() - t0; }, 0);
+    setTimeout(() => { r.timeout50 = performance.now() - t0; }, 50);
+    requestAnimationFrame(() => { r.raf = performance.now() - t0; });
+    mcAt = t0;
+    mc.port2.postMessage(1);
+    if (e.data.i === 3)
+        setTimeout(() => {
+            console.log('idle rounds ' + JSON.stringify(rounds) + ' woken ' + JSON.stringify(woken));
+            const soon = (k, ms) => rounds.every((x) => typeof x[k] === 'number' && x[k] < ms);
+            window.result = { rounds: rounds.length, microtask: soon('microtask', 20), timeout: soon('timeout', 100), timeout50: soon('timeout50', 200), raf: soon('raf', 300), channel: soon('channel', 100), waitAsync: woken.length + (woken.every((x) => x.timeout < 100 && x.raf < 300) ? ' soon' : ' late') };
+            document.getElementById('s').textContent = 'done';
+        }, 2500);
+};
+</script>

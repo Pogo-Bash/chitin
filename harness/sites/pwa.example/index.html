@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>pwa</title><link rel="stylesheet" href="app.css"></head>
+<body>
+<h1>A page with its own service worker</h1>
+<div id="state">start</div>
+<div id="hello"></div>
+<div id="data"></div>
+<div id="msg"></div>
+<script>
+// A real-world-shaped worker (sw.js): cache-first with a network fallback, a synthesized response, postMessage both
+// ways (a reply port and client.postMessage), skipWaiting and clients.claim. tests/pagesw.test.mjs and the chrome group.
+const show = (id, text) => { document.getElementById(id).textContent = text; };
+const sw = navigator.serviceWorker;
+let pushed = '';
+window.controllerChanges = 0;
+sw.addEventListener('controllerchange', () => { window.controllerChanges++; });
+sw.addEventListener('message', (e) => {
+    if (e.data && e.data.type === 'pong')
+        pushed = 'pushed:' + e.data.version + ':' + e.data.got.n;
+    if (e.data && e.data.type === 'activated')
+        show('msg', 'activated:' + e.data.version);
+});
+(async () => {
+    try {
+        const reg = await sw.register('sw.js', { scope: './' });
+        await sw.ready;
+        if (!sw.controller)
+            await new Promise((resolve) => sw.addEventListener('controllerchange', resolve, { once: true }));
+        show('state', 'controlled:' + sw.controller.state + ':' + (reg.scope === location.origin + '/'));
+        show('hello', await (await fetch('hello')).text());
+        show('data', (await (await fetch('data.json')).json()).name);
+        const channel = new MessageChannel();
+        const reply = new Promise((resolve) => { channel.port1.onmessage = (e) => resolve(e.data); });
+        sw.controller.postMessage({ n: 7 }, [channel.port2]);
+        const r = await reply;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        document.title = 'done:' + r.version + ':' + r.got.n + ':' + pushed;
+    } catch (e) {
+        show('state', 'error: ' + e);
+        document.title = 'error: ' + e;
+    }
+})();
+</script>
+</body></html>

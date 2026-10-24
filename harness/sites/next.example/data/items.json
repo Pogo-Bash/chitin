@@ -1,0 +1,7 @@
+{"items":[
+ {"id":1,"title":"Segments have their own origin","tag":"security"},
+ {"id":2,"title":"Scripts run on the host's V8","tag":"engine"},
+ {"id":3,"title":"Layout is Ladybird's LibWeb","tag":"engine"},
+ {"id":4,"title":"The network is the relay's job","tag":"network"},
+ {"id":5,"title":"Storage lives in IndexedDB","tag":"storage"}
+]}

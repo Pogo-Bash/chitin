@@ -1,0 +1,8 @@
+{
+    "img-nocorp.png": { "Cross-Origin-Resource-Policy": null },
+    "script-nocorp.js": { "Cross-Origin-Resource-Policy": null },
+    "data-nocorp.txt": { "Cross-Origin-Resource-Policy": null },
+    "data-cors.txt": { "Cross-Origin-Resource-Policy": null, "Access-Control-Allow-Origin": "*" },
+    "frame-xo.html": { "Cross-Origin-Embedder-Policy": "require-corp", "Cross-Origin-Resource-Policy": "cross-origin" },
+    "frame-xo-nocoep.html": { "Cross-Origin-Resource-Policy": "cross-origin" }
+}

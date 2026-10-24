@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><title>xo jobs child</title>
+<script>
+var me = location.hash.slice(1), other = me === 'a' ? 'b' : 'a';
+var log = [];
+var sibling = new Promise(function (r) { window.addEventListener('message', function (e) { if (e.data === 'hello from ' + other) r(); }); });
+function done() {
+    parent.postMessage(me + ' done ' + log.join(','), '*');
+}
+async function chain() {
+    await null;
+    log.push('await');
+    await new Promise(function (r) { setTimeout(r, 0); });
+    log.push('timer');
+    await new Promise(function (r) { queueMicrotask(r); });
+    log.push('microtask');
+    var c = new MessageChannel();
+    await new Promise(function (r) { c.port1.onmessage = function (e) { log.push('port ' + e.data); r(); }; c.port2.postMessage(1); });
+    await new Promise(function (r) {
+        window.addEventListener('message', function on(e) {
+            if (e.data === 'pong ' + me) { window.removeEventListener('message', on); log.push('pong'); r(); }
+        });
+        parent.postMessage('ping ' + me, '*');
+    });
+    parent.frames[other].postMessage('hello from ' + me, '*');
+    await sibling;
+    log.push('sibling');
+    var p = Promise.reject(new Error('x'));
+    try { await p; } catch (e) { log.push('caught'); }
+    await Promise.all([1, Promise.resolve(2), new Promise(function (r) { requestAnimationFrame(function () { r(3); }); })]);
+    log.push('all');
+    done();
+}
+window.addEventListener('message', function (e) {
+    if (e.data === 'go')
+        chain();
+});
+Promise.resolve().then(function () { parent.postMessage(me + ' ready', '*'); });
+</script></head><body>child</body></html>

@@ -1,0 +1,6 @@
+build/
+node_modules/
+*.log
+.DS_Store
+harness/sites/images.example/img/
+harness/sites/fuzz.example/cases/

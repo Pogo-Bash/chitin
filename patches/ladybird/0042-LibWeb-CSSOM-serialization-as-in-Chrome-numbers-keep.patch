@@ -1,0 +1,335 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 19:24:17 -0500
+Subject: [PATCH] LibWeb: CSSOM serialization as in Chrome: numbers keep six
+ significant digits, lighting-color is a property, @keyframes and @supports
+ rule text, @page margin descriptors serialize as one margin, family names as
+ identifiers only when they are one plain identifier
+
+- serialize_a_number (C++ and Rust): 1.23456789 is 1.23457 and 100 / 3 is 33.3333, as in Chrome; below 1 and from 10^6 up the six-decimal rule is unchanged
+- lighting-color (Filter Effects 1): a non-inherited <color>, initial white
+- @keyframes: each keyframe on its own line, two-space indent; @supports with no rules is ' {\n}'
+- @page / margin-rule descriptors expanded from margin keep their longhand names, and the four sides serialize as one margin shorthand in shortest form (was 'margin: 1cm' four times)
+- font-family: "Arial" serializes as Arial, Times New Roman as "Times New Roman"
+- Painting/PaintFacts.cpp: GC::Weak::ptr() returns a GC::Ptr, so the in-process compositor context lookups take .ptr().ptr() (the series did not build at this file)
+---
+ Libraries/LibWeb/CSS/CSSKeyframesRule.cpp     |  6 +-
+ Libraries/LibWeb/CSS/CSSSupportsRule.cpp      |  7 +-
+ Libraries/LibWeb/CSS/Properties.json          | 10 +++
+ Libraries/LibWeb/CSS/Serialize.cpp            | 16 ++++-
+ Libraries/LibWeb/Painting/PaintFacts.cpp      |  4 +-
+ .../LibWeb/Rust/src/css/descriptor_block.rs   | 67 ++++++++++++++++++-
+ .../Rust/src/css/parser/fonts_parser.rs       | 38 +++++++++--
+ .../Rust/src/css/parser/syntax_parser.rs      |  5 +-
+ Libraries/LibWeb/Rust/src/css/serialize.rs    | 15 ++++-
+ 9 files changed, 151 insertions(+), 17 deletions(-)
+
+diff --git a/Libraries/LibWeb/CSS/CSSKeyframesRule.cpp b/Libraries/LibWeb/CSS/CSSKeyframesRule.cpp
+index 68ece9c983..53fe2087b6 100644
+--- a/Libraries/LibWeb/CSS/CSSKeyframesRule.cpp
++++ b/Libraries/LibWeb/CSS/CSSKeyframesRule.cpp
+@@ -70,10 +70,12 @@ Utf16String CSSKeyframesRule::serialized() const
+     else
+         serialize_an_identifier(builder, m_name);
+ 
+-    builder.append_ascii(" { "sv);
++    // AD-HOC: The spec gives no layout for the keyframes; Chrome puts each one on its own line, indented by two spaces.
++    builder.append_ascii(" { \n"sv);
+     for (auto const& keyframe : *css_rules()) {
++        builder.append_ascii("  "sv);
+         builder.append(keyframe->serialized());
+-        builder.append_ascii(' ');
++        builder.append_ascii('\n');
+     }
+     builder.append_ascii('}');
+     return builder.to_string();
+diff --git a/Libraries/LibWeb/CSS/CSSSupportsRule.cpp b/Libraries/LibWeb/CSS/CSSSupportsRule.cpp
+index 203481ffbf..2b957676be 100644
+--- a/Libraries/LibWeb/CSS/CSSSupportsRule.cpp
++++ b/Libraries/LibWeb/CSS/CSSSupportsRule.cpp
+@@ -39,12 +39,11 @@ Utf16String CSSSupportsRule::serialized() const
+ 
+     builder.append_ascii("@supports "sv);
+     builder.append(serialized_condition_text());
+-    builder.append_ascii(" {\n"sv);
++    // An empty block is " {\n}", as for @media (and in Chrome), not " {\n\n}".
++    builder.append_ascii(" {"sv);
+     for (size_t i = 0; i < css_rules().length(); i++) {
+         auto rule = css_rules().item(i);
+-        if (i != 0)
+-            builder.append_ascii("\n"sv);
+-        builder.append_ascii("  "sv);
++        builder.append_ascii("\n  "sv);
+         builder.append(rule->serialized());
+     }
+     builder.append_ascii("\n}"sv);
+diff --git a/Libraries/LibWeb/CSS/Properties.json b/Libraries/LibWeb/CSS/Properties.json
+index 70606961fa..aaa52efe37 100644
+--- a/Libraries/LibWeb/CSS/Properties.json
++++ b/Libraries/LibWeb/CSS/Properties.json
+@@ -3031,6 +3031,16 @@
+       "unitless-length"
+     ]
+   },
++  "lighting-color": {
++    "affects-layout": false,
++    "animation-type": "by-computed-value",
++    "inherited": false,
++    "initial": "white",
++    "requires-computation": "non-inherited-value",
++    "valid-types": [
++      "color"
++    ]
++  },
+   "line-clamp": {
+     "affects-layout": true,
+     "initial": "none",
+diff --git a/Libraries/LibWeb/CSS/Serialize.cpp b/Libraries/LibWeb/CSS/Serialize.cpp
+index e6fb06a9fc..55f5279428 100644
+--- a/Libraries/LibWeb/CSS/Serialize.cpp
++++ b/Libraries/LibWeb/CSS/Serialize.cpp
+@@ -183,6 +183,18 @@ void serialize_a_url(Utf16StringBuilder& builder, Utf16View url)
+ }
+ 
+ // https://drafts.csswg.org/cssom/#serialize-a-css-value
++// AD-HOC: Chrome keeps six significant digits rather than six decimals (1.23456789 is "1.23457", 100 / 3 is
++// "33.3333"); below 1 the two rules agree, and at 10^6 and above the six-decimal rule is kept.
++static double round_to_six_significant_digits(double value)
++{
++    auto magnitude = AK::abs(value);
++    if (!(magnitude >= 1.0 && magnitude < 1000000.0))
++        return value;
++    auto integer_digits = static_cast<int>(__builtin_floor(__builtin_log10(magnitude))) + 1;
++    auto scale = __builtin_pow(10.0, static_cast<double>(6 - integer_digits));
++    return __builtin_round(value * scale) / scale;
++}
++
+ void serialize_a_number(StringBuilder& builder, double value)
+ {
+     // -> <number>
+@@ -198,7 +210,7 @@ void serialize_a_number(StringBuilder& builder, double value)
+     }
+ 
+     // FIXME: Prevent scientific notation for large values.
+-    builder.appendff("{:.6}", value);
++    builder.appendff("{:.6}", round_to_six_significant_digits(value));
+ }
+ 
+ void serialize_a_number(Utf16StringBuilder& builder, double value)
+@@ -216,7 +228,7 @@ void serialize_a_number(Utf16StringBuilder& builder, double value)
+     }
+ 
+     // FIXME: Prevent scientific notation for large values.
+-    builder.appendff("{:.6}", value);
++    builder.appendff("{:.6}", round_to_six_significant_digits(value));
+ }
+ 
+ String serialize_an_identifier(Utf16View ident)
+diff --git a/Libraries/LibWeb/Painting/PaintFacts.cpp b/Libraries/LibWeb/Painting/PaintFacts.cpp
+index e0b3077b25..f65fb336a9 100644
+--- a/Libraries/LibWeb/Painting/PaintFacts.cpp
++++ b/Libraries/LibWeb/Painting/PaintFacts.cpp
+@@ -101,7 +101,7 @@ u64 in_process_compositor_context_id(HTML::LocalNavigable const& navigable)
+     auto& ids = in_process_context_ids();
+     if (auto it = ids.find(&navigable); it != ids.end()) {
+         auto found = in_process_context_navigables().get(it->value);
+-        if (found.has_value() && found->ptr() == &navigable)
++        if (found.has_value() && found->ptr().ptr() == &navigable)
+             return it->value;
+     }
+     auto id = next_id++;
+@@ -115,7 +115,7 @@ HTML::LocalNavigable* local_navigable_for_in_process_compositor_context(u64 id)
+     auto found = in_process_context_navigables().get(id);
+     if (!found.has_value())
+         return nullptr;
+-    auto* navigable = found->ptr();
++    auto* navigable = found->ptr().ptr();
+     if (!navigable || navigable->has_been_destroyed())
+         return nullptr;
+     return navigable;
+diff --git a/Libraries/LibWeb/Rust/src/css/descriptor_block.rs b/Libraries/LibWeb/Rust/src/css/descriptor_block.rs
+index 2adb6911ef..c83a23a1b9 100644
+--- a/Libraries/LibWeb/Rust/src/css/descriptor_block.rs
++++ b/Libraries/LibWeb/Rust/src/css/descriptor_block.rs
+@@ -213,12 +213,77 @@ pub extern "C" fn rust_descriptor_block_serialize(block: &FfiDescriptorBlock, re
+     true
+ }
+ 
++fn serialize_descriptor_value(descriptor: &DescriptorData) -> Option<TextSink> {
++    let mut value = TextSink::new();
++    if !serialize_style_value(&mut value, &descriptor.value, SerializationMode::Normal) {
++        return None;
++    }
++    Some(value)
++}
++
++// AD-HOC: the four margin descriptors of @page and its margin rules serialize as one `margin` shorthand when all four
++// are present (as in Chrome, and as serialize a CSS declaration block does for properties): top, right, bottom, left,
++// the shortest form.
++fn serialize_margin_shorthand(data: &DescriptorBlockData) -> Option<(usize, TextSink)> {
++    const SIDES: [&str; 4] = ["margin-top", "margin-right", "margin-bottom", "margin-left"];
++    let mut first = usize::MAX;
++    let mut values: Vec<Vec<u16>> = Vec::new();
++    for side in SIDES {
++        let side_units: Vec<u16> = side.encode_utf16().collect();
++        let index = data.descriptors.iter().position(|descriptor| descriptor.name.units() == side_units.as_slice())?;
++        first = first.min(index);
++        values.push(serialize_descriptor_value(&data.descriptors[index])?.into_utf16());
++    }
++    let count = if values[1] != values[3] {
++        4
++    } else if values[0] != values[2] {
++        3
++    } else if values[0] != values[1] {
++        2
++    } else {
++        1
++    };
++    let mut sink = TextSink::new();
++    sink.push_ascii("margin: ");
++    for (index, value) in values.iter().take(count).enumerate() {
++        if index != 0 {
++            sink.push_ascii(" ");
++        }
++        for &unit in value {
++            sink.push_code_unit(unit);
++        }
++    }
++    sink.push_ascii(";");
++    Some((first, sink))
++}
++
++fn is_margin_side(descriptor: &DescriptorData) -> bool {
++    ["margin-top", "margin-right", "margin-bottom", "margin-left"]
++        .iter()
++        .any(|side| descriptor.name.units() == side.encode_utf16().collect::<Vec<u16>>().as_slice())
++}
++
+ fn serialize_descriptors(data: &DescriptorBlockData) -> Option<TextSink> {
+     let mut sink = TextSink::new();
++    let margin = serialize_margin_shorthand(data);
++    let mut written = 0usize;
+     for (index, descriptor) in data.descriptors.iter().enumerate() {
+-        if index != 0 {
++        if let Some((first, shorthand)) = &margin
++            && is_margin_side(descriptor)
++        {
++            if index == *first {
++                if written != 0 {
++                    sink.push_ascii(" ");
++                }
++                sink.push_sink(shorthand);
++                written += 1;
++            }
++            continue;
++        }
++        if written != 0 {
+             sink.push_ascii(" ");
+         }
++        written += 1;
+         // AD-HOC: Descriptors have no shorthand serialization or important flags.
+         // Escape names consistently with serialize a CSS declaration.
+         serialize_an_identifier(&mut sink, &StringUnits::Utf16(descriptor.name.units()));
+diff --git a/Libraries/LibWeb/Rust/src/css/parser/fonts_parser.rs b/Libraries/LibWeb/Rust/src/css/parser/fonts_parser.rs
+index ad729a3d01..49fb9ef391 100644
+--- a/Libraries/LibWeb/Rust/src/css/parser/fonts_parser.rs
++++ b/Libraries/LibWeb/Rust/src/css/parser/fonts_parser.rs
+@@ -82,12 +82,44 @@ fn keyword_value(value: &ComponentValue) -> Option<(u16, StyleValueData)> {
+     Some((keyword, StyleValueData::Keyword { keyword }))
+ }
+ 
++// AD-HOC: as in Chrome, a family name is kept as an identifier only when it is one identifier that serializes without
++// escapes and is no keyword; otherwise it is kept as a string. So "Arial" serializes as Arial, and Times New Roman (three
++// identifiers) as "Times New Roman".
++fn is_plain_family_identifier(name: &[u16]) -> bool {
++    let is_name_unit = |unit: u16| unit >= 0x80 || unit == u16::from(b'-') || unit == u16::from(b'_') || (unit < 0x80 && (unit as u8).is_ascii_alphanumeric());
++    let Some(&first) = name.first() else {
++        return false;
++    };
++    if !name.iter().all(|&unit| is_name_unit(unit)) {
++        return false;
++    }
++    let is_digit = |unit: u16| unit < 0x80 && (unit as u8).is_ascii_digit();
++    if is_digit(first) {
++        return false;
++    }
++    if first == u16::from(b'-') && name.get(1).is_none_or(|&second| second == u16::from(b'-') || is_digit(second)) {
++        return false;
++    }
++    is_valid_custom_ident(name, &[])
++        && !keyword_from_ascii_case_insensitive(name).is_some_and(|keyword| keyword_to_generic_font_family(keyword).is_some())
++}
++
++fn family_name_value(name: &[u16]) -> StyleValueData {
++    if is_plain_family_identifier(name) {
++        StyleValueData::CustomIdent {
++            custom_ident: CssString::from_utf16(name),
++        }
++    } else {
++        string_style_value(name)
++    }
++}
++
+ fn parse_family_name(_context: &ParseContext, values: &[ComponentValue]) -> Option<StyleValueData> {
+     let values = values.iter().filter(|value| !value.is_whitespace()).collect::<Vec<_>>();
+     if let [value] = values.as_slice()
+         && let Some(string) = value.string()
+     {
+-        return Some(string_style_value(string));
++        return Some(family_name_value(string));
+     }
+ 
+     let parts = values.iter().map(|value| value.ident()).collect::<Option<Vec<_>>>()?;
+@@ -112,9 +144,7 @@ fn parse_family_name(_context: &ParseContext, values: &[ComponentValue]) -> Opti
+         }
+         complete_name.extend_from_slice(part);
+     }
+-    Some(StyleValueData::CustomIdent {
+-        custom_ident: CssString::from_utf16(&complete_name),
+-    })
++    Some(family_name_value(&complete_name))
+ }
+ 
+ fn parse_font_family(context: &ParseContext, values: &[ComponentValue]) -> Option<StyleValueData> {
+diff --git a/Libraries/LibWeb/Rust/src/css/parser/syntax_parser.rs b/Libraries/LibWeb/Rust/src/css/parser/syntax_parser.rs
+index 6850988c56..3a239ad45c 100644
+--- a/Libraries/LibWeb/Rust/src/css/parser/syntax_parser.rs
++++ b/Libraries/LibWeb/Rust/src/css/parser/syntax_parser.rs
+@@ -2367,7 +2367,10 @@ fn collect_descriptors<'a>(
+                     &mut descriptors,
+                     DescriptorData {
+                         id: longhand.descriptor_id,
+-                        name: CssString::from_utf16(declaration.name.as_ref()),
++                        // The longhand's own name: `margin: 1cm` is four descriptors, margin-top to margin-left.
++                        name: CssString::from_utf16(
++                            &crate::css::property_metadata::property_name(longhand.property_id).encode_utf16().collect::<Vec<u16>>(),
++                        ),
+                         value: values.as_slice()[index].clone().into_arc(),
+                     },
+                 );
+diff --git a/Libraries/LibWeb/Rust/src/css/serialize.rs b/Libraries/LibWeb/Rust/src/css/serialize.rs
+index 16430b5670..6445952f71 100644
+--- a/Libraries/LibWeb/Rust/src/css/serialize.rs
++++ b/Libraries/LibWeb/Rust/src/css/serialize.rs
+@@ -525,7 +525,20 @@ pub(crate) fn serialize_a_number(sink: &mut TextSink, value: f64, mode: Serializ
+         return;
+     }
+     // FIXME: Prevent scientific notation for large values. (Matches the C++ FIXME.)
+-    format_double_with_precision_6(sink, value, false);
++    format_double_with_precision_6(sink, round_to_six_significant_digits(value), false);
++}
++
++/// AD-HOC: Chrome (and the values WPT's cssom tests expect from it) keeps six significant digits rather than six
++/// decimals: 1.23456789 is "1.23457" and 100 / 3 is "33.3333". Below 1 the two rules agree; at 10^6 and above the
++/// value is left to the six-decimal rule. Matches Web::CSS::round_to_six_significant_digits.
++pub(crate) fn round_to_six_significant_digits(value: f64) -> f64 {
++    let magnitude = value.abs();
++    if !(1.0..1_000_000.0).contains(&magnitude) {
++        return value;
++    }
++    let integer_digits = magnitude.log10().floor() as i32 + 1;
++    let scale = 10f64.powi(6 - integer_digits);
++    (value * scale).round() / scale
+ }
+ 
+ fn serialize_a_dimension(sink: &mut TextSink, value: f64, unit_name: &str, mode: SerializationMode) {

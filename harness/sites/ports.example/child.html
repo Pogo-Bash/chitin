@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+     Copyright (c) 2026 [OWNER NAME]
+     Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<html><head><title>ports child</title></head>
+<body>
+<script>
+var ready = true;
+var taken = null;
+window.addEventListener('message', function (e) {
+    if (e.data === 'take') {
+        taken = e.ports[0];
+        taken.onmessage = function (m) { taken.postMessage(m.data === 'ping' ? 'pong from ' + document.title : 'other'); };
+    } else if (e.data === 'give') {
+        var c = new MessageChannel();
+        c.port1.onmessage = function (m) { c.port1.postMessage('frame got ' + m.data); };
+        parent.postMessage('yours', '*', [c.port2]);
+    } else if (e.data && e.data.kind === 'obj-please') {
+        parent.postMessage({ kind: 'obj', saw: [Object.getPrototypeOf(e.data) === Object.prototype, Array.isArray(e.data.nested.list), e.data.nested.list[1].deep], nested: { a: 1, b: 'two' } }, '*');
+    } else if (e.data === 'return') {
+        // Hand the page's port back over a channel of the frame's own: the page's twin hears from the new holder.
+        var c2 = new MessageChannel();
+        c2.port2.onmessage = function (m) { m.ports[0].postMessage('back through the frame'); };
+        c2.port1.postMessage('here', [taken]);
+    }
+});
+</script>
+</body></html>

@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 15:01:51 -0500
+Subject: [PATCH 14/23] LibWeb/Rust: stage threads run their jobs inline on
+ Emscripten (no threads there)
+
+---
+ Libraries/LibWeb/Rust/src/stage_thread.rs | 31 ++++++++++++++++++++++-
+ 1 file changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/Libraries/LibWeb/Rust/src/stage_thread.rs b/Libraries/LibWeb/Rust/src/stage_thread.rs
+index f8edeb8b44..c8893e9912 100644
+--- a/Libraries/LibWeb/Rust/src/stage_thread.rs
++++ b/Libraries/LibWeb/Rust/src/stage_thread.rs
+@@ -91,10 +91,27 @@ pub extern "C" fn stage_thread_set_flight_finished(finished: extern "C" fn()) {
+ // Building and laying out boxes recurse once per tree level. The 8 MiB Linux and macOS give a process's main thread
+ // overflowed at about 5700 nested elements in release builds and fewer in debug builds. A thread stack is reserved,
+ // not committed, so the larger size costs address space only.
++#[cfg(not(target_os = "emscripten"))]
+ const STAGE_THREAD_STACK_SIZE: usize = 64 * 1024 * 1024;
+ 
+ impl StageThread {
++    /// On Emscripten there are no threads: the stage "thread" is the calling thread itself, and every job
++    /// handed to it runs right away where it is handed (see `hand`). The deep recursion the big thread stack
++    /// is for falls on the embedder's own stack size.
++    #[cfg(target_os = "emscripten")]
++    pub(crate) fn spawn(_name: &str) -> Self {
++        let shared: &'static Shared = Box::leak(Box::new(Shared {
++            handed: AtomicPtr::new(std::ptr::null_mut()),
++            tsan_key: AtomicBool::new(false),
++        }));
++        Self {
++            thread: std::thread::current(),
++            shared,
++        }
++    }
++
+     /// Spawns a thread named `name`, which lives as long as the process.
++    #[cfg(not(target_os = "emscripten"))]
+     pub(crate) fn spawn(name: &str) -> Self {
+         let shared: &'static Shared = Box::leak(Box::new(Shared {
+             handed: AtomicPtr::new(std::ptr::null_mut()),
+@@ -129,8 +146,13 @@ impl StageThread {
+         }
+     }
+ 
+-    /// Whether the calling thread is this one.
++    /// Whether the calling thread is this one. On Emscripten the stage thread is the host's own thread, but
++    /// it answers false: a job handed to it runs inline anyway (`hand`), and the hosts' checks that a layout
++    /// node is made on the host's thread, not the stage's, stay true.
+     pub(crate) fn is_current(&self) -> bool {
++        if cfg!(target_os = "emscripten") {
++            return false;
++        }
+         std::thread::current().id() == self.thread.id()
+     }
+ 
+@@ -192,6 +214,12 @@ impl StageThread {
+     /// Hands the job `header` heads to this thread, which runs it after the jobs handed to it before.
+     fn hand(&self, header: NonNull<JobHeader>) {
+         tsan::release(&self.shared.tsan_key);
++        if cfg!(target_os = "emscripten") {
++            // No thread to hand it to: run it here, now, in the order it was handed.
++            // SAFETY: The job is live until it is done, and nothing else reaches it meanwhile.
++            unsafe { (header.as_ref().run)(header, &self.shared.tsan_key) };
++            return;
++        }
+         let before = self
+             .shared
+             .handed
+@@ -210,6 +238,7 @@ impl StageThread {
+ 
+ /// Relinks the jobs a stage thread took, the last one handed `last` and each linked to the one handed before it, so
+ /// that each links to the one handed after it, and answers the first one handed.
++#[cfg(not(target_os = "emscripten"))]
+ fn in_handed_order(last: NonNull<JobHeader>) -> NonNull<JobHeader> {
+     let (mut job, mut after) = (last, None);
+     // SAFETY: A job handed out and not run yet stays live, and only the stage thread that took it reaches it.

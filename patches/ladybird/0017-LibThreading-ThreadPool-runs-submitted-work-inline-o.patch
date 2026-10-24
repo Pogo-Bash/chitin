@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 15:48:08 -0500
+Subject: [PATCH 17/23] LibThreading: ThreadPool runs submitted work inline on
+ Emscripten (no threads)
+
+---
+ Libraries/LibThreading/ThreadPool.cpp | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/Libraries/LibThreading/ThreadPool.cpp b/Libraries/LibThreading/ThreadPool.cpp
+index d77a52506c..fb17027269 100644
+--- a/Libraries/LibThreading/ThreadPool.cpp
++++ b/Libraries/LibThreading/ThreadPool.cpp
+@@ -22,6 +22,11 @@ ThreadPool& ThreadPool::the()
+ 
+ ThreadPool::ThreadPool()
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    // No threads in a Worker without SharedArrayBuffer: submit() runs the work on the caller's thread, and the
++    // work's deferred_invoke() back to the origin loop runs on the next pump, as it would from a worker.
++    return;
++#endif
+     for (size_t i = 0; i < THREAD_COUNT; ++i) {
+         auto name = ByteString::formatted("Pool/{}", i);
+         auto thread = Thread::construct(name, [this]() -> intptr_t {
+@@ -69,6 +74,10 @@ intptr_t ThreadPool::worker_thread_func()
+ 
+ void ThreadPool::submit(Function<void()> work)
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    work();
++    return;
++#endif
+     MutexLocker locker(m_mutex);
+     m_work_queue.enqueue(move(work));
+     m_condition.signal();

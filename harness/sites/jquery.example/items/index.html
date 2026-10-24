@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Items - Chitin jQuery</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<header class="top"><h1>jQuery</h1><a href="/">Home</a><a href="/items/">Items</a><a href="/about/">About</a></header>
+<main>
+<section><h2>Items</h2>
+<p id="status" class="status">loading</p>
+<input id="filter" type="text" placeholder="Filter">
+<ul class="items" id="items"></ul>
+<form id="add-form">
+<input id="new-item" type="text" placeholder="New item">
+<button type="submit" class="primary">Add</button>
+<div id="error" class="error"></div>
+</form></section>
+</main>
+<script src="/assets/jquery.min.js"></script>
+<script src="/assets/app.js"></script>
+</body>
+</html>

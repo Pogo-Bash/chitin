@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Pointer events</title>
+<!-- The pointer and mouse event log (tests/chrome/run.mjs, pointerGroup): the same page in Chrome and in Chitin, the same input,
+     the same log. Two boxes so a drag crosses a boundary. -->
+<style>
+    html, body { margin: 0; padding: 0; }
+    #area { position: absolute; left: 0; top: 0; width: 400px; height: 200px; background: #eee; }
+    #a { position: absolute; left: 20px; top: 20px; width: 120px; height: 100px; background: #c96; }
+    #b { position: absolute; left: 200px; top: 20px; width: 120px; height: 100px; background: #6c9; }
+</style>
+<body>
+<div id="area"><div id="a"></div><div id="b"></div></div>
+<p id="s">loading</p>
+<script>
+    const TYPES = ['pointerover', 'pointerenter', 'pointerdown', 'pointermove', 'pointerup', 'pointerout', 'pointerleave', 'pointercancel',
+        'mouseover', 'mouseenter', 'mousedown', 'mousemove', 'mouseup', 'mouseout', 'mouseleave',
+        'click', 'auxclick', 'dblclick', 'contextmenu', 'touchstart', 'touchmove', 'touchend'];
+    const r3 = (n) => typeof n === 'number' ? Math.round(n * 1000) / 1000 : n;
+    window.eventLog = [];
+    window.logging = false;
+    // Enter and leave do not bubble, and Chrome does not show them to a capturing window: they are logged on the elements.
+    const ON_ELEMENTS = new Set(['pointerenter', 'pointerleave', 'mouseenter', 'mouseleave']);
+    for (const type of TYPES) {
+        const listen = (target, fn) => ON_ELEMENTS.has(type) ? ['area', 'a', 'b'].forEach((id) => document.getElementById(id).addEventListener(type, (e) => { if (e.target === e.currentTarget) fn(e); })) : window.addEventListener(type, fn, true);
+        listen(window, (e) => {
+            if (type === 'contextmenu')
+                e.preventDefault();
+            if (!window.logging || !(e.target instanceof Element) || !e.target.closest('#area'))
+                return;
+            const o = { type: e.type, cls: e.constructor.name, target: e.target.id, trusted: e.isTrusted, bubbles: e.bubbles, cancelable: e.cancelable, composed: e.composed,
+                detail: e.detail, button: e.button, buttons: e.buttons, clientX: r3(e.clientX), clientY: r3(e.clientY), offsetX: r3(e.offsetX), offsetY: r3(e.offsetY),
+                related: e.relatedTarget ? e.relatedTarget.id || e.relatedTarget.nodeName : null };
+            if ('pointerId' in e)
+                Object.assign(o, { pointerId: e.pointerId, pointerType: e.pointerType, width: e.width, height: e.height, pressure: r3(e.pressure),
+                    tangentialPressure: e.tangentialPressure, tiltX: e.tiltX, tiltY: e.tiltY, twist: e.twist, altitudeAngle: r3(e.altitudeAngle), azimuthAngle: r3(e.azimuthAngle), isPrimary: e.isPrimary });
+            window.eventLog.push(o);
+        });
+    }
+    document.getElementById('s').textContent = 'ready';
+</script>

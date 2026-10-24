@@ -1,0 +1,20 @@
+// Chitin phase-0 subset of Ladybird's Libraries/LibWeb/DOM/EventTarget.idl (BSD-2-Clause, the Ladybird developers).
+// Members kept as written upstream; members the toy does not implement are left out.
+// https://dom.spec.whatwg.org/#eventtarget
+[Exposed=*]
+interface EventTarget {
+    constructor();
+
+    [ImplementedInBindings] undefined addEventListener(DOMString type, EventListener? callback, optional (AddEventListenerOptions or boolean) options = {});
+    [ImplementedInBindings] undefined removeEventListener(DOMString type, EventListener? callback, optional (EventListenerOptions or boolean) options = {});
+    [ImplementedAs=dispatch_event_for_bindings] boolean dispatchEvent(Event event);
+};
+
+dictionary EventListenerOptions {
+    boolean capture = false;
+};
+
+dictionary AddEventListenerOptions : EventListenerOptions {
+    boolean passive;
+    boolean once = false;
+};

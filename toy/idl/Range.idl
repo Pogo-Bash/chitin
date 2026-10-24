@@ -1,0 +1,9 @@
+// Chitin phase-0 subset of Ladybird's Libraries/LibWeb/DOM/Range.idl (BSD-2-Clause, the Ladybird developers).
+// Members kept as written upstream; members the toy does not implement are left out.
+// https://dom.spec.whatwg.org/#range
+[Exposed=Window]
+interface Range {
+    readonly attribute Node startContainer;
+    readonly attribute unsigned long startOffset;
+    undefined setStart(Node node, unsigned long offset);
+};

@@ -1,0 +1,181 @@
+From 4e1393f8b5241e4ed330566563cabb2bfb35267e Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 21:00:27 -0500
+Subject: [PATCH] LibWeb: Location.ancestorOrigins, and
+ Document.hasStorageAccess() and requestStorageAccess() (access is had:
+ third-party cookies are not blocked, as in Chrome's default)
+
+---
+ Libraries/LibWeb/DOM/Document.cpp  | 27 ++++++++++++++++++++++
+ Libraries/LibWeb/DOM/Document.h    |  3 +++
+ Libraries/LibWeb/DOM/Document.idl  |  6 +++++
+ Libraries/LibWeb/HTML/Location.cpp | 36 ++++++++++++++++++++++++++++++
+ Libraries/LibWeb/HTML/Location.h   |  7 ++++++
+ Libraries/LibWeb/HTML/Location.idl |  5 +----
+ 6 files changed, 80 insertions(+), 4 deletions(-)
+
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+index a6be68824d..5845ae1647 100644
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -4890,6 +4890,33 @@ void Document::set_referrer(Utf16String referrer)
+ }
+ 
+ // https://html.spec.whatwg.org/multipage/document-sequences.html#fully-active
++// https://privacycg.github.io/storage-access/#dom-document-hasstorageaccess
++GC::Ref<WebIDL::Promise> Document::has_storage_access()
++{
++    auto& realm = relevant_settings_object().realm();
++    // 3. If doc is not fully active, then reject p with an "InvalidStateError" DOMException and return p.
++    if (!is_fully_active())
++        return WebIDL::create_rejected_promise_from_exception(realm, WebIDL::InvalidStateError::create("The document is not fully active."_utf16));
++    // 5. If doc's origin is an opaque origin, then resolve p with false and return p.
++    if (origin().is_opaque())
++        return WebIDL::create_resolved_promise(realm, JS::Value(false));
++    // 6-7. A top-level document, or one same origin with its top-level origin, has access. AD-HOC: so has every other: the
++    //      engine's cookies are not blocked for third parties (unpartitioned cookie access is allowed, as in Chrome's default).
++    return WebIDL::create_resolved_promise(realm, JS::Value(true));
++}
++
++// https://privacycg.github.io/storage-access/#dom-document-requeststorageaccess
++GC::Ref<WebIDL::Promise> Document::request_storage_access()
++{
++    auto& realm = relevant_settings_object().realm();
++    if (!is_fully_active())
++        return WebIDL::create_rejected_promise_from_exception(realm, WebIDL::InvalidStateError::create("The document is not fully active."_utf16));
++    if (origin().is_opaque())
++        return WebIDL::create_rejected_promise_from_exception(realm, WebIDL::NotAllowedError::create("Access denied."_utf16));
++    // NB: Access is already had (has_storage_access), so the request resolves without asking the user.
++    return WebIDL::create_resolved_promise(realm, JS::js_undefined());
++}
++
+ bool Document::is_fully_active() const
+ {
+     // A Document d is said to be fully active when d is the active document of a navigable navigable, and either
+diff --git a/Libraries/LibWeb/DOM/Document.h b/Libraries/LibWeb/DOM/Document.h
+index aec4750847..58b2ced64d 100644
+--- a/Libraries/LibWeb/DOM/Document.h
++++ b/Libraries/LibWeb/DOM/Document.h
+@@ -821,6 +821,9 @@ public:
+     [[nodiscard]] bool has_a_style_sheet_that_is_blocking_scripts() const;
+ 
+     bool is_fully_active() const;
++
++    GC::Ref<WebIDL::Promise> has_storage_access();
++    GC::Ref<WebIDL::Promise> request_storage_access();
+     bool is_active() const;
+ 
+     [[nodiscard]] HTML::HTMLParser::AllowDeclarativeShadowRoots allow_declarative_shadow_roots() const;
+diff --git a/Libraries/LibWeb/DOM/Document.idl b/Libraries/LibWeb/DOM/Document.idl
+index b11b55a8c0..71fc8cba80 100644
+--- a/Libraries/LibWeb/DOM/Document.idl
++++ b/Libraries/LibWeb/DOM/Document.idl
+@@ -114,6 +114,12 @@ partial interface Document {
+ enum DocumentReadyState { "loading", "interactive", "complete" };
+ enum DocumentVisibilityState { "visible", "hidden" };
+ 
++// https://privacycg.github.io/storage-access/#the-document-object
++partial interface Document {
++    Promise<boolean> hasStorageAccess();
++    Promise<undefined> requestStorageAccess();
++};
++
+ // https://html.spec.whatwg.org/multipage/obsolete.html#Document-partial
+ partial interface Document {
+     // FIXME: The LegacyNullToEmptyString attribute belongs on the DOMString type.
+diff --git a/Libraries/LibWeb/HTML/Location.cpp b/Libraries/LibWeb/HTML/Location.cpp
+index e645b26da9..7f4e4a0c60 100644
+--- a/Libraries/LibWeb/HTML/Location.cpp
++++ b/Libraries/LibWeb/HTML/Location.cpp
+@@ -23,6 +23,7 @@
+ #include <LibWeb/DOMURL/DOMURL.h>
+ #include <LibWeb/HTML/BrowsingContext.h>
+ #include <LibWeb/HTML/CrossOrigin/AbstractOperations.h>
++#include <LibWeb/HTML/DOMStringList.h>
+ #include <LibWeb/HTML/LocalNavigable.h>
+ #include <LibWeb/HTML/Location.h>
+ #include <LibWeb/HTML/Navigation.h>
+@@ -73,6 +74,41 @@ void Location::visit_edges(GC::Cell::Visitor& visitor)
+ {
+     Base::visit_edges(visitor);
+     m_window.visit([&](auto const& window) { visitor.visit(window); });
++    visitor.visit(m_ancestor_origins);
++}
++
++static Vector<String>& embedder_ancestor_origins()
++{
++    static Vector<String> origins;
++    return origins;
++}
++
++void Location::set_embedder_ancestor_origins(Vector<String> origins)
++{
++    embedder_ancestor_origins() = move(origins);
++}
++
++// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-location-ancestororigins
++GC::Ref<DOMStringList> Location::ancestor_origins()
++{
++    // AD-HOC: The list is made at the first read instead of with the Location object (its document's ancestors are the
++    //         same then: a document does not move between navigables).
++    if (m_ancestor_origins)
++        return *m_ancestor_origins;
++    Vector<String> list;
++    // 1. If this's relevant Document is non-null and its origin is not same origin-domain with the entry settings object's
++    //    origin, then throw a "SecurityError" DOMException. (NB: Location's [[Get]] already checks the cross-origin case.)
++    // 2. Otherwise, return this's ancestor origins list: the origin of each ancestor navigable's active document, nearest
++    //    first.
++    if (auto document = relevant_document()) {
++        for (auto& navigable : document->ancestor_navigables()) {
++            if (auto origin = navigable->active_document_origin(); origin.has_value())
++                list.append(origin->serialize());
++        }
++    }
++    list.extend(embedder_ancestor_origins());
++    m_ancestor_origins = DOMStringList::create(move(list));
++    return *m_ancestor_origins;
+ }
+ 
+ }
+diff --git a/Libraries/LibWeb/HTML/Location.h b/Libraries/LibWeb/HTML/Location.h
+index b0d9567561..48876b79f7 100644
+--- a/Libraries/LibWeb/HTML/Location.h
++++ b/Libraries/LibWeb/HTML/Location.h
+@@ -57,6 +57,12 @@ public:
+     WebIDL::ExceptionOr<void> reload() const;
+     WebIDL::ExceptionOr<void> assign(Utf16String const& url);
+ 
++    GC::Ref<DOMStringList> ancestor_origins();
++
++    // Origins of the navigables above this engine's top-level traversable, nearest first, when it is embedded by a host
++    // (an embedder showing a frame's document in an engine of its own). Appended to every ancestor origins list.
++    static void set_embedder_ancestor_origins(Vector<String>);
++
+ private:
+     explicit Location(Window&);
+     explicit Location(RemoteWindow&);
+@@ -70,6 +76,7 @@ private:
+     WebIDL::ExceptionOr<void> navigate(URL::URL, NavigationHistoryBehavior = NavigationHistoryBehavior::Auto);
+ 
+     Variant<GC::Ref<Window>, GC::Ref<RemoteWindow>> m_window;
++    GC::Ptr<DOMStringList> m_ancestor_origins;
+ };
+ 
+ }
+diff --git a/Libraries/LibWeb/HTML/Location.idl b/Libraries/LibWeb/HTML/Location.idl
+index 29f3d9464e..ec969ce37d 100644
+--- a/Libraries/LibWeb/HTML/Location.idl
++++ b/Libraries/LibWeb/HTML/Location.idl
+@@ -15,8 +15,5 @@ interface Location { // but see also additional creation steps and overridden in
+     [LegacyUnforgeable, NeedsCallerRealm] undefined replace(USVString url);
+     [LegacyUnforgeable] undefined reload();
+ 
+-    // Intentionally not implemented at this stage due to https://github.com/whatwg/html/issues/1918
+-    // This is not currently implemented by Firefox due to the above, and only seems to be used by
+-    // ad tech on real sites.
+-    [FIXME, LegacyUnforgeable, SameObject] readonly attribute DOMStringList ancestorOrigins;
++    [LegacyUnforgeable, SameObject] readonly attribute DOMStringList ancestorOrigins;
+ };
+-- 
+2.50.1 (Apple Git-155)
+

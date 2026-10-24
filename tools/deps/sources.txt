@@ -1,0 +1,26 @@
+# Third-party sources for Ganglion's wasm32 build (phase 1). Versions follow Ladybird's vcpkg.json
+# overrides at the pinned Ladybird commit (tools/ladybird.env). One line per archive:
+#   name  version  url  [sha256]
+# The sha256 column is filled in on first download by tools/deps/fetch.sh (trust on first use) and
+# checked on every later download.
+zlib          1.3.1   https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
+brotli        1.2.0   https://github.com/google/brotli/archive/refs/tags/v1.2.0.tar.gz 816c96e8e8f193b40151dad7e8ff37b1221d019dbcb9c35cd3fadbfe6477dfec
+woff2         1.0.2   https://github.com/google/woff2/archive/refs/tags/v1.0.2.tar.gz add272bb09e6384a4833ffca4896350fdb16e0ca22df68c0384773c67a175594
+libpng        1.6.58  https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.58.tar.gz a9d4df463d36a6e5f9c29bd6f4967312d17e996c1854f3511f833924eb1993cf
+libjpeg-turbo 3.2.0   https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/3.2.0.tar.gz 980dd81f425082aa6d7c9e47fef27554ce7a9ffc8e2f6e863b97d263c5c50858
+libwebp       1.6.0   https://github.com/webmproject/libwebp/archive/refs/tags/v1.6.0.tar.gz 93a852c2b3efafee3723efd4636de855b46f9fe1efddd607e1f42f60fc8f2136
+freetype      2.13.3  https://github.com/freetype/freetype/archive/refs/tags/VER-2-13-3.tar.gz bc5c898e4756d373e0d991bab053036c5eb2aa7c0d5c67e8662ddc6da40c4103
+harfbuzz      10.2.0  https://github.com/harfbuzz/harfbuzz/releases/download/10.2.0/harfbuzz-10.2.0.tar.xz 620e3468faec2ea8685d32c46a58469b850ef63040b3565cde05959825b48227
+icu           78.3    https://github.com/unicode-org/icu/releases/download/release-78.3/icu4c-78.3-sources.tgz 3a2e7a47604ba702f345878308e6fefeca612ee895cf4a5f222e7955fabfe0c0
+fmt           12.2.0  https://github.com/fmtlib/fmt/archive/refs/tags/12.2.0.tar.gz 8b852bb5aa6e7d8564f9e81394055395dd1d1936d38dfd3a17792a02bebd7af0
+fast_float    8.2.10  https://github.com/fastfloat/fast_float/archive/refs/tags/v8.2.10.tar.gz 76f958dd97b1cf4d8862d1f0986a47d4bdfa8845252bae15ef0f40de3b95961f
+simdutf       9.1.0   https://github.com/simdutf/simdutf/archive/refs/tags/v9.1.0.tar.gz 24e3510a4c95a9e6eb0fb4a27eea650d13773231cbd8b564ed9670aa5484d193
+simdjson      4.6.4   https://github.com/simdjson/simdjson/archive/refs/tags/v4.6.4.tar.gz b091107844fe928158c5c2265c20360fff312889ddf7ebc4528a0f0f8f2ff9cd
+libxml2       2.15.3  https://github.com/GNOME/libxml2/archive/refs/tags/v2.15.3.tar.gz 5c6060277173270356c3f1c321a640ab629bdabc5e5ba9095b99e00759ba0c39
+sqlite        3.53.3  https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip 646421e12aac110282ef8cc68f1a62d4bb15fc7b8f09da0b53e29ee690500431
+libtommath    1.3.0   https://github.com/libtom/libtommath/releases/download/v1.3.0/ltm-1.3.0.tar.xz 296272d93435991308eb73607600c034b558807a07e829e751142e65ccfa9d08
+libpsl        0.21.5  https://github.com/rockdaboot/libpsl/releases/download/0.21.5/libpsl-0.21.5.tar.gz 1dcc9ceae8b128f3c0b3f654decd0e1e891afc6ff81098f227ef260449dae208
+wuffs         0.3.4   https://raw.githubusercontent.com/google/wuffs/v0.3.4/release/c/wuffs-v0.3.c a3db4bd979663423de00309d1ba07d7fa8576845223d3e02764181bd6da23f90
+openssl       3.6.3   https://github.com/openssl/openssl/releases/download/openssl-3.6.3/openssl-3.6.3.tar.gz 243a86649cf6f23eeb6a2ff2456e09e5d77dd9018a54d3d96b0c6bdd6ba6c7f1
+angle-include chromium_7258 https://chromium.googlesource.com/angle/angle/+archive/d9fc4a372074b1079c193c422fc4a180e79b6636/include.tar.gz -
+nghttp2       1.69.0  https://github.com/nghttp2/nghttp2/releases/download/v1.69.0/nghttp2-1.69.0.tar.xz 1fb324b6ec2c56f6bde0658f4139ffd8209fa9e77ce98fd7a5f63af8d0e508ad

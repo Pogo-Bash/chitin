@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><title>currentScript</title>
+<script>window.seen = [document.currentScript && document.currentScript.tagName + ':' + document.currentScript.id]</script>
+<script id="ext" src="a.js"></script>
+<script id="asy" src="c.js" async></script>
+<script id="def" src="d.js" defer></script>
+<script>
+  var s = document.createElement('script'); s.id = 'dyn'; s.src = 'b.js'; document.head.appendChild(s);
+</script>
+<script id="later" src="f.js"></script>

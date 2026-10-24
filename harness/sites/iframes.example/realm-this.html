@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><title>frame realms: this</title></head>
+<body>
+<script>
+var results = { events: [], fromChild: [] };
+var parentOnly = 'parent value';
+window.addEventListener('load', function () { results.events.push('window load'); });
+</script>
+<iframe id="f" src="realm-this-child.html"></iframe>
+</body></html>

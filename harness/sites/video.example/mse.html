@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<title>video mse</title>
+<style>body { margin: 0 } video { display: block; width: 640px; height: 360px }</style>
+<video id="v" muted playsinline></video>
+<script>
+// The same clip through Media Source Extensions: one SourceBuffer, the whole file appended at once.
+window.seen = [];
+const v = document.getElementById('v');
+for (const name of ['loadstart', 'durationchange', 'loadedmetadata', 'loadeddata', 'canplay', 'canplaythrough', 'play', 'playing', 'pause', 'ended', 'error'])
+    v.addEventListener(name, () => seen.push(name + ':' + v.readyState));
+window.times = [];
+// Where the browser has requestVideoFrameCallback (Chrome): the top-left quadrant of each presented frame.
+window.pixels = [];
+if (v.requestVideoFrameCallback) {
+    const c = document.createElement('canvas');
+    c.width = 640; c.height = 360;
+    const g = c.getContext('2d', { willReadFrequently: true });
+    const onFrame = (now, meta) => {
+        g.drawImage(v, 0, 0);
+        pixels.push(meta.mediaTime.toFixed(2) + ':' + Array.from(g.getImageData(100, 100, 1, 1).data).slice(0, 3).join(','));
+        v.requestVideoFrameCallback(onFrame);
+    };
+    v.requestVideoFrameCallback(onFrame);
+}
+v.addEventListener('timeupdate', () => times.push(Math.round(v.currentTime * 100) / 100));
+const ms = new MediaSource();
+ms.addEventListener('sourceopen', async () => {
+    seen.push('sourceopen');
+    const sb = ms.addSourceBuffer('video/webm; codecs="vp9,opus"');
+    const bytes = await (await fetch('vp9-opus.webm')).arrayBuffer();
+    sb.addEventListener('updateend', () => {
+        seen.push('updateend ' + (sb.buffered.length ? sb.buffered.start(0).toFixed(2) + '-' + sb.buffered.end(0).toFixed(2) : 'empty'));
+        if (ms.readyState === 'open')
+            ms.endOfStream();
+    }, { once: true });
+    sb.appendBuffer(bytes);
+});
+v.src = URL.createObjectURL(ms);
+v.play().then(() => seen.push('play resolved'), (e) => seen.push('play rejected ' + e.name));
+</script>

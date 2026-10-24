@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 03:46:00 -0500
+Subject: [PATCH 28/28] LibWeb: a transaction whose blockers finish while it is
+ still active starts instead of trapping
+
+On Emscripten the microtask checkpoint's cleanup of a transaction waits for the embedder's microtasks (patch 0024), so a transaction created right behind one that called commit() can still be active when that one's complete task runs the waits. The wait callback VERIFYed the transaction was inactive. It now unblocks it; the cleanup that follows auto-commits it when no request was placed, as the spec's auto-commit does.
+---
+ Libraries/LibWeb/IndexedDB/IDBDatabase.cpp | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/Libraries/LibWeb/IndexedDB/IDBDatabase.cpp b/Libraries/LibWeb/IndexedDB/IDBDatabase.cpp
+index d7976608fd..ef6a961542 100644
+--- a/Libraries/LibWeb/IndexedDB/IDBDatabase.cpp
++++ b/Libraries/LibWeb/IndexedDB/IDBDatabase.cpp
+@@ -371,8 +371,10 @@ void IDBDatabase::block_on_conflicting_transactions(JS::Realm& realm, GC::Ref<ID
+ 
+     transaction->request_list().block_execution();
+     wait_for_transactions_to_finish(blocking, GC::create_function(GC::Heap::the(), [&realm, transaction] {
+-        VERIFY(transaction->state() != IDBTransaction::TransactionState::Active);
+-        if (transaction->request_list().is_empty()) {
++        // NB: The transaction may still be active here: the transactions it waited for can finish within the task that
++        //     created it, before the microtask checkpoint's cleanup has made it inactive (on Emscripten that cleanup waits
++        //     for the embedder's microtasks). It then starts now, and the cleanup auto-commits it if no request is placed.
++        if (transaction->state() != IDBTransaction::TransactionState::Active && transaction->request_list().is_empty()) {
+             // https://w3c.github.io/IndexedDB/#transaction-commit
+             // The implementation must attempt to commit an inactive transaction when all requests placed
+             // against the transaction have completed and their returned results handled, no new requests have

@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 16:17:01 -0500
+Subject: [PATCH 18/23] LibWeb:
+ LocalNavigable::clear_needs_to_record_display_list() for an embedder that
+ records the list itself
+
+---
+ Libraries/LibWeb/HTML/LocalNavigable.h | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/Libraries/LibWeb/HTML/LocalNavigable.h b/Libraries/LibWeb/HTML/LocalNavigable.h
+index 5562e89e62..b759d667da 100644
+--- a/Libraries/LibWeb/HTML/LocalNavigable.h
++++ b/Libraries/LibWeb/HTML/LocalNavigable.h
+@@ -352,6 +352,9 @@ public:
+     void set_needs_repaint() { m_needs_repaint = true; }
+     bool needs_to_record_display_list() const { return m_needs_to_record_display_list; }
+     void set_needs_to_record_display_list() { m_needs_to_record_display_list = true; }
++    // For an embedder that records the display list itself (no compositor process): what commit_frame() does once a
++    // recording has started.
++    void clear_needs_to_record_display_list() { m_needs_to_record_display_list = false; }
+     void repaint_after_compositor_process_reconnect();
+ 
+     [[nodiscard]] bool has_inclusive_ancestor_with_visibility_hidden() const;

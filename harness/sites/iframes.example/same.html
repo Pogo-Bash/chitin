@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><title>same-site iframe</title></head>
+<body>
+<iframe id="f" src="child.html"></iframe>
+<script>
+var results = { events: [] };
+document.getElementById('f').addEventListener('load', function () { results.events.push('frame load'); });
+window.addEventListener('load', function () { results.events.push('window load'); });
+</script>
+</body></html>

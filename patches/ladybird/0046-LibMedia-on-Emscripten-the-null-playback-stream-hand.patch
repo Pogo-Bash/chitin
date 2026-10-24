@@ -1,0 +1,271 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 20:02:55 -0500
+Subject: [PATCH 46/46] LibMedia: on Emscripten the null playback stream hands
+ its output to the embedder
+
+An embedder that plays audio itself (a page in a browser) registers an
+EmbedderAudioOutput: streams created afterwards run at its sample rate,
+and each period the null stream pulls is handed to it (interleaved),
+with whether the stream plays, its volume and its end. Before, an
+AudioContext rendered at wall-clock pace and its output was discarded.
+---
+ .../LibMedia/Audio/NullPlaybackStream.cpp     | 98 ++++++++++++++++---
+ Libraries/LibMedia/Audio/NullPlaybackStream.h | 15 +++
+ 2 files changed, 98 insertions(+), 15 deletions(-)
+
+diff --git a/Libraries/LibMedia/Audio/NullPlaybackStream.cpp b/Libraries/LibMedia/Audio/NullPlaybackStream.cpp
+index 774d849c4c..4830fd31a6 100644
+--- a/Libraries/LibMedia/Audio/NullPlaybackStream.cpp
++++ b/Libraries/LibMedia/Audio/NullPlaybackStream.cpp
+@@ -19,9 +19,29 @@
+ 
+ namespace Audio {
+ 
+-static constexpr u32 NULL_OUTPUT_SAMPLE_RATE = 44100;
+ static constexpr u32 PERIOD_MS = 10;
+-static constexpr i64 PERIOD_FRAMES = NULL_OUTPUT_SAMPLE_RATE * PERIOD_MS / 1000;
++
++#ifdef AK_OS_EMSCRIPTEN
++// The embedder's output (a page in a browser plays what it is handed): the null stream keeps its wall-clock pace and
++// its pull loop, and hands each period it pulled to the embedder instead of discarding it.
++static EmbedderAudioOutput const* s_embedder_output = nullptr;
++
++void set_embedder_audio_output(EmbedderAudioOutput const* output)
++{
++    s_embedder_output = output;
++}
++
++static u32 output_sample_rate()
++{
++    if (s_embedder_output && s_embedder_output->sample_rate >= 8000 && s_embedder_output->sample_rate <= 384000)
++        return s_embedder_output->sample_rate;
++    return 44100;
++}
++#else
++static constexpr u32 output_sample_rate() { return 44100; }
++#endif
++
++static i64 period_frames() { return static_cast<i64>(output_sample_rate()) * PERIOD_MS / 1000; }
+ 
+ // The played position is derived from the wall clock on demand, advancing from an anchor while the stream is playing
+ // or draining, and never passing the frames that have been written. Data is requested one period at a time to keep a
+@@ -30,7 +50,9 @@ class NullPlaybackStream::State final : public AtomicRefCounted<State> {
+ public:
+     State(OutputState initial_output_state, u32 target_latency_ms, AudioDataRequestCallback data_request_callback)
+         : m_data_request_callback(move(data_request_callback))
+-        , m_target_lookahead_frames(max(PERIOD_FRAMES, static_cast<i64>(NULL_OUTPUT_SAMPLE_RATE) * target_latency_ms / 1000))
++        , m_sample_rate(output_sample_rate())
++        , m_period_frames(period_frames())
++        , m_target_lookahead_frames(max(m_period_frames, static_cast<i64>(m_sample_rate) * target_latency_ms / 1000))
+         , m_state(initial_output_state == OutputState::Playing ? StreamState::Playing : StreamState::Suspended)
+     {
+     }
+@@ -41,6 +63,7 @@ public:
+         // NB: A scheduled step holds a reference, so nothing is pending here; only the timer is left to cancel.
+         if (m_wake_timer)
+             m_wake_timer->stop();
++        close_embedder_stream();
+ #else
+         stop();
+ #endif
+@@ -105,7 +128,7 @@ public:
+ 
+     SampleSpecification sample_specification() const
+     {
+-        return { NULL_OUTPUT_SAMPLE_RATE, ChannelMap::stereo() };
++        return { m_sample_rate, ChannelMap::stereo() };
+     }
+ 
+     NonnullRefPtr<Core::ThreadedPromise<AK::Duration>> resume()
+@@ -120,7 +143,7 @@ public:
+             complete_pending_drains_while_locked();
+             set_state_while_locked(StreamState::Playing);
+             m_awaiting_data = false;
+-            auto resume_time = AK::Duration::from_time_units(m_anchor_frames_played, 1, NULL_OUTPUT_SAMPLE_RATE);
++            auto resume_time = AK::Duration::from_time_units(m_anchor_frames_played, 1, m_sample_rate);
+             m_ready_completions.append([promise, resume_time]() mutable { promise->resolve(move(resume_time)); });
+             signal_while_locked();
+         }
+@@ -174,14 +197,18 @@ public:
+     AK::Duration total_time_played() const
+     {
+         MutexLocker locker(m_mutex);
+-        return AK::Duration::from_time_units(frames_played_while_locked(MonotonicTime::now()), 1, NULL_OUTPUT_SAMPLE_RATE);
++        return AK::Duration::from_time_units(frames_played_while_locked(MonotonicTime::now()), 1, m_sample_rate);
+     }
+ 
+-    NonnullRefPtr<Core::ThreadedPromise<void>> set_volume(double)
++    NonnullRefPtr<Core::ThreadedPromise<void>> set_volume([[maybe_unused]] double volume)
+     {
+         auto promise = Core::ThreadedPromise<void>::create();
+         {
+             MutexLocker locker(m_mutex);
++#ifdef AK_OS_EMSCRIPTEN
++            m_volume = volume;
++            tell_embedder_while_locked();
++#endif
+             if (m_state == StreamState::Stopped) {
+                 promise->reject(Error::from_string_literal("Null playback stream has stopped"));
+                 return promise;
+@@ -241,7 +268,7 @@ private:
+     i64 elapsed_frames_since_anchor_while_locked(MonotonicTime now) const
+     {
+         auto elapsed_nanoseconds = max<i64>(0, (now - m_anchor_time).to_nanoseconds());
+-        return elapsed_nanoseconds * NULL_OUTPUT_SAMPLE_RATE / 1'000'000'000;
++        return elapsed_nanoseconds * m_sample_rate / 1'000'000'000;
+     }
+ 
+     i64 frames_played_while_locked(MonotonicTime now) const
+@@ -260,7 +287,7 @@ private:
+         auto elapsed_frames = elapsed_frames_since_anchor_while_locked(now);
+         if (m_anchor_frames_played + elapsed_frames < m_frames_written) {
+             // Advance by whole frames, keeping the remainder in the anchor time so that reanchoring doesn't drift.
+-            m_anchor_time = m_anchor_time + AK::Duration::from_time_units(elapsed_frames, 1, NULL_OUTPUT_SAMPLE_RATE);
++            m_anchor_time = m_anchor_time + AK::Duration::from_time_units(elapsed_frames, 1, m_sample_rate);
+             m_anchor_frames_played += elapsed_frames;
+             return;
+         }
+@@ -273,8 +300,44 @@ private:
+     {
+         reanchor_while_locked(MonotonicTime::now());
+         m_state = state;
++#ifdef AK_OS_EMSCRIPTEN
++        if (state == StreamState::Stopped)
++            close_embedder_stream();
++        else
++            tell_embedder_while_locked();
++#endif
+     }
+ 
++#ifdef AK_OS_EMSCRIPTEN
++    // The embedder hears: a stream opened with the first frames pulled, every period pulled (interleaved), whether the
++    // stream plays (playing, or draining what it has) and at what volume, and its end.
++    void tell_embedder_while_locked()
++    {
++        if (m_embedder_stream && s_embedder_output && s_embedder_output->control)
++            s_embedder_output->control(m_embedder_stream, is_advancing_while_locked() || m_state == StreamState::Underrun, m_volume);
++    }
++
++    void write_to_embedder(ReadonlySpan<float> interleaved, size_t frames, u32 channel_count)
++    {
++        if (!s_embedder_output || frames == 0)
++            return;
++        if (!m_embedder_stream && s_embedder_output->open) {
++            m_embedder_stream = s_embedder_output->open(m_sample_rate, channel_count);
++            MutexLocker locker(m_mutex);
++            tell_embedder_while_locked();
++        }
++        if (m_embedder_stream && s_embedder_output->write)
++            s_embedder_output->write(m_embedder_stream, interleaved.data(), frames);
++    }
++
++    void close_embedder_stream()
++    {
++        if (m_embedder_stream && s_embedder_output && s_embedder_output->close)
++            s_embedder_output->close(m_embedder_stream);
++        m_embedder_stream = 0;
++    }
++#endif
++
+ #ifdef AK_OS_EMSCRIPTEN
+     enum class Step {
+         Again,
+@@ -313,11 +376,11 @@ private:
+                             set_state_while_locked(StreamState::Underrun);
+                         else
+                             wake_at_played_frame = m_frames_written;
+-                    } else if (m_frames_written - frames_played <= m_target_lookahead_frames - PERIOD_FRAMES) {
++                    } else if (m_frames_written - frames_played <= m_target_lookahead_frames - m_period_frames) {
+                         frames_to_request = m_target_lookahead_frames - (m_frames_written - frames_played);
+                         m_data_notified = false;
+                     } else {
+-                        wake_at_played_frame = m_frames_written - m_target_lookahead_frames + PERIOD_FRAMES;
++                        wake_at_played_frame = m_frames_written - m_target_lookahead_frames + m_period_frames;
+                     }
+                     break;
+                 case StreamState::Draining:
+@@ -346,6 +409,7 @@ private:
+                 m_request_buffer.resize(requested_frames * channel_count);
+                 auto written_samples = m_data_request_callback(m_request_buffer.span());
+                 auto written_frames = min(requested_frames, written_samples.size() / channel_count);
++                write_to_embedder(written_samples, written_frames, channel_count);
+ 
+                 MutexLocker locker(m_mutex);
+                 if (is_advancing_while_locked()) {
+@@ -365,7 +429,7 @@ private:
+                 auto frames_until_wake = *wake_at_played_frame - frames_played_while_locked(MonotonicTime::now());
+                 if (frames_until_wake <= 0)
+                     return Step::Again;
+-                wait_for = AK::Duration::from_time_units(frames_until_wake, 1, NULL_OUTPUT_SAMPLE_RATE);
++                wait_for = AK::Duration::from_time_units(frames_until_wake, 1, m_sample_rate);
+                 return Step::WaitFor;
+             }
+             if (m_state == StreamState::Suspended || m_state == StreamState::Underrun)
+@@ -404,11 +468,11 @@ private:
+                             set_state_while_locked(StreamState::Underrun);
+                         else
+                             wake_at_played_frame = m_frames_written;
+-                    } else if (m_frames_written - frames_played <= m_target_lookahead_frames - PERIOD_FRAMES) {
++                    } else if (m_frames_written - frames_played <= m_target_lookahead_frames - m_period_frames) {
+                         frames_to_request = m_target_lookahead_frames - (m_frames_written - frames_played);
+                         m_data_notified = false;
+                     } else {
+-                        wake_at_played_frame = m_frames_written - m_target_lookahead_frames + PERIOD_FRAMES;
++                        wake_at_played_frame = m_frames_written - m_target_lookahead_frames + m_period_frames;
+                     }
+                     break;
+                 case StreamState::Draining:
+@@ -457,7 +521,7 @@ private:
+                 // If this wakes before the frame is reached, the next iteration waits for the remainder.
+                 auto frames_until_wake = *wake_at_played_frame - frames_played_while_locked(MonotonicTime::now());
+                 if (frames_until_wake > 0)
+-                    m_wake_condition.wait_for(AK::Duration::from_time_units(frames_until_wake, 1, NULL_OUTPUT_SAMPLE_RATE));
++                    m_wake_condition.wait_for(AK::Duration::from_time_units(frames_until_wake, 1, m_sample_rate));
+             } else if (m_state == StreamState::Suspended || m_state == StreamState::Underrun) {
+                 m_wake_condition.wait();
+             }
+@@ -467,6 +531,8 @@ private:
+ #endif
+ 
+     AudioDataRequestCallback m_data_request_callback;
++    u32 m_sample_rate { 44100 };
++    i64 m_period_frames { 441 };
+     i64 m_target_lookahead_frames { 0 };
+ 
+     mutable Mutex m_mutex;
+@@ -486,6 +552,8 @@ private:
+     Vector<float> m_request_buffer;
+ 
+ #ifdef AK_OS_EMSCRIPTEN
++    u32 m_embedder_stream { 0 };
++    double m_volume { 1 };
+     Core::EventLoop* m_event_loop { nullptr };
+     RefPtr<Core::Timer> m_wake_timer;
+     bool m_step_scheduled { false };
+diff --git a/Libraries/LibMedia/Audio/NullPlaybackStream.h b/Libraries/LibMedia/Audio/NullPlaybackStream.h
+index d9555d3d54..89d27392ca 100644
+--- a/Libraries/LibMedia/Audio/NullPlaybackStream.h
++++ b/Libraries/LibMedia/Audio/NullPlaybackStream.h
+@@ -10,6 +10,21 @@
+ 
+ namespace Audio {
+ 
++#ifdef AK_OS_EMSCRIPTEN
++// Where an embedder that plays audio itself (a page in a browser) takes the null stream's output: open() returns a
++// nonzero stream id for a stream at that rate and channel count, write() gets each period pulled (interleaved floats),
++// control() whether the stream is playing and its volume, close() its end. sample_rate is the rate streams created
++// afterwards run at (the embedder's output rate), 0 for the default.
++struct EmbedderAudioOutput {
++    u32 sample_rate { 0 };
++    u32 (*open)(u32 sample_rate, u32 channel_count) { nullptr };
++    void (*write)(u32 stream, float const* interleaved_samples, size_t frame_count) { nullptr };
++    void (*control)(u32 stream, bool playing, double volume) { nullptr };
++    void (*close)(u32 stream) { nullptr };
++};
++MEDIA_API void set_embedder_audio_output(EmbedderAudioOutput const*);
++#endif
++
+ // A virtual audio output device which pulls audio at wall-clock pace and discards it. This keeps media pipelines
+ // running without requiring an audio server or hardware output device.
+ class MEDIA_API NullPlaybackStream final : public PlaybackStream {

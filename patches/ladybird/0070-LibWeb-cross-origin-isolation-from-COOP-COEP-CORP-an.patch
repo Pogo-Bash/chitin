@@ -1,0 +1,461 @@
+From ba312c44848c3dbc691c3513cad1d5b63f606730 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 10:42:33 -0500
+Subject: [PATCH] LibWeb: cross-origin isolation from COOP/COEP, CORP and COEP
+ enforcement
+
+The window's cross-origin isolated capability follows the top-level
+document's opener policy (same-origin-plus-COEP) and the permissions
+policy's cross-origin-isolated feature (default allowlist 'self', the
+iframe allow attribute); an embedder may set the top-level value for a
+traversable shown as a frame elsewhere. Policy containers from a fetch
+response get their embedder policy (obtain an embedder policy). Fetch
+runs the cross-origin resource policy check for opaque responses, nested
+navigations run it with forNavigation and check the response's
+adherence to the parent's embedder policy. Credentialless reads the
+client's policy container. A frame's error page no longer needs the
+resource template, and a module evaluation rejected in a realm without
+a window is dropped instead of a VERIFY.
+---
+ Libraries/LibWeb/Fetch/Fetching/Fetching.cpp  | 73 ++++++++++++++++-
+ Libraries/LibWeb/Fetch/Fetching/Fetching.h    |  4 +
+ .../Fetch/Infrastructure/HTTP/Requests.cpp    |  4 +-
+ Libraries/LibWeb/HTML/LocalNavigable.cpp      | 35 +++++++-
+ Libraries/LibWeb/HTML/PolicyContainers.cpp    | 48 ++++++++++-
+ Libraries/LibWeb/HTML/PolicyContainers.h      | 12 +++
+ .../LibWeb/HTML/Scripting/ModuleScript.cpp    |  8 +-
+ .../WindowEnvironmentSettingsObject.cpp       | 80 +++++++++++++++++--
+ .../WindowEnvironmentSettingsObject.h         |  4 +
+ 9 files changed, 250 insertions(+), 18 deletions(-)
+
+diff --git a/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp b/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp
+index 5fc224bb6d..3f77ca9f1e 100644
+--- a/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp
++++ b/Libraries/LibWeb/Fetch/Fetching/Fetching.cpp
+@@ -1350,6 +1350,70 @@ GC::Ref<PendingResponse> scheme_fetch(JS::Realm& realm, Infrastructure::FetchPar
+ }
+ 
+ // https://fetch.spec.whatwg.org/#concept-http-fetch
++// https://fetch.spec.whatwg.org/#cross-origin-resource-policy-internal-check
++static bool cross_origin_resource_policy_internal_check_blocks(URL::Origin const& origin, HTML::EmbedderPolicyValue embedder_policy_value, Infrastructure::Response const& response, bool request_mode_is_no_cors, bool for_navigation)
++{
++    // 1. If forNavigation is false and request's mode is not "no-cors", then return allowed.
++    if (!for_navigation && !request_mode_is_no_cors)
++        return false;
++
++    // 2. Let policy be the result of getting `Cross-Origin-Resource-Policy` from response's header list.
++    // 3. If policy is neither `same-origin`, `same-site`, nor `cross-origin`, then set policy to null.
++    auto header = response.header_list()->get("Cross-Origin-Resource-Policy"sv);
++    Optional<StringView> policy;
++    if (header.has_value()) {
++        auto value = header->view().trim_whitespace();
++        if (value.is_one_of("same-origin"sv, "same-site"sv, "cross-origin"sv))
++            policy = value;
++    }
++
++    // 4. If policy is null, then switch on embedderPolicyValue:
++    if (!policy.has_value()) {
++        switch (embedder_policy_value) {
++        case HTML::EmbedderPolicyValue::UnsafeNone:
++            break;
++        case HTML::EmbedderPolicyValue::Credentialless:
++            // Set policy to `same-origin` if response's request-includes-credentials is true, or forNavigation is true.
++            if (response.request_includes_credentials() || for_navigation)
++                policy = "same-origin"sv;
++            break;
++        case HTML::EmbedderPolicyValue::RequireCorp:
++            policy = "same-origin"sv;
++            break;
++        }
++    }
++
++    // 5. Switch on policy:
++    if (!policy.has_value() || *policy == "cross-origin"sv)
++        return false;
++    auto const& url = response.url();
++    if (!url.has_value())
++        return false;
++    auto response_origin = url->origin();
++    if (*policy == "same-origin"sv)
++        return !origin.is_same_origin(response_origin);
++    // "same-site": allowed if origin is schemelessly same site with response's URL's origin and origin's scheme is "https" or
++    // response's URL's scheme is not "https".
++    // AD-HOC: Same site (schemeful) stands in for schemelessly same site.
++    if (origin.is_same_site(response_origin) && (origin.scheme() == "https"sv || url->scheme() != "https"sv))
++        return false;
++    return true;
++}
++
++bool cross_origin_resource_policy_check_blocks(URL::Origin const& origin, HTML::EmbedderPolicy const& embedder_policy, Infrastructure::Response const& response, bool request_mode_is_no_cors, bool for_navigation)
++{
++    // 1. Let embedderPolicy be environment's policy container's embedder policy (given).
++    // 2. If the internal check with origin, "unsafe-none", response, and forNavigation returns blocked, then return blocked.
++    if (cross_origin_resource_policy_internal_check_blocks(origin, HTML::EmbedderPolicyValue::UnsafeNone, response, request_mode_is_no_cors, for_navigation))
++        return true;
++    // 3. FIXME: The report-only check (queue a violation report).
++    // 4. If the internal check with origin, embedderPolicy's value, response, and forNavigation returns blocked, then return blocked.
++    if (cross_origin_resource_policy_internal_check_blocks(origin, embedder_policy.value, response, request_mode_is_no_cors, for_navigation))
++        return true;
++    // 5. Return allowed.
++    return false;
++}
++
+ GC::Ref<PendingResponse> http_fetch(JS::Realm& realm, Infrastructure::FetchParams const& fetch_params, MakeCORSPreflight make_cors_preflight)
+ {
+     dbgln_if(WEB_FETCH_DEBUG, "Fetch: Running 'HTTP fetch' with: fetch_params @ {}, make_cors_preflight = {}",
+@@ -1517,8 +1581,13 @@ GC::Ref<PendingResponse> http_fetch(JS::Realm& realm, Infrastructure::FetchParam
+         //       from the service worker. This is different from the CORS check, as request’s client and the service
+         //       worker can have different embedder policies.
+         if ((request->response_tainting() == Infrastructure::Request::ResponseTainting::Opaque || response->type() == Infrastructure::Response::Type::Opaque)
+-            && false // FIXME: "and the cross-origin resource policy check with request’s origin, request’s client, request’s destination, and actualResponse returns blocked"
+-        ) {
++            && [&] {
++                   // "and the cross-origin resource policy check with request’s origin, request’s client, request’s destination, and actualResponse returns blocked"
++                   auto const* origin = request->origin().get_pointer<URL::Origin>();
++                   if (!origin || !request->client())
++                       return false;
++                   return cross_origin_resource_policy_check_blocks(*origin, request->client()->policy_container()->embedder_policy, *internal_response, request->mode() == Infrastructure::Request::Mode::NoCORS, false) && (dbgln("Fetch: blocked by Cross-Origin-Resource-Policy: {}", request->current_url()), true);
++               }()) {
+             returned_pending_response->resolve(Infrastructure::Response::network_error("Response was blocked by cross-origin resource policy check"_string));
+             return;
+         }
+diff --git a/Libraries/LibWeb/Fetch/Fetching/Fetching.h b/Libraries/LibWeb/Fetch/Fetching/Fetching.h
+index dd5519161e..1e87de98e6 100644
+--- a/Libraries/LibWeb/Fetch/Fetching/Fetching.h
++++ b/Libraries/LibWeb/Fetch/Fetching/Fetching.h
+@@ -50,6 +50,10 @@ GC::Ptr<PendingResponse> main_fetch(JS::Realm&, Infrastructure::FetchParams cons
+ void populate_request_from_client(Infrastructure::Request&);
+ void fetch_response_handover(JS::Realm&, Infrastructure::FetchParams const&, Infrastructure::Response&);
+ GC::Ref<PendingResponse> scheme_fetch(JS::Realm&, Infrastructure::FetchParams const&);
++// https://fetch.spec.whatwg.org/#cross-origin-resource-policy-check
++// True when the check returns blocked. `for_navigation`: a child navigable's response checked against its parent.
++[[nodiscard]] WEB_API bool cross_origin_resource_policy_check_blocks(URL::Origin const& origin, HTML::EmbedderPolicy const& embedder_policy, Infrastructure::Response const& response, bool request_mode_is_no_cors, bool for_navigation);
++
+ GC::Ref<PendingResponse> http_fetch(JS::Realm&, Infrastructure::FetchParams const&, MakeCORSPreflight make_cors_preflight = MakeCORSPreflight::No);
+ WEB_API GC::Ptr<PendingResponse> http_redirect_fetch(JS::Realm&, Infrastructure::FetchParams const&, Infrastructure::Response&);
+ GC::Ref<PendingResponse> http_network_or_cache_fetch(JS::Realm&, Infrastructure::FetchParams const&, IsAuthenticationFetch is_authentication_fetch = IsAuthenticationFetch::No, IsNewConnectionFetch is_new_connection_fetch = IsNewConnectionFetch::No);
+diff --git a/Libraries/LibWeb/Fetch/Infrastructure/HTTP/Requests.cpp b/Libraries/LibWeb/Fetch/Infrastructure/HTTP/Requests.cpp
+index 777bb91012..367c6cfec7 100644
+--- a/Libraries/LibWeb/Fetch/Infrastructure/HTTP/Requests.cpp
++++ b/Libraries/LibWeb/Fetch/Infrastructure/HTTP/Requests.cpp
+@@ -379,7 +379,9 @@ bool Request::cross_origin_embedder_policy_allows_credentials() const
+         return true;
+ 
+     // 4. If request’s client’s policy container’s embedder policy’s value is not "credentialless", then return true.
+-    if (m_policy_container.has<GC::Ref<HTML::PolicyContainer>>() && m_policy_container.get<GC::Ref<HTML::PolicyContainer>>()->embedder_policy.value != HTML::EmbedderPolicyValue::Credentialless)
++    // NB: The client's policy container (the request's own is "client" until fetch sets it).
++    auto policy_container = m_policy_container.has<GC::Ref<HTML::PolicyContainer>>() ? m_policy_container.get<GC::Ref<HTML::PolicyContainer>>() : m_client->policy_container();
++    if (policy_container->embedder_policy.value != HTML::EmbedderPolicyValue::Credentialless)
+         return true;
+ 
+     // 5. If request’s origin is same origin with request’s current URL’s origin and request’s redirect-taint is not
+diff --git a/Libraries/LibWeb/HTML/LocalNavigable.cpp b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+index 690c659930..95f409f627 100644
+--- a/Libraries/LibWeb/HTML/LocalNavigable.cpp
++++ b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+@@ -2491,9 +2491,19 @@ static void perform_navigation_params_fetch(JS::Realm& realm, GC::Ref<Navigation
+             }
+         }
+ 
+-        // 13. FIXME: If response is not a network error, navigable is a child navigable, and the result of performing a cross-origin resource policy check
++        // 13. If response is not a network error, navigable is a child navigable, and the result of performing a cross-origin resource policy check
+         //    with navigable's container document's origin, navigable's container document's relevant settings object, request's destination, response,
+         //    and true is blocked, then set response to a network error and break.
++        if (!state_holder->response->is_network_error() && state_holder->navigable->parent()) {
++            if (auto container_document = state_holder->navigable->container_document();
++                container_document && Fetch::Fetching::cross_origin_resource_policy_check_blocks(container_document->origin(), container_document->policy_container()->embedder_policy, *state_holder->response, false, true)) {
++                dbgln("Navigation: a frame blocked by Cross-Origin-Resource-Policy");
++                state_holder->fetch_controller->stop_fetch();
++                state_holder->response = Fetch::Infrastructure::Response::network_error(realm.vm(), "Blocked by Cross-Origin-Resource-Policy"_string);
++                fetch_completion_steps->function()();
++                return;
++            }
++        }
+         // NOTE: Here we're running the cross-origin resource policy check against the parent navigable rather than navigable itself
+         //       This is because we care about the same-originness of the embedded content against the parent context, not the navigation source.
+ 
+@@ -3168,7 +3178,7 @@ void LocalNavigable::queue_navigation_and_traversal_task_for_session_history_ent
+         // 4. Otherwise, if any of the following are true:
+         //  - navigationParams is null;
+         //  - the result of should navigation response to navigation request of type in target be blocked by Content Security Policy? given navigationParams's request, navigationParams's response, navigationParams's policy container's CSP list, cspNavigationType, and navigable is "Blocked";
+-        //  - FIXME: navigationParams's reserved environment is non-null and the result of checking a navigation response's adherence to its embedder policy given navigationParams's response, navigable, and navigationParams's policy container's embedder policy is false; or
++        //  - navigationParams's reserved environment is non-null and the result of checking a navigation response's adherence to its embedder policy given navigationParams's response, navigable, and navigationParams's policy container's embedder policy is false; or
+         //  - the result of checking a navigation response's adherence to `X-Frame-Options` given navigationParams's response, navigable, navigationParams's policy container's CSP list, and navigationParams's origin is false,
+         //    then:
+         else if (navigation_params.visit(
+@@ -3178,6 +3188,20 @@ void LocalNavigable::queue_navigation_and_traversal_task_for_session_history_ent
+                          if (csp_result == ContentSecurityPolicy::Directives::Directive::Result::Blocked)
+                              return true;
+ 
++                         // https://html.spec.whatwg.org/multipage/browsers.html#check-a-navigation-response's-adherence-to-its-embedder-policy
++                         // 1. If navigable is not a child navigable, then return true.
++                         // 2. Let parentPolicy be navigable's container document's policy container's embedder policy.
++                         // 3. FIXME: Report-only values (violation reports).
++                         // 4. If parentPolicy's value is not "unsafe-none" and responsePolicy's value is "unsafe-none", then return false.
++                         if (parent()) {
++                             if (auto container_document = this->container_document();
++                                 container_document && container_document->policy_container()->embedder_policy.value != EmbedderPolicyValue::UnsafeNone
++                                 && navigation_params->policy_container->embedder_policy.value == EmbedderPolicyValue::UnsafeNone) {
++                                 dbgln("Navigation: a frame blocked by its parent's Cross-Origin-Embedder-Policy (the frame has none)");
++                                 return true;
++                             }
++                         }
++
+                          // FIXME: Pass in navigationParams's policy container's CSP list
+                          return !check_a_navigation_responses_adherence_to_x_frame_options(navigation_params->response, this, navigation_params->policy_container->csp_list, navigation_params->origin);
+                      },
+@@ -3189,8 +3213,11 @@ void LocalNavigable::queue_navigation_and_traversal_task_for_session_history_ent
+             // AD-HOC: Name the URL that actually failed to load: The last URL the navigation was redirected to, if
+             //         any — rather than the URL it started at.
+             auto error_url = output->redirected_url.value_or(url);
+-            auto error_html = load_error_page(error_url, error_message_utf8).release_value_but_fixme_should_propagate_errors();
+-            output->document = create_document_for_inline_content(this, navigation_id, navigation_timing_type, user_involvement, output->inline_content_origin.value(), [this, error_html](auto& document) {
++            // AD-HOC: An embedder without Ladybird's resource files (the error page template) gets a bare error document rather
++            //         than a crash: a frame whose response was refused (COEP, X-Frame-Options, CSP) shows an empty page.
++            auto error_page = load_error_page(error_url, error_message_utf8);
++            auto error_html = error_page.is_error() ? "<!doctype html><title>Error</title>"_string : error_page.release_value();
++            output->document = create_document_for_inline_content(this, navigation_id, navigation_timing_type, user_involvement, output->inline_content_origin.has_value() ? *output->inline_content_origin : URL::Origin::create_opaque(), [this, error_html](auto& document) {
+                 auto scripting_mode = document.is_scripting_enabled() ? HTML::ParserScriptingMode::Normal : HTML::ParserScriptingMode::Disabled;
+                 auto parser = HTMLParser::create_from_byte_string(document, error_html, scripting_mode, "utf-8"sv);
+                 document.set_url(URL::about_error());
+diff --git a/Libraries/LibWeb/HTML/PolicyContainers.cpp b/Libraries/LibWeb/HTML/PolicyContainers.cpp
+index d53f693af1..00781447a9 100644
+--- a/Libraries/LibWeb/HTML/PolicyContainers.cpp
++++ b/Libraries/LibWeb/HTML/PolicyContainers.cpp
+@@ -13,6 +13,7 @@
+ #include <LibWeb/Fetch/Infrastructure/URL.h>
+ #include <LibWeb/HTML/PolicyContainers.h>
+ #include <LibWeb/ReferrerPolicy/AbstractOperations.h>
++#include <LibWeb/SecureContexts/AbstractOperations.h>
+ #include <LibWebCommon/HTML/SerializedPolicyContainer.h>
+ 
+ namespace Web::HTML {
+@@ -50,8 +51,12 @@ GC::Ref<PolicyContainer> create_a_policy_container_from_a_fetch_response(GC::Ref
+     // 3. Set result's CSP list to the result of parsing a response's Content Security Policies given response.
+     result->csp_list = ContentSecurityPolicy::Policy::parse_a_responses_content_security_policies(heap, response);
+ 
+-    // FIXME: 4. If environment is non-null, then set result's embedder policy to the result of obtaining an embedder
+-    //           policy given response and environment. Otherwise, set it to "unsafe-none".
++    // 4. If environment is non-null, then set result's embedder policy to the result of obtaining an embedder
++    //    policy given response and environment. Otherwise, set it to "unsafe-none".
++    // AD-HOC: The navigation passes no environment (its reserved client is not always set up); the response's URL being
++    //         potentially trustworthy stands in for the environment being a secure context.
++    if (auto const& url = response->url(); url.has_value())
++        result->embedder_policy = obtain_an_embedder_policy(*response->header_list(), SecureContexts::is_url_potentially_trustworthy(*url) == SecureContexts::Trustworthiness::PotentiallyTrustworthy);
+ 
+     // 5. Set result's referrer policy to the result of parsing the `Referrer-Policy` header given response.
+     //    [REFERRERPOLICY]
+@@ -65,6 +70,45 @@ GC::Ref<PolicyContainer> create_a_policy_container_from_a_fetch_response(GC::Ref
+     return result;
+ }
+ 
++EmbedderPolicy obtain_an_embedder_policy(HTTP::HeaderList const& headers, bool secure_context)
++{
++    // 1. Let policy be a new embedder policy.
++    EmbedderPolicy policy;
++
++    // 2. If environment is a non-secure context, then return policy.
++    if (!secure_context)
++        return policy;
++
++    // AD-HOC: The spec gets these headers as structured field items; a token up to any parameters (';') is what decides the
++    //         value (the "report-to" parameter is not read).
++    auto token = [&](StringView name) -> Optional<EmbedderPolicyValue> {
++        auto header = headers.get(name);
++        if (!header.has_value())
++            return {};
++        auto value = header->view();
++        if (auto semicolon = value.find(';'); semicolon.has_value())
++            value = value.substring_view(0, *semicolon);
++        value = value.trim_whitespace();
++        if (value == "require-corp"sv)
++            return EmbedderPolicyValue::RequireCorp;
++        if (value == "credentialless"sv)
++            return EmbedderPolicyValue::Credentialless;
++        return {};
++    };
++
++    // 3. Let parsedItem be the result of getting a structured field value with `Cross-Origin-Embedder-Policy` and "item".
++    // 4. If parsedItem is non-null and contains a supported value, set policy's value to it.
++    if (auto value = token("Cross-Origin-Embedder-Policy"sv); value.has_value())
++        policy.value = *value;
++
++    // 5. The same for `Cross-Origin-Embedder-Policy-Report-Only` and policy's report only value.
++    if (auto value = token("Cross-Origin-Embedder-Policy-Report-Only"sv); value.has_value())
++        policy.report_only_value = *value;
++
++    // 6. Return policy.
++    return policy;
++}
++
+ GC::Ref<PolicyContainer> create_a_policy_container_from_serialized_policy_container(SerializedPolicyContainer const& serialized_policy_container)
+ {
+     auto& heap = GC::Heap::the();
+diff --git a/Libraries/LibWeb/HTML/PolicyContainers.h b/Libraries/LibWeb/HTML/PolicyContainers.h
+index 2fea7f3076..f5a6ee77cc 100644
+--- a/Libraries/LibWeb/HTML/PolicyContainers.h
++++ b/Libraries/LibWeb/HTML/PolicyContainers.h
+@@ -9,6 +9,7 @@
+ 
+ #include <AK/Utf16String.h>
+ #include <LibGC/CellAllocator.h>
++#include <LibHTTP/HeaderList.h>
+ #include <LibJS/Heap/Cell.h>
+ #include <LibURL/Forward.h>
+ #include <LibWeb/Fetch/Infrastructure/HTTP/Requests.h>
+@@ -74,4 +75,15 @@ private:
+ 
+ [[nodiscard]] GC::Ref<PolicyContainer> create_a_policy_container_from_serialized_policy_container(SerializedPolicyContainer const&);
+ 
++// https://html.spec.whatwg.org/multipage/browsers.html#obtain-an-embedder-policy
++// AD-HOC: Given the response's header list and whether the environment it is for is a secure context (the callers have
++//         the response's URL, not always an environment).
++[[nodiscard]] WEB_API EmbedderPolicy obtain_an_embedder_policy(HTTP::HeaderList const&, bool secure_context);
++
++// https://html.spec.whatwg.org/multipage/browsers.html#compatible-with-cross-origin-isolation
++[[nodiscard]] inline bool is_compatible_with_cross_origin_isolation(EmbedderPolicyValue value)
++{
++    return value == EmbedderPolicyValue::Credentialless || value == EmbedderPolicyValue::RequireCorp;
++}
++
+ }
+diff --git a/Libraries/LibWeb/HTML/Scripting/ModuleScript.cpp b/Libraries/LibWeb/HTML/Scripting/ModuleScript.cpp
+index 99381949a8..9bb31b5df1 100644
+--- a/Libraries/LibWeb/HTML/Scripting/ModuleScript.cpp
++++ b/Libraries/LibWeb/HTML/Scripting/ModuleScript.cpp
+@@ -372,7 +372,13 @@ GC::Ptr<WebIDL::Promise> ModuleScript::run(PreventErrorReporting prevent_error_r
+         HTML::TemporaryExecutionContext execution_context { realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes };
+         WebIDL::upon_rejection(*evaluation_promise, GC::create_function(GC::Heap::the(), [&realm](JS::Value reason) -> WebIDL::ExceptionOr<JS::Value> {
+             auto* window_or_worker = window_or_worker_global_scope_from_global_object(realm.global_object());
+-            VERIFY(window_or_worker);
++            // AD-HOC: An embedder whose module scripts run against a realm without a Window or a WorkerGlobalScope (a frame
++            //         torn down while its module was evaluating) has nowhere to report the exception: it is dropped, as it
++            //         would be with the frame's global gone.
++            if (!window_or_worker) {
++                dbgln("ModuleScript: an evaluation rejected in a realm without a window; not reported");
++                return JS::js_undefined();
++            }
+             window_or_worker->report_an_exception(reason);
+             return JS::js_undefined();
+         }));
+diff --git a/Libraries/LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.cpp b/Libraries/LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.cpp
+index 391fd09815..dc31da8edd 100644
+--- a/Libraries/LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.cpp
++++ b/Libraries/LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.cpp
+@@ -9,7 +9,10 @@
+ #include <LibWeb/Bindings/PrincipalHostDefined.h>
+ #include <LibWeb/Bindings/Wrappable.h>
+ #include <LibWeb/DOM/Document.h>
++#include <LibURL/Parser.h>
++#include <LibWeb/HTML/AttributeNames.h>
+ #include <LibWeb/HTML/BrowsingContext.h>
++#include <LibWeb/HTML/NavigableContainer.h>
+ #include <LibWeb/HTML/LocalNavigable.h>
+ #include <LibWeb/HTML/Scripting/Environments.h>
+ #include <LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.h>
+@@ -151,20 +154,81 @@ double WindowEnvironmentSettingsObject::time_origin() const
+     return m_window->associated_document().load_timing_info().navigation_start_time;
+ }
+ 
++static Optional<bool> s_top_level_cross_origin_isolation_override;
++
++void set_top_level_cross_origin_isolation_override(Optional<bool> value)
++{
++    s_top_level_cross_origin_isolation_override = value;
++}
++
++// https://html.spec.whatwg.org/multipage/iframe-embed-object.html#allowed-to-use, for the "cross-origin-isolated" feature
++// (https://w3c.github.io/webappsec-permissions-policy/, default allowlist 'self').
++// AD-HOC: A permissions policy reduced to this one feature: a frame inherits it when its container's `allow` attribute
++//         allows the frame's origin ('src' or no allowlist: the frame's own, '*', 'self': the container document's, origins),
++//         or, without a declaration, when the frame is same origin with its container document (the default 'self'). The
++//         Permissions-Policy header is not read.
++static bool is_allowed_to_use_cross_origin_isolated(DOM::Document const& document)
++{
++    auto navigable = document.navigable();
++    if (!navigable || !navigable->parent())
++        return true;
++    auto container_document = navigable->container_document();
++    if (!container_document || !is_allowed_to_use_cross_origin_isolated(*container_document))
++        return false;
++    auto const& origin = document.origin();
++    auto container = navigable->container();
++    auto allow_attribute = container ? container->get_attribute(AttributeNames::allow) : Optional<Utf16String> {};
++    if (allow_attribute.has_value()) {
++        auto allow = allow_attribute->to_utf8_but_should_be_ported_to_utf16();
++        for (auto directive : allow.bytes_as_string_view().split_view(';')) {
++            auto parts = directive.split_view_if(is_ascii_space);
++            if (parts.is_empty() || parts[0] != "cross-origin-isolated"sv)
++                continue;
++            if (parts.size() == 1)
++                return true; // 'src'
++            for (size_t i = 1; i < parts.size(); ++i) {
++                auto token = parts[i];
++                if (token == "*"sv || token == "'src'"sv)
++                    return true;
++                if (token == "'self'"sv && origin.is_same_origin(container_document->origin()))
++                    return true;
++                if (auto url = URL::Parser::basic_parse(token); url.has_value() && origin.is_same_origin(url->origin()))
++                    return true;
++            }
++            return false;
++        }
++    }
++    return origin.is_same_origin(container_document->origin());
++}
++
+ // https://html.spec.whatwg.org/multipage/window-object.html#script-settings-for-window-objects:concept-settings-object-cross-origin-isolated-capability
+ CanUseCrossOriginIsolatedAPIs WindowEnvironmentSettingsObject::cross_origin_isolated_capability() const
+ {
+-    // FIXME: Return true if both of the following hold, and false otherwise:
+-    //          1. realm's agent cluster's cross-origin-isolation mode is "concrete", and
+-    //          2. window's associated Document is allowed to use the "cross-origin-isolated" feature.
+-    // AD-HOC: Until we track an agent cluster's cross-origin-isolation mode (point 1) or the "cross-origin-isolated"
+-    //         feature (point 2), we approximate this from the associated Document's cross-origin opener policy: It is
+-    //         "same-origin-plus-COEP" exactly when the document was served (in a secure context) with COOP:same-origin
+-    //         and COEP:require-corp — the condition for cross-origin isolation.
++    // Return true if both of the following hold, and false otherwise:
++    //   1. realm's agent cluster's cross-origin-isolation mode is "concrete", and
++    //   2. window's associated Document is allowed to use the "cross-origin-isolated" feature.
++    // AD-HOC: An agent cluster's cross-origin-isolation mode is not tracked: it is "concrete" when the top-level
++    //         traversable's active document was served (in a secure context) with COOP: same-origin and a COEP compatible
++    //         with cross-origin isolation (its opener policy "same-origin-plus-COEP"), which is what a browsing context group
++    //         gets in Chrome. An embedder that shows this traversable as a frame of a document elsewhere says what that
++    //         chain earns (set_top_level_cross_origin_isolation_override).
+     // NB: This can be called before the window's document is associated (e.g., via time coarsening during setup) — so,
+     //     we guard against a null document here.
+     auto document = m_window ? m_window->associated_document_if_any() : nullptr;
+-    if (document && document->opener_policy().value == OpenerPolicyValue::SameOriginPlusCOEP)
++    if (!document)
++        return CanUseCrossOriginIsolatedAPIs::No;
++    auto navigable = document->navigable();
++    GC::Ptr<DOM::Document> top = document;
++    if (navigable) {
++        auto local_top = as_if<LocalNavigable>(*navigable->top_level_traversable());
++        top = local_top ? local_top->active_document() : nullptr;
++    }
++    if (!top)
++        return CanUseCrossOriginIsolatedAPIs::No;
++    bool concrete = s_top_level_cross_origin_isolation_override.has_value()
++        ? *s_top_level_cross_origin_isolation_override
++        : top->opener_policy().value == OpenerPolicyValue::SameOriginPlusCOEP;
++    if (concrete && is_allowed_to_use_cross_origin_isolated(*document))
+         return CanUseCrossOriginIsolatedAPIs::Yes;
+     return CanUseCrossOriginIsolatedAPIs::No;
+ }
+diff --git a/Libraries/LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.h b/Libraries/LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.h
+index 30a9709262..6bd6b1eb7d 100644
+--- a/Libraries/LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.h
++++ b/Libraries/LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.h
+@@ -38,4 +38,8 @@ private:
+     Optional<u64> m_agent_cluster_id;
+ };
+ 
++// The cross-origin isolation of the top-level traversable's agent cluster as an embedder decides it (a traversable shown as a
++// frame of a document elsewhere); empty: from the top-level document's opener policy.
++WEB_API void set_top_level_cross_origin_isolation_override(Optional<bool>);
++
+ }
+-- 
+2.50.1 (Apple Git-155)
+

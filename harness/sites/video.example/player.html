@@ -1,0 +1,114 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<title>audio player</title>
+<style>body { margin: 0; font: 14px sans-serif } #bar { width: 400px; height: 6px; background: #ccc } #fill { height: 6px; width: 0; background: #1db954 }</style>
+<button id="play">Play</button>
+<div id="bar"><div id="fill"></div></div>
+<span id="time">0:00</span>
+<script>
+// An audio-only player shaped like a streaming service's web player (docs/eme.md, docs/user-tests/spotify.md): the element
+// is made by script and never put in the document, MediaKeys are set before the media (?keys=before, default) or not at
+// all (?keys=none), the Opus track (opus-6s-cenc.webm, Clear Key; ?clear=1 opus-6s.webm) is appended in small chunks
+// back to back as they arrive, play() is called straight after the first append, and a requestAnimationFrame loop draws the
+// progress bar from currentTime, duration and buffered. ?el=audio|video picks the element.
+window.seen = [];
+window.times = [];
+window.ticks = 0;
+const q = new URLSearchParams(location.search);
+const keysMode = q.get('keys') || 'before';
+const clear = q.get('clear') === '1';
+// ?fmt=mp4: the WPT AAC-LC clip (fragmented MP4, CENC with Clear Key; tests/fixtures/media/aac-*-wpt.mp4), as Spotify streams.
+const mp4 = q.get('fmt') === 'mp4';
+const MIME = mp4 ? 'audio/mp4; codecs="mp4a.40.2"' : 'audio/webm; codecs="opus"';
+const FILE = mp4 ? (clear ? 'aac-wpt.mp4' : 'aac-enc-wpt.mp4') : (clear ? 'opus-6s.webm' : 'opus-6s-cenc.webm');
+const LICENSE = mp4 ? 'clearkey-license-aac.json' : 'clearkey-license.json';
+const shaka = q.get('flow') === 'shaka';
+const v = document.createElement(q.get('el') || 'audio');
+v.preload = 'auto';
+if (shaka) { // what Shaka Player (Spotify's) does to the element it makes
+    v.controls = false; v.loop = false; v.style.cssText = ''; v.width = 640;
+}
+const errorOf = (e) => (e && e.name ? e.name + ': ' + e.message : String(e));
+for (const name of ['loadstart', 'durationchange', 'loadedmetadata', 'loadeddata', 'canplay', 'play', 'playing', 'pause', 'ended', 'error'])
+    v.addEventListener(name, () => seen.push(name + ':' + v.readyState));
+v.addEventListener('timeupdate', () => times.push(Math.round(v.currentTime * 100) / 100));
+const fill = document.getElementById('fill'), label = document.getElementById('time');
+function draw() {
+    ticks++;
+    const d = v.duration, t = v.currentTime, b = v.buffered;
+    const end = b.length ? b.end(b.length - 1) : 0;
+    fill.style.width = (isFinite(d) && d > 0 ? Math.min(100, (t / d) * 100) : 0) + '%';
+    if (shaka)
+        window.extra = [v.seekable.length, v.played.length, v.audioTracks ? v.audioTracks.length : -1, v.playbackRate, v.readyState, v.networkState, v.ended, v.error && v.error.code].join(',');
+    label.textContent = Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0') + ' / ' + end.toFixed(1) + ' ' + v.paused;
+    requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+async function start() {
+    const config = [{ initDataTypes: [mp4 ? 'cenc' : 'webm'], audioCapabilities: [{ contentType: MIME }], persistentState: 'optional', distinctiveIdentifier: 'optional' }];
+    if (keysMode !== 'none') {
+        const access = await navigator.requestMediaKeySystemAccess('org.w3.clearkey', config);
+        const keys = await access.createMediaKeys();
+        await v.setMediaKeys(keys);
+        seen.push('mediaKeys ' + (v.mediaKeys === keys));
+        v.addEventListener('encrypted', async (e) => {
+            seen.push('encrypted ' + e.initDataType);
+            if (window.sessionStarted)
+                return;
+            window.sessionStarted = true;
+            const session = keys.createSession();
+            session.addEventListener('message', async () => {
+                await session.update(await (await fetch(LICENSE)).arrayBuffer());
+                seen.push('updated ' + session.keyStatuses.size);
+            });
+            // The WPT clip's pssh is not Clear Key's: ask by key ID, as the WPT tests do.
+            if (mp4)
+                await session.generateRequest('keyids', new TextEncoder().encode(JSON.stringify({ kids: ['rRP56ivmmLh19QSo48zqZA'] })));
+            else
+                await session.generateRequest(e.initDataType, e.initData);
+        });
+    }
+    const ms = new MediaSource();
+    v.src = URL.createObjectURL(ms);
+    await new Promise((r) => ms.addEventListener('sourceopen', r, { once: true }));
+    seen.push('sourceopen');
+    const sb = ms.addSourceBuffer(MIME);
+    if (shaka) {
+        ms.duration = mp4 ? 20 : 6;
+        v.currentTime = 0;
+    }
+    const bytes = new Uint8Array(await (await fetch(FILE)).arrayBuffer());
+    const queue = [];
+    for (let at = 0; at < bytes.length; at += 4096)
+        queue.push(bytes.slice(at, at + 4096));
+    let first = true;
+    const next = () => {
+        if (queue.length) {
+            if (shaka) {
+                if (first)
+                    sb.abort();
+                sb.appendWindowStart = 0;
+                sb.appendWindowEnd = Infinity;
+                sb.timestampOffset = 0;
+                v.playbackRate = 1;
+            }
+            sb.appendBuffer(queue.shift());
+            if (first) {
+                first = false;
+                v.play().then(() => seen.push('play resolved'), (e) => seen.push('play rejected ' + e.name));
+            }
+        } else if (ms.readyState === 'open') {
+            ms.endOfStream();
+            seen.push('endOfStream');
+        }
+    };
+    sb.addEventListener('updateend', next);
+    sb.addEventListener('error', () => { if (!seen.includes('sb error')) seen.push('sb error'); });
+    next();
+}
+document.getElementById('play').addEventListener('click', () => start().catch((e) => seen.push('failed ' + errorOf(e))));
+if (q.get('auto') === '1')
+    start().catch((e) => seen.push('failed ' + errorOf(e)));
+</script>

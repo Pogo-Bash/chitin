@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo@example.invalid>
+Date: Wed, 21 Oct 2026 22:14:02 -0500
+Subject: [PATCH 23/23] LibWeb: on Emscripten an outermost classic script stays
+ document.currentScript until the embedder's microtasks have run
+
+Running a classic script ends with a microtask checkpoint, before currentScript goes back to its old value. The embedder's JavaScript engine drains its promise jobs when its call stack unwinds, after the task, so a continuation of the script's promises (Turbopack's runtime reads document.currentScript in one) found it reset. The embedder is asked (ganglion_host_microtask_turn_end_request) to call release_current_script_after_microtasks from a task of its own.
+---
+ Libraries/LibWeb/HTML/HTMLScriptElement.cpp | 44 +++++++++++++++++++++
+ Libraries/LibWeb/HTML/HTMLScriptElement.h   |  3 ++
+ 2 files changed, 47 insertions(+)
+
+diff --git a/Libraries/LibWeb/HTML/HTMLScriptElement.cpp b/Libraries/LibWeb/HTML/HTMLScriptElement.cpp
+index 027627df9b..fbe92afde5 100644
+--- a/Libraries/LibWeb/HTML/HTMLScriptElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLScriptElement.cpp
+@@ -28,8 +28,25 @@
+ #include <LibWebCommon/Infra/Strings.h>
+ #include <LibWebCommon/MimeSniff/MimeType.h>
+ 
++#ifdef AK_OS_EMSCRIPTEN
++extern "C" void ganglion_host_microtask_turn_end_request(void);
++#endif
++
+ namespace Web::HTML {
+ 
++#ifdef AK_OS_EMSCRIPTEN
++static bool s_current_script_held_for_microtasks = false;
++
++// The embedder's microtasks following the last outermost script have run: currentScript is null again.
++void HTMLScriptElement::release_current_script_after_microtasks(DOM::Document& document)
++{
++    if (!s_current_script_held_for_microtasks)
++        return;
++    s_current_script_held_for_microtasks = false;
++    document.set_current_script({}, nullptr);
++}
++#endif
++
+ GC_DEFINE_ALLOCATOR(HTMLScriptElement);
+ 
+ static GC::Ref<DOM::Event> create_event_for_element(HTMLElement& element, Utf16FlyString const& event_name)
+@@ -156,6 +173,14 @@ void HTMLScriptElement::execute_script()
+     // 5. Switch on el's type:
+     // -> "classic"
+     if (m_script_type == ScriptType::Classic) {
++#ifdef AK_OS_EMSCRIPTEN
++        // A previous outermost script left itself as currentScript for the microtasks the embedder's engine runs after it
++        // (see below): that is not a script running now.
++        if (s_current_script_held_for_microtasks) {
++            s_current_script_held_for_microtasks = false;
++            document->set_current_script({}, nullptr);
++        }
++#endif
+         // 1. Let oldCurrentScript be the value to which document's currentScript object was most recently set.
+         auto old_current_script = document->current_script();
+         // 2. If el's root is not a shadow root, then set document's currentScript attribute to el. Otherwise, set it to null.
+@@ -173,10 +198,29 @@ void HTMLScriptElement::execute_script()
+         (void)as<ClassicScript>(*m_result.get<GC::Ref<Script>>()).run();
+ 
+         // 4. Set document's currentScript attribute to oldCurrentScript.
++#ifdef AK_OS_EMSCRIPTEN
++        // Running the script ends with "clean up after running script": a microtask checkpoint, before this step. The page's
++        // promise jobs run in the embedder's JavaScript engine, which drains them when the call stack above the engine unwinds,
++        // after this task: they would find currentScript reset (Turbopack's runtime reads it in a promise continuation of the
++        // chunk that registered it). An outermost script therefore stays currentScript until the embedder says its microtasks
++        // have run (release_current_script_after_microtasks).
++        if (!old_current_script) {
++            s_current_script_held_for_microtasks = true;
++            ganglion_host_microtask_turn_end_request();
++        } else
++            document->set_current_script({}, old_current_script);
++#else
+         document->set_current_script({}, old_current_script);
++#endif
+     }
+     // -> "module"
+     else if (m_script_type == ScriptType::Module) {
++#ifdef AK_OS_EMSCRIPTEN
++        if (s_current_script_held_for_microtasks) {
++            s_current_script_held_for_microtasks = false;
++            document->set_current_script({}, nullptr);
++        }
++#endif
+         // 1. Assert: document's currentScript attribute is null.
+         VERIFY(document->current_script() == nullptr);
+ 
+diff --git a/Libraries/LibWeb/HTML/HTMLScriptElement.h b/Libraries/LibWeb/HTML/HTMLScriptElement.h
+index b961ae9da5..c54e9dc79c 100644
+--- a/Libraries/LibWeb/HTML/HTMLScriptElement.h
++++ b/Libraries/LibWeb/HTML/HTMLScriptElement.h
+@@ -39,6 +39,9 @@ public:
+     void prepare_script(Badge<XMLDocumentBuilder, HTMLParser>) { prepare_script(); }
+ 
+     void execute_script();
++
++    // Emscripten: see execute_script. Called by the embedder from a task after the page's microtasks have run.
++    static void release_current_script_after_microtasks(DOM::Document&);
+     void stop_delaying_document_load_event(Badge<DOM::Document>) { m_document_load_event_delayer.clear(); }
+ 
+     bool is_parser_inserted() const { return !!m_parser_document; }

@@ -1,0 +1,42 @@
+<!doctype html>
+<title>nan payloads</title>
+<script>
+// NaNs with payload and sign bits, the kind a Float64Array or DataView read hands a page (a file system's inode
+// record kept in IndexedDB had one), given to the engine through IndexedDB, history state, attributes and events.
+// Each must stay a NaN; none may be taken for another value.
+window.seen = [];
+const f = new Float64Array(4), w = new Uint32Array(f.buffer);
+w[1] = 0xFFF80000;               // sign bit set: the top 16 bits are 0xFFF8, a cell tag pattern
+w[2] = 1; w[3] = 0xFFF90000;     // the object tag
+w[5] = 0x7FF90000;               // the boolean tag
+w[7] = 0x7FFA0000;               // the int32 tag
+const nans = Array.from(f);
+const allNaN = (v) => v.length === 4 && v.every((x) => Number.isNaN(x));
+seen.push('host=' + allNaN(nans));
+const req = indexedDB.open('nan', 1);
+req.onupgradeneeded = () => req.result.createObjectStore('s');
+req.onsuccess = () => {
+  const db = req.result;
+  const tx = db.transaction('s', 'readwrite');
+  try {
+    tx.objectStore('s').put({ version: nans[0], list: nans, nested: { a: nans[1], b: [nans[2], nans[3]] } }, 'node');
+  } catch (e) { seen.push('put=' + e.name); }
+  tx.oncomplete = () => {
+    const g = db.transaction('s').objectStore('s').get('node');
+    g.onsuccess = () => {
+      const v = g.result;
+      seen.push('idb=' + (Number.isNaN(v.version) && allNaN(v.list) && Number.isNaN(v.nested.a) && v.nested.b.every(Number.isNaN)));
+      history.replaceState({ n: nans }, '');
+      seen.push('history=' + allNaN(history.state.n));
+      seen.push('clone=' + allNaN(structuredClone(nans)));
+      const ev = new CustomEvent('x', { detail: nans[1] });
+      seen.push('detail=' + Number.isNaN(ev.detail));
+      document.body.dataset.n = nans[2];
+      seen.push('attr=' + document.body.getAttribute('data-n'));
+      seen.push('done=1');
+    };
+  };
+  tx.onerror = () => seen.push('error=' + tx.error);
+};
+</script>
+<body></body>

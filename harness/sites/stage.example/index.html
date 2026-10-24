@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>stage</title>
+<script>
+// Classic scripts staged with the segment's service worker (harness/segment/worker.js runScript): bursts of inline scripts,
+// large ones, a same-site frame's, across service worker restarts (tests/chrome/run.mjs stageGroup). Each script records itself.
+window.ran = 0;
+window.burst = (n, bigEvery, bigBytes) => {
+    const before = window.ran;
+    for (let i = 0; i < n; i++) {
+        const s = document.createElement('script');
+        const pad = bigEvery && i % bigEvery === 0 ? '/*' + 'x'.repeat(bigBytes) + '*/' : '';
+        s.textContent = pad + 'window.ran++;';
+        document.body.appendChild(s);
+    }
+    return window.ran - before;
+};
+</script>
+<body><iframe src="/frame.html" width="200" height="100"></iframe>

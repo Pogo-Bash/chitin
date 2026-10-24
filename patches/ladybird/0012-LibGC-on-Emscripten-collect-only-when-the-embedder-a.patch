@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 14:27:14 -0500
+Subject: [PATCH 12/23] LibGC: on Emscripten, collect only when the embedder
+ asks between tasks; no setjmp register capture on wasm
+
+---
+ Libraries/LibGC/Heap.cpp      | 31 +++++++++++++++++++++++++++++++
+ Libraries/LibGC/Heap.h        |  5 +++++
+ Libraries/LibGC/HeapGroup.cpp |  6 ++++++
+ 3 files changed, 42 insertions(+)
+
+diff --git a/Libraries/LibGC/Heap.cpp b/Libraries/LibGC/Heap.cpp
+index 7d6e6ee334..c42e834dce 100644
+--- a/Libraries/LibGC/Heap.cpp
++++ b/Libraries/LibGC/Heap.cpp
+@@ -331,6 +331,15 @@ void Heap::will_allocate(size_t size, TriggersCollection triggers_collection)
+     //     would mark the block's reachable cells and queue the block for the next sweep, the rest of the current sweep
+     //     would then clear those marks, and the next sweep of the block would free cells that are still in use. So an
+     //     allocation made while a block is swept leaves the collection to the first allocation after the sweep.
++#ifdef AK_OS_EMSCRIPTEN
++    // An allocation only notes that a collection is due: the embedder runs it at the next task boundary with
++    // collect_garbage_if_pending(), when no frame of the engine (whose wasm locals a scan cannot see) is live.
++    if (m_block_sweeps_in_progress == 0 && (should_collect_on_every_allocation() || m_allocated_bytes_since_last_gc + size > m_gc_bytes_threshold))
++        m_collection_pending = true;
++    m_allocated_bytes_since_last_gc += size;
++    m_total_allocated_bytes += size;
++    return;
++#endif
+     if (m_block_sweeps_in_progress == 0) {
+         if (should_collect_on_every_allocation()) {
+             m_allocated_bytes_since_last_gc = 0;
+@@ -568,9 +577,15 @@ private:
+ 
+ NO_SANITIZE_ADDRESS AK::JsonObject Heap::dump_graph()
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    // wasm has no registers to spill: locals are invisible to a scan, which is why an embedder collects only
++    // between tasks, when no engine frame is live (Chitin, docs/phase1.md "LibGC on wasm32").
++    ReadonlySpan<FlatPtr> captured_registers;
++#else
+     jmp_buf registers;
+     setjmp(registers);
+     ReadonlySpan<FlatPtr> captured_registers { reinterpret_cast<FlatPtr const*>(registers), sizeof(jmp_buf) / (sizeof(FlatPtr)) };
++#endif
+     return build_graph(captured_registers);
+ }
+ 
+@@ -657,9 +672,15 @@ bool heap_access_is_forbidden_on_this_thread()
+ NO_SANITIZE_ADDRESS void Heap::collect_garbage(CollectionType collection_type, bool print_report)
+ {
+     VERIFY(!heap_access_is_forbidden_on_this_thread());
++#ifdef AK_OS_EMSCRIPTEN
++    // wasm has no registers to spill: locals are invisible to a scan, which is why an embedder collects only
++    // between tasks, when no engine frame is live (Chitin, docs/phase1.md "LibGC on wasm32").
++    ReadonlySpan<FlatPtr> captured_registers;
++#else
+     jmp_buf registers;
+     setjmp(registers);
+     ReadonlySpan<FlatPtr> captured_registers { reinterpret_cast<FlatPtr const*>(registers), sizeof(jmp_buf) / (sizeof(FlatPtr)) };
++#endif
+     run_collection(captured_registers, collection_type, print_report);
+ }
+ 
+@@ -1566,6 +1587,16 @@ void Heap::idle_gc_on_timer()
+     }
+ }
+ 
++bool Heap::collect_garbage_if_pending()
++{
++    if (!m_collection_pending || m_gc_deferrals || m_collecting_garbage)
++        return false;
++    m_collection_pending = false;
++    m_allocated_bytes_since_last_gc = 0;
++    collect_garbage();
++    return true;
++}
++
+ void Heap::defer_gc()
+ {
+     ++m_gc_deferrals;
+diff --git a/Libraries/LibGC/Heap.h b/Libraries/LibGC/Heap.h
+index 1a13ba7e9f..359324f606 100644
+--- a/Libraries/LibGC/Heap.h
++++ b/Libraries/LibGC/Heap.h
+@@ -84,6 +84,10 @@ public:
+     //     they are in the frame it runs in, and the frames below become the scan's floor. The definitions are
+     //     NO_SANITIZE_ADDRESS so that the capture buffer stays on the real stack rather than ASan's fake one.
+     NEVER_INLINE void collect_garbage(CollectionType = CollectionType::CollectGarbage, bool print_report = false);
++    // Runs the collection that allocations since the last one asked for, if any: for an embedder that collects
++    // only between its tasks (Emscripten, where will_allocate() never collects itself).
++    bool collect_garbage_if_pending();
++    bool collection_pending() const { return m_collection_pending; }
+     NEVER_INLINE AK::JsonObject dump_graph();
+ 
+     bool should_collect_on_every_allocation() const { return m_should_collect_on_every_allocation; }
+@@ -292,6 +296,7 @@ private:
+ 
+     size_t m_gc_deferrals { 0 };
+     bool m_should_gc_when_deferral_ends { false };
++    bool m_collection_pending { false };
+ 
+     bool m_collecting_garbage { false };
+     CollectionType m_current_collection_type { CollectionType::CollectGarbage };
+diff --git a/Libraries/LibGC/HeapGroup.cpp b/Libraries/LibGC/HeapGroup.cpp
+index 9a1b84cc21..64a2841361 100644
+--- a/Libraries/LibGC/HeapGroup.cpp
++++ b/Libraries/LibGC/HeapGroup.cpp
+@@ -34,9 +34,15 @@ void HeapGroup::remove(Heap& heap)
+ 
+ NO_SANITIZE_ADDRESS void HeapGroup::collect_garbage(bool print_report)
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    // wasm has no registers to spill: locals are invisible to a scan, which is why an embedder collects only
++    // between tasks, when no engine frame is live (Chitin, docs/phase1.md "LibGC on wasm32").
++    ReadonlySpan<FlatPtr> captured_registers;
++#else
+     jmp_buf registers;
+     setjmp(registers);
+     ReadonlySpan<FlatPtr> captured_registers { reinterpret_cast<FlatPtr const*>(registers), sizeof(jmp_buf) / (sizeof(FlatPtr)) };
++#endif
+     run_collection(captured_registers, print_report);
+ }
+ 

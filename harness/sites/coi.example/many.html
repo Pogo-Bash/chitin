@@ -1,0 +1,38 @@
+<!doctype html><!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<meta charset=utf-8><title>coi many workers</title>
+<p id=s>running</p>
+<script>
+// Many dedicated Workers at once (a machine with a Worker per task), docs/user-tests/plasma.md: 48 Workers each get a shared
+// memory and a Map of compiled WebAssembly modules, answer with a module they compiled themselves, then pass a token round a
+// ring through Atomics.wait/notify alone (no page in between). window.timing has the times, window.result what Chrome compares.
+const N = 48;
+const bytes = new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,127,3,2,1,0,7,5,1,1,102,0,0,10,6,1,4,0,65,7,11]);
+const t0 = performance.now();
+const sab = new SharedArrayBuffer(4 * (N + 1)), i32 = new Int32Array(sab);
+const mods = new Map([['seven', new WebAssembly.Module(bytes)]]);
+const ready = [], back = [];
+let done = null, tReady = 0;
+const workers = [];
+for (let i = 0; i < N; i++) {
+    const w = new Worker('many-worker.js', { name: 'w' + i });
+    w.onmessage = (e) => {
+        const d = e.data;
+        if (d.ready) {
+            ready.push(e.isTrusted ? d.v : 'untrusted');
+            back.push(d.module instanceof WebAssembly.Module && d.modules instanceof Map && d.modules.get('k') instanceof WebAssembly.Module);
+            if (ready.length === N) {
+                tReady = performance.now();
+                for (const x of workers) x.postMessage({ go: true });
+            }
+        } else if (d.ring) {
+            done = d.ring;
+            window.timing = { readyMs: Math.round(tReady - t0), ringMs: Math.round(performance.now() - tReady) };
+            window.result = { workers: ready.length, values: [...new Set(ready)], modulesBack: back.every(Boolean), ring: done, slots: Array.from(i32) };
+            document.getElementById('s').textContent = 'done';
+        }
+    };
+    w.onerror = () => { window.result = { error: 'worker ' + i + ' failed' }; };
+    w.postMessage({ sab, idx: i, n: N, mods });
+    workers.push(w);
+}
+</script>

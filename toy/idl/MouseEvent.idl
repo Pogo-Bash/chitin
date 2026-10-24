@@ -1,0 +1,10 @@
+// Chitin phase-0 subset of Ladybird's Libraries/LibWeb/UIEvents/MouseEvent.idl (BSD-2-Clause, the Ladybird developers).
+// Members kept as written upstream; members the toy does not implement are left out.
+// https://w3c.github.io/uievents/#mouseevent
+[Exposed=Window]
+interface MouseEvent : Event {
+    readonly attribute double clientX;
+    readonly attribute double clientY;
+    readonly attribute short button;
+    readonly attribute unsigned short buttons;
+};

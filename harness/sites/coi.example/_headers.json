@@ -1,0 +1,102 @@
+{
+    "index.html": {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "cred.html": {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "credentialless"
+    },
+    "coeponly.html": {
+        "Cross-Origin-Embedder-Policy": "require-corp"
+    },
+    "cooponly.html": {
+        "Cross-Origin-Opener-Policy": "same-origin"
+    },
+    "plain.html": {},
+    "coi.js": {
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "worker.mjs": {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "dep.mjs": {
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "worker-nocoep.js": {
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "frame.html": {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "frame-nocoep.html": {},
+    "frames.html": {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp"
+    },
+    "pingpong.html": {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "pingpong-worker.js": {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "many.html": {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "many-worker.js": {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "share.html": {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "xhr.html": {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "xhr-worker.js": {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "piece.bin": {
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "idle.html": {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "idle-worker.js": {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "spawn.html": {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "spawn-worker.js": {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "assign.html": {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    },
+    "assign-worker.js": {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+    }
+}

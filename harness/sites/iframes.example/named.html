@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><title>named frames</title></head>
+<body>
+<iframe id="f" name="kid" src="child.html"></iframe>
+<script>
+// Named frames (tests/frame-realms.test.mjs): window[name] and frames[name] are the child's WindowProxy, from the named
+// properties object behind Window.prototype (reCAPTCHA's challenge frame finds its anchor with parent.frames[name]).
+var results = { events: [] };
+window.addEventListener('load', function () { results.events.push('window load'); });
+</script>
+</body></html>

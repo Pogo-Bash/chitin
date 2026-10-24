@@ -1,0 +1,10 @@
+<!doctype html><!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<meta charset=utf-8><title>coi modchild</title>
+<script type=module>
+// The frame removes itself while its module is evaluating; the module's evaluation then rejects in a realm whose window is gone.
+await null;
+parent.results.events.push('child ran');
+parent.document.getElementById('f').remove();
+await null;
+throw new Error('after removal');
+</script>

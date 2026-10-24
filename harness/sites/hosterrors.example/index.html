@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>hosterrors</title>
+<!-- Exceptions that come from the host's V8 (not the engine's) and are not plain Errors: each must be reported with its
+     real class and message, and the page must get its own value back from a catch. -->
+<script>
+window.caught = {};
+try { structuredClone(function () {}); } catch (e) { window.caught.dom = e; }
+try { structuredClone(function () {}); } catch (e) { setTimeout(function () { throw e; }, 1); }
+class AppError extends Error { constructor(m) { super(m); this.name = 'AppError'; } }
+setTimeout(function () { throw new AppError('boom from a subclass'); }, 2);
+const tagged = new Error('boom with a changed tag');
+Object.defineProperty(tagged, Symbol.toStringTag, { value: 'Module' });
+setTimeout(function () { throw tagged; }, 3);
+setTimeout(function () { throw { name: 'Custom', message: 'boom from a bare object', code: 7 }; }, 4);
+setTimeout(function () { throw Object.create(null); }, 5);
+</script>
+</html>

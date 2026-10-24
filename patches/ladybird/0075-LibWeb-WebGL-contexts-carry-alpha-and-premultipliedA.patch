@@ -1,0 +1,205 @@
+From 400fa8cc95ad1b56eba7f10afed3a1e7b4ac263f Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 14:55:05 -0500
+Subject: [PATCH] LibWeb: WebGL contexts carry alpha and premultipliedAlpha to
+ the executor; DEPTH_STENCIL to a WebGL executor as it is
+
+A WebGL implementation as the executor made every drawing buffer RGBA and premultiplied: alpha: false contexts
+reported ALPHA_BITS 8, kept the clear's alpha and blended against it. The two attributes go with depth, stencil and
+antialias through the transport (and the Compositor IPC, where they are carried and not yet used). A WebGL 1
+executor refuses DEPTH24_STENCIL8 renderbuffers, so DEPTH_STENCIL is passed as it is.
+---
+ Libraries/LibWeb/Compositor/CompositorConnection.cpp | 4 ++--
+ Libraries/LibWeb/Compositor/CompositorConnection.h   | 2 +-
+ Libraries/LibWeb/Compositor/CompositorHost.cpp       | 4 ++--
+ Libraries/LibWeb/WebGL/RemoteWebGLTransport.h        | 2 +-
+ Libraries/LibWeb/WebGL/WebGLRenderingContext.cpp     | 4 +++-
+ Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp | 4 +++-
+ Services/Compositor/CanvasHost.cpp                   | 4 ++--
+ Services/Compositor/CanvasHost.h                     | 2 +-
+ Services/Compositor/CompositorWebContentServer.ipc   | 2 +-
+ Services/Compositor/ConnectionFromWebContent.cpp     | 4 ++--
+ Services/Compositor/ConnectionFromWebContent.h       | 2 +-
+ Services/Compositor/OpenGLContext.h                  | 5 +++++
+ 12 files changed, 24 insertions(+), 15 deletions(-)
+
+diff --git a/Libraries/LibWeb/Compositor/CompositorConnection.cpp b/Libraries/LibWeb/Compositor/CompositorConnection.cpp
+index f700654c85..5ce3b2af01 100644
+--- a/Libraries/LibWeb/Compositor/CompositorConnection.cpp
++++ b/Libraries/LibWeb/Compositor/CompositorConnection.cpp
+@@ -556,12 +556,12 @@ void CompositorConnection::hurry_rendering_opportunity(Web::CompositorContextId
+     async_hurry_rendering_opportunity(context_id);
+ }
+ 
+-Optional<Compositing::CanvasId> CompositorConnection::create_webgl_context(Compositing::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias, Vector<String>& out_supported_extensions)
++Optional<Compositing::CanvasId> CompositorConnection::create_webgl_context(Compositing::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias, bool alpha, bool premultiplied_alpha, Vector<String>& out_supported_extensions)
+ {
+     if (!can_send_message_to_compositor())
+         return {};
+ 
+-    auto response = send_sync<Messages::CompositorWebContentServer::CreateWebglContext>(webgl_version, size, depth, stencil, antialias);
++    auto response = send_sync<Messages::CompositorWebContentServer::CreateWebglContext>(webgl_version, size, depth, stencil, antialias, alpha, premultiplied_alpha);
+     out_supported_extensions = response->take_supported_extensions();
+     if (!response->success())
+         return {};
+diff --git a/Libraries/LibWeb/Compositor/CompositorConnection.h b/Libraries/LibWeb/Compositor/CompositorConnection.h
+index 4e8292ff12..883488575f 100644
+--- a/Libraries/LibWeb/Compositor/CompositorConnection.h
++++ b/Libraries/LibWeb/Compositor/CompositorConnection.h
+@@ -76,7 +76,7 @@ public:
+     void hurry_rendering_opportunity(Web::CompositorContextId);
+     void request_screenshot(Web::CompositorContextId, NonnullRefPtr<Gfx::Bitmap>, Function<void()>&&);
+ 
+-    Optional<Compositing::CanvasId> create_webgl_context(Compositing::WebGL::WebGLVersion, Gfx::IntSize, bool depth, bool stencil, bool antialias, Vector<String>& out_supported_extensions);
++    Optional<Compositing::CanvasId> create_webgl_context(Compositing::WebGL::WebGLVersion, Gfx::IntSize, bool depth, bool stencil, bool antialias, bool alpha, bool premultiplied_alpha, Vector<String>& out_supported_extensions);
+     void set_webgl_command_buffer(Compositing::CanvasId, Core::AnonymousBuffer const&);
+     void send_webgl_commands_from_shared_buffer(Compositing::CanvasId, u64 offset, u64 size_in_bytes, u64 flush_sequence_number, Vector<Gfx::DecodedImageFrame> const& bitmaps);
+     bool drain_webgl_command_buffer(Compositing::CanvasId);
+diff --git a/Libraries/LibWeb/Compositor/CompositorHost.cpp b/Libraries/LibWeb/Compositor/CompositorHost.cpp
+index 5c81eb1c93..1e84249b89 100644
+--- a/Libraries/LibWeb/Compositor/CompositorHost.cpp
++++ b/Libraries/LibWeb/Compositor/CompositorHost.cpp
+@@ -136,11 +136,11 @@ public:
+     }
+ 
+ private:
+-    virtual CreateResult create_context(Compositing::WebGL::WebGLVersion webgl_version, Gfx::IntSize initial_size, bool depth, bool stencil, bool antialias) override
++    virtual CreateResult create_context(Compositing::WebGL::WebGLVersion webgl_version, Gfx::IntSize initial_size, bool depth, bool stencil, bool antialias, bool alpha, bool premultiplied_alpha) override
+     {
+         VERIFY(!m_canvas_id.has_value());
+         CreateResult result;
+-        auto canvas_id = m_connection->create_webgl_context(webgl_version, initial_size, depth, stencil, antialias, result.supported_extensions);
++        auto canvas_id = m_connection->create_webgl_context(webgl_version, initial_size, depth, stencil, antialias, alpha, premultiplied_alpha, result.supported_extensions);
+         if (canvas_id.has_value()) {
+             result.success = true;
+             m_canvas_id = *canvas_id;
+diff --git a/Libraries/LibWeb/WebGL/RemoteWebGLTransport.h b/Libraries/LibWeb/WebGL/RemoteWebGLTransport.h
+index 43eb6b557b..f58e0aafee 100644
+--- a/Libraries/LibWeb/WebGL/RemoteWebGLTransport.h
++++ b/Libraries/LibWeb/WebGL/RemoteWebGLTransport.h
+@@ -46,7 +46,7 @@ public:
+     // Set by the context: the executor lost (false) or regained (true) its context outside of a compositor
+     // disconnect, e.g. the host GPU reset.
+     Function<void(bool restored)> on_context_loss_change;
+-    virtual CreateResult create_context(WebGLVersion, Gfx::IntSize initial_size, bool depth, bool stencil, bool antialias) = 0;
++    virtual CreateResult create_context(WebGLVersion, Gfx::IntSize initial_size, bool depth, bool stencil, bool antialias, bool alpha, bool premultiplied_alpha) = 0;
+     virtual Optional<Compositing::CanvasId> canvas_id() const = 0;
+     virtual void destroy_context() = 0;
+ 
+diff --git a/Libraries/LibWeb/WebGL/WebGLRenderingContext.cpp b/Libraries/LibWeb/WebGL/WebGLRenderingContext.cpp
+index 4720d8f424..c3a0290f8f 100644
+--- a/Libraries/LibWeb/WebGL/WebGLRenderingContext.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLRenderingContext.cpp
+@@ -87,7 +87,9 @@ Optional<RemoteWebGLContext> create_remote_webgl_context(HTML::CanvasHost& canva
+         initial_drawing_buffer_size(canvas),
+         context_attributes.depth,
+         context_attributes.stencil,
+-        context_attributes.antialias);
++        context_attributes.antialias,
++        context_attributes.alpha,
++        context_attributes.premultiplied_alpha);
+     if (!result.success)
+         return {};
+ 
+diff --git a/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp b/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp
+index c62b04334c..66e3405cf3 100644
+--- a/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp
+@@ -2354,7 +2354,9 @@ void WebGLRenderingContextImpl::renderbuffer_storage(WebIDL::UnsignedLong target
+ {
+     m_context->make_current();
+ 
+-    if (internalformat == GL_DEPTH_STENCIL)
++    // NB: An executor that is itself a WebGL 1 implementation takes DEPTH_STENCIL as it is (DEPTH24_STENCIL8 is not a
++    //     WebGL 1 renderbuffer format there, and the upload was INVALID_ENUM).
++    if (internalformat == GL_DEPTH_STENCIL && !executor_is_webgl())
+         internalformat = GL_DEPTH24_STENCIL8;
+ 
+     m_context->renderbuffer_storage(target, internalformat, width, height);
+diff --git a/Services/Compositor/CanvasHost.cpp b/Services/Compositor/CanvasHost.cpp
+index d241ffe63a..c6968217d5 100644
+--- a/Services/Compositor/CanvasHost.cpp
++++ b/Services/Compositor/CanvasHost.cpp
+@@ -106,9 +106,9 @@ Optional<Compositing::CanvasId> CanvasHost::create_2d_context(Gfx::IntSize size,
+     return canvas_id;
+ }
+ 
+-CanvasHost::CreateWebGLContextResult CanvasHost::create_webgl_context(Compositing::WebGL::WebGLVersion version, Gfx::IntSize size, bool depth, bool stencil, bool antialias)
++CanvasHost::CreateWebGLContextResult CanvasHost::create_webgl_context(Compositing::WebGL::WebGLVersion version, Gfx::IntSize size, bool depth, bool stencil, bool antialias, bool alpha, bool premultiplied_alpha)
+ {
+-    auto context = HostWebGLContext::create(m_skia_backend_context, version, { .depth = depth, .stencil = stencil, .antialias = antialias }, size);
++    auto context = HostWebGLContext::create(m_skia_backend_context, version, { .depth = depth, .stencil = stencil, .antialias = antialias, .alpha = alpha, .premultiplied_alpha = premultiplied_alpha }, size);
+     if (!context)
+         return {};
+ 
+diff --git a/Services/Compositor/CanvasHost.h b/Services/Compositor/CanvasHost.h
+index d1f1d1d18e..362200da32 100644
+--- a/Services/Compositor/CanvasHost.h
++++ b/Services/Compositor/CanvasHost.h
+@@ -51,7 +51,7 @@ public:
+     ~CanvasHost();
+ 
+     Optional<Compositing::CanvasId> create_2d_context(Gfx::IntSize, bool alpha);
+-    CreateWebGLContextResult create_webgl_context(Compositing::WebGL::WebGLVersion, Gfx::IntSize, bool depth, bool stencil, bool antialias);
++    CreateWebGLContextResult create_webgl_context(Compositing::WebGL::WebGLVersion, Gfx::IntSize, bool depth, bool stencil, bool antialias, bool alpha, bool premultiplied_alpha);
+     void destroy_context(Compositing::CanvasId);
+     bool has_context(Compositing::CanvasId) const;
+ 
+diff --git a/Services/Compositor/CompositorWebContentServer.ipc b/Services/Compositor/CompositorWebContentServer.ipc
+index a836ba680f..77ccff05a8 100644
+--- a/Services/Compositor/CompositorWebContentServer.ipc
++++ b/Services/Compositor/CompositorWebContentServer.ipc
+@@ -51,7 +51,7 @@ endpoint CompositorWebContentServer
+ 
+     rasterize_display_list(Core::AnonymousBuffer display_list_buffer, u64 tape_size, u64 run_count, Compositing::DisplayList::Properties display_list_properties, Compositing::AccumulatedVisualContextTree visual_context_tree, Compositing::DisplayListResourceTransaction resource_transaction, Gfx::ShareableBitmap target_bitmap) => (bool success)
+ 
+-    create_webgl_context(Compositing::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias) => (bool success, Compositing::CanvasId canvas_id, Vector<String> supported_extensions)
++    create_webgl_context(Compositing::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias, bool alpha, bool premultiplied_alpha) => (bool success, Compositing::CanvasId canvas_id, Vector<String> supported_extensions)
+     webgl_set_command_buffer(Compositing::CanvasId canvas_id, Core::AnonymousBuffer command_buffer) =|
+     webgl_commands_from_shared_buffer(Compositing::CanvasId canvas_id, u64 offset, u64 size_in_bytes, u64 flush_sequence_number, Vector<Gfx::DecodedImageFrame> bitmaps) =|
+     webgl_drain_command_buffer(Compositing::CanvasId canvas_id) => ()
+diff --git a/Services/Compositor/ConnectionFromWebContent.cpp b/Services/Compositor/ConnectionFromWebContent.cpp
+index f9cf0f851b..94b865c2d9 100644
+--- a/Services/Compositor/ConnectionFromWebContent.cpp
++++ b/Services/Compositor/ConnectionFromWebContent.cpp
+@@ -337,9 +337,9 @@ void ConnectionFromWebContent::placeholder_canvas_committed(Compositing::CanvasI
+     async_placeholder_canvas_committed(canvas_id, size, origin_clean);
+ }
+ 
+-Messages::CompositorWebContentServer::CreateWebglContextResponse ConnectionFromWebContent::create_webgl_context(Compositing::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias)
++Messages::CompositorWebContentServer::CreateWebglContextResponse ConnectionFromWebContent::create_webgl_context(Compositing::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias, bool alpha, bool premultiplied_alpha)
+ {
+-    auto result = m_canvas_host.create_webgl_context(webgl_version, size, depth, stencil, antialias);
++    auto result = m_canvas_host.create_webgl_context(webgl_version, size, depth, stencil, antialias, alpha, premultiplied_alpha);
+     return { result.success, result.canvas_id, move(result.supported_extensions) };
+ }
+ 
+diff --git a/Services/Compositor/ConnectionFromWebContent.h b/Services/Compositor/ConnectionFromWebContent.h
+index db017abb61..8650e900d2 100644
+--- a/Services/Compositor/ConnectionFromWebContent.h
++++ b/Services/Compositor/ConnectionFromWebContent.h
+@@ -61,7 +61,7 @@ private:
+     virtual Messages::CompositorWebContentServer::GetPlaceholderCanvasPixelsResponse get_placeholder_canvas_pixels(Compositing::CanvasId, Gfx::IntRect) override;
+     virtual Messages::CompositorWebContentServer::RasterizeDisplayListResponse rasterize_display_list(Core::AnonymousBuffer display_list_buffer, u64 tape_size, u64 run_count, Compositing::DisplayList::Properties, Compositing::AccumulatedVisualContextTree, Compositing::DisplayListResourceTransaction, Gfx::ShareableBitmap target_bitmap) override;
+ 
+-    virtual Messages::CompositorWebContentServer::CreateWebglContextResponse create_webgl_context(Compositing::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias) override;
++    virtual Messages::CompositorWebContentServer::CreateWebglContextResponse create_webgl_context(Compositing::WebGL::WebGLVersion webgl_version, Gfx::IntSize size, bool depth, bool stencil, bool antialias, bool alpha, bool premultiplied_alpha) override;
+     virtual void webgl_set_command_buffer(Compositing::CanvasId canvas_id, Core::AnonymousBuffer command_buffer) override;
+     virtual void webgl_commands_from_shared_buffer(Compositing::CanvasId canvas_id, u64 offset, u64 size_in_bytes, u64 flush_sequence_number, Vector<Gfx::DecodedImageFrame> bitmaps) override;
+     virtual void webgl_drain_command_buffer(Compositing::CanvasId canvas_id) override;
+diff --git a/Services/Compositor/OpenGLContext.h b/Services/Compositor/OpenGLContext.h
+index 54bc3ab8a9..cc6f700419 100644
+--- a/Services/Compositor/OpenGLContext.h
++++ b/Services/Compositor/OpenGLContext.h
+@@ -35,6 +35,11 @@ public:
+         bool depth;
+         bool stencil;
+         bool antialias;
++        // NB: An embedder whose executor is itself a WebGL implementation creates its drawing buffer without alpha
++        //     when the page asked for none (ALPHA_BITS 0, clears and blending as if alpha were 1), and presents an
++        //     unpremultiplied one by premultiplying it.
++        bool alpha { true };
++        bool premultiplied_alpha { true };
+     };
+ 
+     static OwnPtr<OpenGLContext> create(RefPtr<Gfx::SkiaBackendContext>, WebGLVersion, DrawingBufferOptions);

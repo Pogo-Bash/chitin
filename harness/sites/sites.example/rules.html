@@ -1,0 +1,50 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<!-- hostinger's session recorder: a snapshot of every stylesheet's rules (rules, cssRules, their keys, for-in, JSON). -->
+<title>start</title>
+<style>
+@import url("data:text/css,b{color:red}");
+p { color: green; }
+@media (min-width: 10px) { .a { margin: 1px; } }
+@font-face { font-family: x; src: local(Arial); }
+@keyframes k { from { opacity: 0 } to { opacity: 1 } }
+@supports (display: grid) { .g { display: grid } }
+@layer base { .l { color: blue } }
+</style>
+<link rel="stylesheet" href="https://cdn.example/sheet.css">
+<link rel="stylesheet" href="same.css">
+<style id="many"></style>
+<script>
+// A long sheet: index keys past what a short string holds inline (hostinger's CSS has thousands of rules).
+var many = '';
+for (var i = 0; i < 3000; i++) many += '.m' + i + ' { margin: ' + (i % 7) + 'px }\n';
+document.getElementById('many').textContent = many;
+</script>
+<script>
+var results = { out: [] };
+function snap(list) {
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+        var r = list[i];
+        var keys = [];
+        for (var k in r) keys.push(k);
+        out.push({ type: r.type, ctor: r.constructor.name, text: r.cssText.length > 0, keys: keys.length > 5, own: Object.keys(r).length, json: JSON.stringify(r), inner: r.cssRules ? snap(r.cssRules) : null });
+    }
+    return out;
+}
+function run() {
+try {
+    for (var s = 0; s < document.styleSheets.length; s++) {
+        var sheet = document.styleSheets[s];
+        var rl;
+        try { rl = sheet.rules; } catch (e) { results.out.push({ href: sheet.href, threw: e.name }); continue; }
+        if (rl.length > 100) { var k = Object.keys(rl); results.out.push({ many: rl.length, keys: k.length, last: k[k.length - 1], json: JSON.stringify(rl).length > 1000, item: rl[2999].selectorText }); continue; }
+        results.out.push({ same: sheet.rules === sheet.cssRules, keys: Object.keys(sheet.rules), n: sheet.rules.length, rules: snap(sheet.rules), json: JSON.stringify(sheet.rules) });
+    }
+    document.title = 'done';
+} catch (e) { document.title = 'threw ' + e; }
+}
+addEventListener('load', run);
+</script>

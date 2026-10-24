@@ -1,0 +1,16 @@
+<!doctype html><!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<meta charset=utf-8><title>coi pingpong</title>
+<p id=s>running</p>
+<script>
+// Message latency: a Worker posts to the page and blocks in Atomics.wait until the page's message handler wakes it, N times.
+const sab = new SharedArrayBuffer(8), i32 = new Int32Array(sab);
+const w = new Worker('pingpong-worker.js');
+let n = 0;
+w.onmessage = (e) => {
+    if (e.data.done) { window.result = { rounds: e.data.rounds, ms: Math.round(e.data.ms), perRoundUs: Math.round(e.data.ms * 1000 / e.data.rounds) }; document.getElementById('s').textContent = 'done'; return; }
+    n++;
+    Atomics.store(i32, 0, n);
+    Atomics.notify(i32, 0);
+};
+w.postMessage(sab);
+</script>

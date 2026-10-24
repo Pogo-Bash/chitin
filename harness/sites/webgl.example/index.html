@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><title>webgl</title></head>
+<body style="margin:0;background:#fff">
+<script src="probe.js"></script>
+<script>
+var webgl = null;
+webglProbe(window, '').then(function (r) {
+    var w = new Worker('worker.js');
+    w.onmessage = function (e) { for (var k in e.data) r[k] = e.data[k]; webgl = r; webgl.done = true; };
+    w.onerror = function (e) { r['worker.error'] = String(e.message); webgl = r; webgl.done = true; };
+}, function (e) { webgl = { done: true, failed: String(e && e.stack || e) }; });
+</script></body></html>

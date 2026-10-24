@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>particles under ten blurs</title>
+<style>
+html, body { margin: 0; height: 100%; overflow: hidden; background: #10201a; font: 15px/1.4 sans-serif; color: #fff; }
+canvas { position: absolute; left: 0; top: 0; }
+.card { position: absolute; width: 180px; height: 110px; border-radius: 14px; padding: 10px; box-sizing: border-box;
+        background: rgba(255, 255, 255, 0.14); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,.3); }
+</style>
+<canvas id="c"></canvas>
+<script>
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+c.width = innerWidth; c.height = innerHeight;
+for (let i = 0; i < 10; i++) {
+    const d = document.createElement('div');
+    d.className = 'card';
+    d.style.left = (20 + (i % 5) * 200) + 'px';
+    d.style.top = (40 + Math.floor(i / 5) * 250) + 'px';
+    d.textContent = 'Card ' + (i + 1) + ': backdrop-filter blur(12px) over a moving canvas';
+    document.body.appendChild(d);
+}
+let seed = 3;
+const rand = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+const ps = Array.from({ length: 200 }, () => ({ x: rand() * c.width, y: rand() * c.height, vx: rand() * 4 - 2, vy: rand() * 4 - 2, h: Math.floor(rand() * 360) }));
+window.__frames = 0;
+function step() {
+    ctx.fillStyle = '#10201a';
+    ctx.fillRect(0, 0, c.width, c.height);
+    for (const p of ps) {
+        p.x += p.vx; p.y += p.vy;
+        if (p.x < 0 || p.x > c.width) p.vx = -p.vx;
+        if (p.y < 0 || p.y > c.height) p.vy = -p.vy;
+        ctx.fillStyle = 'hsl(' + p.h + ',70%,60%)';
+        ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill();
+    }
+    window.__frames++;
+    requestAnimationFrame(step);
+}
+requestAnimationFrame(step);
+</script>

@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Copyright (c) 2026 [OWNER NAME]
+# Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
+#
+# Writes LibJS/Embedding/Layout.h for Ganglion's wasm32 runtime. The macro names and the enumerators (class
+# ids, cell kinds, object flags, typed array kinds) are those of the 64-bit Layout.h that Ladybird's Rust
+# runtime generates (tools/Layout-x86_64-reference.h, BSD-2-Clause), so the LibJS facade compiles unchanged.
+# The offsets and sizes are those of Ganglion's own cells (engine/libjs-runtime/include/Ganglion/Cells.h,
+# which static_asserts them) and of the facade's own structs on wasm32 (ExecutionContext, ScriptOrModule,
+# ExecutionContextStackEntry: clang -fdump-record-layouts, docs/phase1.md).
+import re, sys
+
+ref, out = sys.argv[1], sys.argv[2]
+P = 4  # sizeof(void*) on wasm32
+
+wasm32 = {
+    # Cell header: GC::ForeignCell on wasm32 (first word, then mark, state, kind)
+    "CELL_CLASS_OFFSET": 0, "CELL_CLASS_SIZE": P,
+    "CELL_MARK_OFFSET": 4, "CELL_MARK_SIZE": 1,
+    "CELL_STATE_OFFSET": 5, "CELL_STATE_SIZE": 1,
+    "CELL_KIND_OFFSET": 6, "CELL_KIND_SIZE": 1,
+    # Class (Ganglion::Class)
+    "CLASS_ID_OFFSET": 0, "CLASS_ID_SIZE": 2,
+    "CLASS_PARENT_OFFSET": 4, "CLASS_PARENT_SIZE": P,
+    # Object
+    "OBJECT_FLAGS_OFFSET": 8, "OBJECT_FLAGS_SIZE": 2,
+    "OBJECT_SHAPE_OFFSET": 12, "OBJECT_SHAPE_SIZE": P,
+    "OBJECT_SIZE": 24,
+    # Shape
+    "SHAPE_REALM_OFFSET": 8, "SHAPE_REALM_SIZE": P,
+    "SHAPE_PROTOTYPE_OFFSET": 12, "SHAPE_PROTOTYPE_SIZE": P,
+    # Realm
+    "REALM_GLOBAL_OBJECT_OFFSET": 8, "REALM_GLOBAL_OBJECT_SIZE": P,
+    "REALM_GLOBAL_ENVIRONMENT_OFFSET": 12, "REALM_GLOBAL_ENVIRONMENT_SIZE": P,
+    "REALM_INTRINSICS_OFFSET": 16, "REALM_INTRINSICS_SIZE": P,
+    "REALM_HOST_DEFINED_OFFSET": 20, "REALM_HOST_DEFINED_SIZE": P,
+    # ExecutionContext: the facade's JS::ExecutionContext on wasm32
+    "EXECUTION_CONTEXT_FUNCTION_OFFSET": 0, "EXECUTION_CONTEXT_FUNCTION_SIZE": P,
+    "EXECUTION_CONTEXT_REALM_OFFSET": 4, "EXECUTION_CONTEXT_REALM_SIZE": P,
+    "EXECUTION_CONTEXT_SCRIPT_OR_MODULE_OFFSET": 8, "EXECUTION_CONTEXT_SCRIPT_OR_MODULE_SIZE": 8,
+    "EXECUTION_CONTEXT_LEXICAL_ENVIRONMENT_OFFSET": 16, "EXECUTION_CONTEXT_LEXICAL_ENVIRONMENT_SIZE": P,
+    "EXECUTION_CONTEXT_VARIABLE_ENVIRONMENT_OFFSET": 20, "EXECUTION_CONTEXT_VARIABLE_ENVIRONMENT_SIZE": P,
+    "EXECUTION_CONTEXT_PRIVATE_ENVIRONMENT_OFFSET": 24, "EXECUTION_CONTEXT_PRIVATE_ENVIRONMENT_SIZE": P,
+    "EXECUTION_CONTEXT_FRAME_ID_OFFSET": 32, "EXECUTION_CONTEXT_FRAME_ID_SIZE": 8,
+    "EXECUTION_CONTEXT_PROGRAM_COUNTER_OFFSET": 40, "EXECUTION_CONTEXT_PROGRAM_COUNTER_SIZE": 4,
+    "EXECUTION_CONTEXT_SKIP_WHEN_DETERMINING_INCUMBENT_COUNTER_OFFSET": 44, "EXECUTION_CONTEXT_SKIP_WHEN_DETERMINING_INCUMBENT_COUNTER_SIZE": 4,
+    "EXECUTION_CONTEXT_YIELD_CONTINUATION_OFFSET": 48, "EXECUTION_CONTEXT_YIELD_CONTINUATION_SIZE": 4,
+    "EXECUTION_CONTEXT_YIELD_IS_AWAIT_OFFSET": 52, "EXECUTION_CONTEXT_YIELD_IS_AWAIT_SIZE": 1,
+    "EXECUTION_CONTEXT_YIELD_VALUE_IS_ITERATOR_RESULT_OFFSET": 53, "EXECUTION_CONTEXT_YIELD_VALUE_IS_ITERATOR_RESULT_SIZE": 1,
+    "EXECUTION_CONTEXT_CALLER_IS_CONSTRUCT_OFFSET": 54, "EXECUTION_CONTEXT_CALLER_IS_CONSTRUCT_SIZE": 1,
+    "EXECUTION_CONTEXT_FRAME_INITIALIZED_OFFSET": 55, "EXECUTION_CONTEXT_FRAME_INITIALIZED_SIZE": 1,
+    "EXECUTION_CONTEXT_THIS_VALUE_OFFSET": 56, "EXECUTION_CONTEXT_THIS_VALUE_SIZE": 8,
+    "EXECUTION_CONTEXT_EXECUTABLE_OFFSET": 64, "EXECUTION_CONTEXT_EXECUTABLE_SIZE": P,
+    "EXECUTION_CONTEXT_CALLER_FRAME_OFFSET": 68, "EXECUTION_CONTEXT_CALLER_FRAME_SIZE": P,
+    "EXECUTION_CONTEXT_PASSED_ARGUMENT_COUNT_OFFSET": 72, "EXECUTION_CONTEXT_PASSED_ARGUMENT_COUNT_SIZE": 4,
+    "EXECUTION_CONTEXT_CALLER_RETURN_PC_OFFSET": 76, "EXECUTION_CONTEXT_CALLER_RETURN_PC_SIZE": 4,
+    "EXECUTION_CONTEXT_CALLER_DST_RAW_OFFSET": 80, "EXECUTION_CONTEXT_CALLER_DST_RAW_SIZE": 4,
+    "EXECUTION_CONTEXT_REGISTERS_AND_CONSTANTS_AND_LOCALS_AND_ARGUMENTS_COUNT_OFFSET": 84, "EXECUTION_CONTEXT_REGISTERS_AND_CONSTANTS_AND_LOCALS_AND_ARGUMENTS_COUNT_SIZE": 4,
+    "EXECUTION_CONTEXT_ARGUMENT_COUNT_OFFSET": 88, "EXECUTION_CONTEXT_ARGUMENT_COUNT_SIZE": 4,
+    "EXECUTION_CONTEXT_RETURNS_TO_NATIVE_CALLER_OFFSET": 92, "EXECUTION_CONTEXT_RETURNS_TO_NATIVE_CALLER_SIZE": 1,
+    "EXECUTION_CONTEXT_RUNS_JIT_CODE_OFFSET": 93, "EXECUTION_CONTEXT_RUNS_JIT_CODE_SIZE": 1,
+    "EXECUTION_CONTEXT_SIZE": 96, "EXECUTION_CONTEXT_ALIGN": 8,
+    # ScriptOrModule: the facade's own, tag before the payload
+    "SCRIPT_OR_MODULE_TAG_OFFSET": 0, "SCRIPT_OR_MODULE_PAYLOAD_OFFSET": 4, "SCRIPT_OR_MODULE_SIZE": 8,
+    # VM (Ganglion::VMHead, at the start of JS::VM's engine storage)
+    "VM_RUNNING_EXECUTION_CONTEXT_OFFSET": 0, "VM_RUNNING_EXECUTION_CONTEXT_SIZE": P,
+    "VM_INTERPRETER_STACK_TOP_OFFSET": 4, "VM_INTERPRETER_STACK_TOP_SIZE": P,
+    "VM_INTERPRETER_STACK_LIMIT_OFFSET": 8, "VM_INTERPRETER_STACK_LIMIT_SIZE": P,
+    "VM_EXECUTION_GENERATION_OFFSET": 12, "VM_EXECUTION_GENERATION_SIZE": 4,
+    "VM_PRIMITIVE_STORAGE_CAGE_BASE_OFFSET": 16, "VM_PRIMITIVE_STORAGE_CAGE_BASE_SIZE": P,
+    "VM_EXECUTION_CONTEXT_STACK_ENTRIES_OFFSET": 20, "VM_EXECUTION_CONTEXT_STACK_ENTRIES_SIZE": P,
+    "VM_EXECUTION_CONTEXT_STACK_LENGTH_OFFSET": 24, "VM_EXECUTION_CONTEXT_STACK_LENGTH_SIZE": P,
+    "VM_EXECUTION_CONTEXT_STACK_CAPACITY_OFFSET": 28, "VM_EXECUTION_CONTEXT_STACK_CAPACITY_SIZE": P,
+    "VM_TYPE_ERROR_REALM_OVERRIDE_OFFSET": 32, "VM_TYPE_ERROR_REALM_OVERRIDE_SIZE": P,
+    "VM_TYPE_ERROR_REALM_OVERRIDE_DEPTH_OFFSET": 36, "VM_TYPE_ERROR_REALM_OVERRIDE_DEPTH_SIZE": P,
+    "EXECUTION_CONTEXT_STACK_ENTRY_EXECUTION_CONTEXT_OFFSET": 0, "EXECUTION_CONTEXT_STACK_ENTRY_EXECUTION_CONTEXT_SIZE": P,
+    "EXECUTION_CONTEXT_STACK_ENTRY_PREVIOUS_RUNNING_EXECUTION_CONTEXT_OFFSET": 4, "EXECUTION_CONTEXT_STACK_ENTRY_PREVIOUS_RUNNING_EXECUTION_CONTEXT_SIZE": P,
+    "EXECUTION_CONTEXT_STACK_ENTRY_SIZE": 8,
+    "VM_SIZE": 4096, "VM_ALIGN": 16,
+    # TypedArray (Ganglion::TypedArray)
+    "TYPED_ARRAY_KIND_OFFSET": 28, "TYPED_ARRAY_KIND_SIZE": 1,
+    "TYPED_ARRAY_ELEMENT_SIZE_OFFSET": 29, "TYPED_ARRAY_ELEMENT_SIZE_SIZE": 1,
+    "TYPED_ARRAY_ARRAY_LENGTH_OFFSET": 32, "TYPED_ARRAY_ARRAY_LENGTH_SIZE": 4,
+    "TYPED_ARRAY_ARRAY_LENGTH_ALTERNATIVE_INDEX_OFFSET": 36, "TYPED_ARRAY_ARRAY_LENGTH_ALTERNATIVE_INDEX_SIZE": 1,
+    "TYPED_ARRAY_BYTE_OFFSET_OFFSET": 40, "TYPED_ARRAY_BYTE_OFFSET_SIZE": 4,
+    # HostObject: the offsets are fixed by LibJS/HostObjectABI.h
+    "HOST_OBJECT_HOST_CLASS_OFFSET": 72, "HOST_OBJECT_HOST_CLASS_SIZE": P,
+    "HOST_OBJECT_WRAPPABLE_OFFSET": 80, "HOST_OBJECT_WRAPPABLE_SIZE": P,
+    "HOST_OBJECT_HOST_DATA_OFFSET": 88, "HOST_OBJECT_HOST_DATA_SIZE": P,
+    "HOST_OBJECT_SIZE": 96,
+}
+
+lines = []
+used = set()
+for line in open(ref):
+    # The reference ends with the Rust runtime's checks that the C ABI structs have the layout its 64-bit
+    # code assumes (JSPropertyKey 8 bytes and so on). Ganglion compiles the same headers for wasm32 on
+    # both sides of the ABI, so those checks end here; HostObjectABI.h's offsets are still checked above.
+    if line.startswith("#ifdef __cplusplus"):
+        lines += ["#ifdef __cplusplus",
+                  "static_assert(JS_LAYOUT_HOST_OBJECT_HOST_CLASS_OFFSET == JS_HOST_OBJECT_HOST_CLASS_OFFSET);",
+                  "static_assert(JS_LAYOUT_HOST_OBJECT_WRAPPABLE_OFFSET == JS_HOST_OBJECT_WRAPPABLE_OFFSET);",
+                  "static_assert(JS_LAYOUT_HOST_OBJECT_HOST_DATA_OFFSET == JS_HOST_OBJECT_HOST_DATA_OFFSET);",
+                  "static_assert(JS_LAYOUT_HOST_OBJECT_SIZE == JS_HOST_OBJECT_SIZE);",
+                  "#endif", "", "#endif"]
+        break
+    m = re.match(r"#define JS_LAYOUT_([A-Z0-9_]+) (\S+)", line.rstrip("\n"))
+    if m and m.group(1) in wasm32:
+        lines.append(f"#define JS_LAYOUT_{m.group(1)} {wasm32[m.group(1)]}")
+        used.add(m.group(1))
+    elif line.startswith("// Generated by the libjs_rust build script"):
+        lines.append("// Generated by engine/libjs-runtime/tools/gen-layout.py (Chitin) from the 64-bit Layout.h that Ladybird's")
+        lines.append("// libjs_rust build script writes -- DO NOT EDIT. Names and enumerators are Ladybird's (BSD-2-Clause);")
+        lines.append("// the offsets are those of Ganglion's wasm32 runtime (engine/libjs-runtime/include/Ganglion/Cells.h).")
+    else:
+        lines.append(line.rstrip("\n"))
+missing = set(wasm32) - used
+if missing:
+    sys.exit(f"not in the reference: {sorted(missing)}")
+open(out, "w").write("\n".join(lines) + "\n")

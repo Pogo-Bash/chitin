@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><title>iframe removed</title></head>
+<body>
+<iframe id="f" src="wrap.html"></iframe>
+<p id="after">after</p>
+<script>
+var results = { events: [] };
+window.addEventListener('load', function () { results.events.push('window load'); });
+</script>
+</body></html>

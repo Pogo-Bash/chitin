@@ -1,0 +1,178 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 14:25:01 -0500
+Subject: [PATCH 11/23] LibWeb/LibCore: an embedder network loader in
+ ResourceLoader; anonymous buffers without descriptors on Emscripten
+
+---
+ Libraries/LibCore/AnonymousBuffer.cpp      | 32 +++++++++++++++++++++-
+ Libraries/LibWeb/Loader/ResourceLoader.cpp | 15 ++++++++--
+ Libraries/LibWeb/Loader/ResourceLoader.h   | 10 ++++++-
+ 3 files changed, 53 insertions(+), 4 deletions(-)
+
+diff --git a/Libraries/LibCore/AnonymousBuffer.cpp b/Libraries/LibCore/AnonymousBuffer.cpp
+index 4e423beaf8..8025783bb0 100644
+--- a/Libraries/LibCore/AnonymousBuffer.cpp
++++ b/Libraries/LibCore/AnonymousBuffer.cpp
+@@ -8,6 +8,7 @@
+ #include <LibCore/AnonymousBuffer.h>
+ #include <LibCore/System.h>
+ #include <fcntl.h>
++#include <stdlib.h>
+ #include <sys/mman.h>
+ #include <unistd.h>
+ 
+@@ -20,6 +21,11 @@ namespace Core {
+ 
+ ErrorOr<AnonymousBuffer> AnonymousBuffer::create_with_size(size_t size, Sealability sealability)
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    // No shared memory in a wasm module: the buffer is ordinary memory with no file descriptor.
++    (void)sealability;
++    return create_from_anon_fd(-1, size);
++#endif
+     auto allow_sealing = sealability == Sealability::Sealable
+         ? Core::System::AllowSealing::Yes
+         : Core::System::AllowSealing::No;
+@@ -46,6 +52,14 @@ ErrorOr<AnonymousBuffer> AnonymousBuffer::snapshot(size_t offset, size_t size, S
+     if (offset > this->size() || size > this->size() - offset)
+         return Error::from_string_literal("Anonymous buffer snapshot range is out of bounds");
+ 
++#ifdef AK_OS_EMSCRIPTEN
++    {
++        auto copy = TRY(create_with_size(size, sealability));
++        if (size > 0)
++            bytes().slice(offset, size).copy_to({ copy.data<u8>(), copy.size() });
++        return copy;
++    }
++#endif
+     bool is_size_sealed = false;
+ 
+ #if defined(F_ADD_SEALS) && defined(F_GET_SEALS) && defined(F_SEAL_GROW) && defined(F_SEAL_SHRINK) && defined(F_SEAL_SEAL)
+@@ -110,6 +124,8 @@ ErrorOr<void> AnonymousBuffer::validate_backing_size() const
+     if (!is_valid())
+         return Error::from_string_literal("Cannot validate the backing store of an invalid anonymous buffer");
+ 
++    if (fd() == -1)
++        return {};
+     auto file_status = TRY(Core::System::fstat(fd()));
+     if (file_status.st_size < 0 || static_cast<u64>(file_status.st_size) < size())
+         return Error::from_string_literal("Anonymous buffer is smaller than its claimed size");
+@@ -119,6 +135,18 @@ ErrorOr<void> AnonymousBuffer::validate_backing_size() const
+ ErrorOr<NonnullRefPtr<AnonymousBufferImpl>> AnonymousBufferImpl::create(int fd, size_t size)
+ {
+     void* data = nullptr;
++    if (fd == -1) {
++        // Memory with no descriptor behind it (Emscripten).
++        if (size > 0) {
++            data = calloc(1, size);
++            if (!data)
++                return Error::from_errno(ENOMEM);
++        }
++        auto impl_or_error = AK::adopt_nonnull_ref_or_enomem(new (nothrow) AnonymousBufferImpl(fd, size, data));
++        if (impl_or_error.is_error())
++            free(data);
++        return impl_or_error;
++    }
+     // POSIX mmap rejects a zero length with EINVAL, so leave m_data null for zero-size buffers.
+     if (size > 0) {
+         data = mmap(nullptr, round_up_to_power_of_two(size, PAGE_SIZE), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+@@ -143,7 +171,9 @@ AnonymousBufferImpl::~AnonymousBufferImpl()
+         auto rc = close(m_fd);
+         VERIFY(rc == 0);
+     }
+-    if (m_data) {
++    if (m_data && m_fd == -1) {
++        free(m_data);
++    } else if (m_data) {
+         auto rc = munmap(m_data, round_up_to_power_of_two(m_size, PAGE_SIZE));
+         VERIFY(rc == 0);
+     }
+diff --git a/Libraries/LibWeb/Loader/ResourceLoader.cpp b/Libraries/LibWeb/Loader/ResourceLoader.cpp
+index 58d6c08740..f9c486842b 100644
+--- a/Libraries/LibWeb/Loader/ResourceLoader.cpp
++++ b/Libraries/LibWeb/Loader/ResourceLoader.cpp
+@@ -40,6 +40,11 @@ void ResourceLoader::initialize(GC::Heap& heap, NonnullRefPtr<Requests::RequestC
+     resource_loader() = adopt_ref(*new ResourceLoader(heap, move(request_client)));
+ }
+ 
++void ResourceLoader::initialize(GC::Heap& heap)
++{
++    resource_loader() = adopt_ref(*new ResourceLoader(heap, nullptr));
++}
++
+ bool ResourceLoader::is_initialized()
+ {
+     return resource_loader() != nullptr;
+@@ -54,14 +59,15 @@ ResourceLoader& ResourceLoader::the()
+     return *resource_loader();
+ }
+ 
+-ResourceLoader::ResourceLoader(GC::Heap& heap, NonnullRefPtr<Requests::RequestClient> request_client)
++ResourceLoader::ResourceLoader(GC::Heap& heap, RefPtr<Requests::RequestClient> request_client)
+     : m_heap(heap)
+     , m_user_agent(MUST(String::from_utf8(default_user_agent)))
+     , m_platform(MUST(String::from_utf8(default_platform)))
+     , m_preferred_languages({ "en-US"_string })
+     , m_navigator_compatibility_mode(default_navigator_compatibility_mode)
+ {
+-    set_client(move(request_client));
++    if (request_client)
++        set_client(request_client.release_nonnull());
+ }
+ 
+ void ResourceLoader::set_client(NonnullRefPtr<Requests::RequestClient> request_client)
+@@ -401,6 +407,11 @@ RefPtr<Requests::Request> ResourceLoader::load(LoadRequest& request, GC::Root<On
+         return nullptr;
+     }
+ 
++    if (m_embedder_network_loader && url.scheme().is_one_of("http"sv, "https"sv)) {
++        m_embedder_network_loader(request, move(on_headers_received), move(on_data_received), move(on_complete));
++        return nullptr;
++    }
++
+     if (!url.scheme().is_one_of("http"sv, "https"sv)) {
+         auto not_implemented_error = ByteString::formatted("Protocol not implemented: {}", url.scheme());
+         log_failure(request, not_implemented_error);
+diff --git a/Libraries/LibWeb/Loader/ResourceLoader.h b/Libraries/LibWeb/Loader/ResourceLoader.h
+index 08f625db45..357f41054c 100644
+--- a/Libraries/LibWeb/Loader/ResourceLoader.h
++++ b/Libraries/LibWeb/Loader/ResourceLoader.h
+@@ -30,6 +30,8 @@ class WEB_API ResourceLoader : public Core::EventReceiver {
+ 
+ public:
+     static void initialize(GC::Heap&, NonnullRefPtr<Requests::RequestClient>);
++    // An embedder without a RequestServer: http(s) loads go to its network loader (set_embedder_network_loader).
++    static void initialize(GC::Heap&);
+     static bool is_initialized();
+     static ResourceLoader& the();
+ 
+@@ -42,6 +44,11 @@ public:
+ 
+     RefPtr<Requests::Request> load(LoadRequest&, GC::Root<OnHeadersReceived>, GC::Root<OnDataReceived>, GC::Root<OnCachedBodyAvailable>, GC::Root<OnComplete>, Requests::RequestClient::TransferLease = Requests::RequestClient::TransferLease::No);
+ 
++    // An embedder's own network: it answers every http(s) load through the callbacks, as a RequestServer would,
++    // with no Requests::Request (callers accept none, as they do for about: and file: loads).
++    using EmbedderNetworkLoader = Function<void(LoadRequest const&, GC::Root<OnHeadersReceived>, GC::Root<OnDataReceived>, GC::Root<OnComplete>)>;
++    void set_embedder_network_loader(EmbedderNetworkLoader loader) { m_embedder_network_loader = move(loader); }
++
+     RefPtr<Requests::RequestClient>& request_client() { return m_request_client; }
+ 
+     void prefetch_dns(URL::URL const&, URL::URL const& source_url);
+@@ -73,7 +80,7 @@ public:
+     void set_enable_global_privacy_control(bool enable) { m_enable_global_privacy_control = enable; }
+ 
+ private:
+-    explicit ResourceLoader(GC::Heap&, NonnullRefPtr<Requests::RequestClient>);
++    explicit ResourceLoader(GC::Heap&, RefPtr<Requests::RequestClient>);
+ 
+     struct FileLoadResult {
+         ReadonlyBytes data;
+@@ -92,6 +99,7 @@ private:
+ 
+     GC::Heap& m_heap;
+     RefPtr<Requests::RequestClient> m_request_client;
++    EmbedderNetworkLoader m_embedder_network_loader;
+     HashTable<NonnullRefPtr<Requests::Request>> m_active_requests;
+ 
+     String m_user_agent;

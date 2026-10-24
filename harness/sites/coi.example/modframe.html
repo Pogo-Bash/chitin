@@ -1,0 +1,5 @@
+<!doctype html><!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<meta charset=utf-8><title>coi modframe</title>
+<script>window.results = { events: [] }; addEventListener('error', (e) => results.events.push('error ' + e.message));</script>
+<iframe id=f src="modchild.html"></iframe>
+<script>setTimeout(() => { results.events.push('later'); window.result = results.events; }, 600);</script>

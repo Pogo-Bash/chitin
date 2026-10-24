@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>A form (rendered only)</title>
+<style>
+  html { background: #fff; }
+  body { margin: 16px; font-family: "Noto Sans", sans-serif; font-size: 14px; color: #111; }
+  form { width: 420px; }
+  label { display: block; margin: 10px 0 4px; }
+  input[type=text], input[type=email], textarea, select { width: 100%; box-sizing: border-box; padding: 6px; border: 1px solid #888; border-radius: 3px; font: inherit; }
+  .row { display: flex; gap: 16px; align-items: center; margin-top: 10px; }
+  button { padding: 8px 16px; background: #2d6cdf; color: white; border: 0; border-radius: 4px; font: inherit; }
+  fieldset { border: 1px solid #bbb; padding: 8px 12px; margin-top: 12px; }
+  progress, meter { width: 200px; }
+</style>
+</head>
+<body>
+<form>
+  <label for="name">Name</label>
+  <input id="name" type="text" value="Ada Lovelace">
+  <label for="email">Email</label>
+  <input id="email" type="email" placeholder="you@example.com">
+  <label for="about">About</label>
+  <textarea id="about" rows="3">Rendered, not interactive: phase 1 draws the controls.</textarea>
+  <label for="choice">Choice</label>
+  <select id="choice"><option>One</option><option selected>Two</option><option>Three</option></select>
+  <fieldset><legend>Options</legend>
+    <div class="row"><input type="checkbox" id="c1" checked><label for="c1" style="margin:0">checked</label><input type="checkbox" id="c2"><label for="c2" style="margin:0">unchecked</label></div>
+    <div class="row"><input type="radio" name="r" id="r1" checked><label for="r1" style="margin:0">radio on</label><input type="radio" name="r" id="r2"><label for="r2" style="margin:0">radio off</label></div>
+    <div class="row"><input type="range" min="0" max="100" value="40"><progress value="0.6"></progress><meter value="0.3"></meter></div>
+  </fieldset>
+  <div class="row"><button type="submit">Submit</button><button type="button" disabled>Disabled</button></div>
+</form>
+</body>
+</html>

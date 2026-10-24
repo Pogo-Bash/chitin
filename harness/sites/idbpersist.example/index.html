@@ -1,0 +1,74 @@
+<!doctype html>
+<title>idb persist</title>
+<script>
+// IndexedDB across a reload (a file system kept in IndexedDB, as anura's): ?phase=write fills two databases, ?phase=read
+// (after a reload) reads them back. In Chrome the second page sees what the first committed.
+window.seen = [];
+const phase = new URLSearchParams(location.search).get('phase');
+const req = (r) => new Promise((resolve, reject) => { r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
+const done = (tx) => new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(tx.error); });
+async function write() {
+    const open = indexedDB.open('fs', 2);
+    open.onupgradeneeded = (e) => {
+        const db = open.result;
+        const files = db.createObjectStore('files', { keyPath: 'id' });
+        files.createIndex('byName', 'name', { unique: true });
+        files.createIndex('byTag', 'tags', { multiEntry: true });
+        db.createObjectStore('blocks');
+        db.createObjectStore('log', { autoIncrement: true });
+    };
+    const db = await req(open);
+    let tx = db.transaction(['files', 'blocks', 'log'], 'readwrite');
+    const files = tx.objectStore('files'), blocks = tx.objectStore('blocks'), log = tx.objectStore('log');
+    for (let i = 0; i < 20; i++)
+        files.put({ id: 'f' + i, name: 'file' + i + '.txt', tags: i % 2 ? ['odd', 'x'] : ['even'], size: i * 10, when: new Date(1000 * i), nan: NaN });
+    blocks.put(new Uint8Array([1, 2, 3, 250]).buffer, ['f1', 0]);
+    blocks.put(new ArrayBuffer(0), ['f1', 1]);
+    blocks.put({ nested: { deep: [1, 'two', { three: 3 }] }, map: new Map([['k', 1]]) }, 'meta');
+    log.add('first'); log.add('second');
+    await done(tx);
+    tx = db.transaction(['files', 'log'], 'readwrite');
+    tx.objectStore('files').delete('f3');
+    tx.objectStore('files').put({ id: 'f4', name: 'renamed.txt', tags: [], size: 1 });
+    tx.objectStore('log').add('third');
+    await done(tx);
+    // An aborted transaction leaves nothing.
+    tx = db.transaction('files', 'readwrite');
+    tx.objectStore('files').put({ id: 'gone', name: 'aborted', tags: [] });
+    tx.abort();
+    await done(tx).catch(() => {});
+    db.close();
+    const other = await req(Object.assign(indexedDB.open('scratch', 1), { onupgradeneeded: (e) => e.target.result.createObjectStore('s') }));
+    await done(Object.assign(other.transaction('s', 'readwrite'), {}).objectStore('s').put(1, 'a').transaction);
+    other.close();
+    await req(indexedDB.deleteDatabase('scratch'));
+    seen.push('done=written');
+}
+async function read() {
+    const names = (await indexedDB.databases()).map((d) => d.name + '@' + d.version).sort();
+    seen.push('dbs=' + names.join(','));
+    const db = await req(indexedDB.open('fs'));
+    seen.push('version=' + db.version, 'stores=' + [...db.objectStoreNames].join(','));
+    const tx = db.transaction(['files', 'blocks', 'log'], 'readwrite');
+    const files = tx.objectStore('files');
+    seen.push('indexes=' + [...files.indexNames].join(','));
+    seen.push('count=' + await req(files.count()));
+    seen.push('f3=' + (await req(files.get('f3'))));
+    const f5 = await req(files.get('f5'));
+    seen.push('f5=' + [f5.name, f5.size, f5.when.getTime(), Number.isNaN(f5.nan), f5.tags.join('+')].join(','));
+    seen.push('byName=' + (await req(files.index('byName').get('renamed.txt'))).id);
+    seen.push('byNameOld=' + (await req(files.index('byName').get('file4.txt'))));
+    seen.push('odd=' + await req(files.index('byTag').count('odd')));
+    const block = await req(tx.objectStore('blocks').get(['f1', 0]));
+    seen.push('block=' + Array.from(new Uint8Array(block)).join('.') + ':' + (await req(tx.objectStore('blocks').get(['f1', 1]))).byteLength);
+    const meta = await req(tx.objectStore('blocks').get('meta'));
+    seen.push('meta=' + JSON.stringify(meta.nested) + ':' + meta.map.get('k'));
+    seen.push('gone=' + (await req(files.get('gone'))));
+    const log = tx.objectStore('log');
+    seen.push('log=' + (await req(log.getAll())).join(','));
+    seen.push('nextKey=' + await req(log.add('fourth')));
+    await done(tx);
+    seen.push('done=read');
+}
+(phase === 'read' ? read() : write()).catch((e) => seen.push('error=' + e.name + ':' + e.message));
+</script>

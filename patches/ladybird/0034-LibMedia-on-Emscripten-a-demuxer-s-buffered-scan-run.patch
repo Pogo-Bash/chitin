@@ -1,0 +1,79 @@
+From 7c3da50c84b7c20300ae53b8f2465bf33aadd98c Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 07:22:10 -0500
+Subject: [PATCH 34/34] LibMedia: on Emscripten a demuxer's buffered scan runs
+ on the event loop that created it instead of a thread; before, creating a
+ Matroska demuxer trapped
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Libraries/LibMedia/DemuxerScanThread.h | 39 ++++++++++++++++++++++++++
+ 1 file changed, 39 insertions(+)
+
+diff --git a/Libraries/LibMedia/DemuxerScanThread.h b/Libraries/LibMedia/DemuxerScanThread.h
+index 08a2873d4c..588c4e29d1 100644
+--- a/Libraries/LibMedia/DemuxerScanThread.h
++++ b/Libraries/LibMedia/DemuxerScanThread.h
+@@ -29,6 +29,17 @@ public:
+     {
+         auto scan_thread = adopt_ref(*new DemuxerScanThread(move(stream), move(initial_state), move(payload), move(scan)));
+ 
++#ifdef AK_OS_EMSCRIPTEN
++        // No threads in a Worker without SharedArrayBuffer: the scan runs on the event loop that created it, once
++        // for each batch of changes to the stream's available data (its cursor never blocks).
++        scan_thread->m_handler_event_loop = &Core::EventLoop::current();
++        scan_thread->m_stream->set_available_ranges_change_observer([scan_thread] {
++            scan_thread->schedule_scan_on_event_loop();
++        });
++        scan_thread->schedule_scan_on_event_loop();
++        return scan_thread;
++#endif
++
+         scan_thread->m_stream->set_available_ranges_change_observer([scan_thread] {
+             MutexLocker locker { scan_thread->m_mutex };
+             scan_thread->m_rescan_requested = true;
+@@ -70,6 +81,12 @@ public:
+         m_handler_thread_id = AK::ThreadID::current();
+         m_on_change = move(handler);
+ 
++#ifdef AK_OS_EMSCRIPTEN
++        m_handler_event_loop = &Core::EventLoop::current();
++        m_last_dispatched_state = {};
++        schedule_scan_on_event_loop();
++        return;
++#endif
+         MutexLocker locker { m_mutex };
+         m_handler_event_loop = &Core::EventLoop::current();
+ 
+@@ -79,6 +96,28 @@ public:
+     }
+ 
+ private:
++#ifdef AK_OS_EMSCRIPTEN
++    void schedule_scan_on_event_loop()
++    {
++        if (m_scan_scheduled || m_exit_requested || !m_handler_event_loop)
++            return;
++        m_scan_scheduled = true;
++        m_handler_event_loop->deferred_invoke([self = NonnullRefPtr(*this)] {
++            self->m_scan_scheduled = false;
++            if (self->m_exit_requested)
++                return;
++            auto new_state = self->m_scan(*self->m_stream, self->m_payload);
++            if (new_state == self->m_last_dispatched_state)
++                return;
++            self->m_last_dispatched_state = new_state;
++            self->m_main_thread_state = move(new_state);
++            if (self->m_on_change)
++                self->m_on_change();
++        });
++    }
++    bool m_scan_scheduled { false };
++#endif
++
+     DemuxerScanThread(NonnullRefPtr<MediaStream> stream, DemuxerScanState initial_state, Payload payload, ScanFunction scan)
+         : m_stream(move(stream))
+         , m_payload(move(payload))
+-- 
+2.50.1 (Apple Git-155)
+

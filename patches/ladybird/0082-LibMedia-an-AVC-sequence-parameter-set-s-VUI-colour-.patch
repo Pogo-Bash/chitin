@@ -1,0 +1,142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 16:27:50 -0500
+Subject: [PATCH] LibMedia: an AVC sequence parameter set's VUI colour (range,
+ colour description) reaches the track's CICP
+
+---
+ Libraries/LibMedia/Codecs/H264.cpp            | 29 ++++++++++++++-----
+ Libraries/LibMedia/Codecs/H264.h              |  6 ++++
+ .../LibMedia/Containers/ISOBMFF/Reader.cpp    | 10 +++++++
+ 3 files changed, 38 insertions(+), 7 deletions(-)
+
+diff --git a/Libraries/LibMedia/Codecs/H264.cpp b/Libraries/LibMedia/Codecs/H264.cpp
+index 744514bbc6..10a8088462 100644
+--- a/Libraries/LibMedia/Codecs/H264.cpp
++++ b/Libraries/LibMedia/Codecs/H264.cpp
+@@ -100,7 +100,7 @@ static constexpr u8 MAXIMUM_REORDER_FRAME_COUNT = 16;
+ 
+ // ITU-T H.264 (08/2024), E.1.1: vui_parameters(), through max_num_reorder_frames.
+ // Returns the max_num_reorder_frames the bitstream restriction states, if it states one at all.
+-static Optional<u32> parse_stated_max_reorder_frame_count(Codecs::RBSPBitReader& reader)
++static Optional<u32> parse_stated_max_reorder_frame_count(Codecs::RBSPBitReader& reader, Optional<CodingIndependentCodePoints>& colour)
+ {
+     static constexpr u8 EXTENDED_SAMPLE_ASPECT_RATIO = 255;
+ 
+@@ -115,12 +115,15 @@ static Optional<u32> parse_stated_max_reorder_frame_count(Codecs::RBSPBitReader&
+         reader.skip_bits(1);     // overscan_appropriate_flag
+     if (reader.read_bit()) {     // video_signal_type_present_flag
+         reader.skip_bits(3);     // video_format
+-        reader.skip_bits(1);     // video_full_range_flag
++        auto full_range = reader.read_bit();
++        CodingIndependentCodePoints cicp { ColorPrimaries::Unspecified, TransferCharacteristics::Unspecified, MatrixCoefficients::Unspecified,
++            full_range ? VideoFullRangeFlag::Full : VideoFullRangeFlag::Studio };
+         if (reader.read_bit()) { // colour_description_present_flag
+-            reader.skip_bits(8); // colour_primaries
+-            reader.skip_bits(8); // transfer_characteristics
+-            reader.skip_bits(8); // matrix_coefficients
++            cicp.set_color_primaries(static_cast<ColorPrimaries>(reader.read_bits<u8>(8)));
++            cicp.set_transfer_characteristics(static_cast<TransferCharacteristics>(reader.read_bits<u8>(8)));
++            cicp.set_matrix_coefficients(static_cast<MatrixCoefficients>(reader.read_bits<u8>(8)));
+         }
++        colour = cicp;
+     }
+     if (reader.read_bit()) {               // chroma_loc_info_present_flag
+         reader.read_unsigned_exp_golomb(); // chroma_sample_loc_type_top_field
+@@ -275,14 +278,15 @@ Optional<H264::SequenceParameterSet> H264::parse_sequence_parameter_set(Readonly
+     }
+ 
+     Optional<u32> stated_count;
++    Optional<CodingIndependentCodePoints> colour;
+     if (reader.read_bit()) // vui_parameters_present_flag
+-        stated_count = parse_stated_max_reorder_frame_count(reader);
++        stated_count = parse_stated_max_reorder_frame_count(reader, colour);
+ 
+     if (reader.has_overrun())
+         return {};
+     // ITU-T H.264 (08/2024), E.2.1: Infer absent max_num_reorder_frames as zero for these
+     // profiles with constraint_set3_flag set, and as MaxDpbFrames otherwise.
+-    SequenceParameterSet parameter_set { .seq_parameter_set_id = static_cast<u8>(seq_parameter_set_id), .max_num_reorder_frames = 0 };
++    SequenceParameterSet parameter_set { .seq_parameter_set_id = static_cast<u8>(seq_parameter_set_id), .max_num_reorder_frames = 0, .colour = colour };
+     if (stated_count.has_value()) {
+         parameter_set.max_num_reorder_frames = static_cast<u8>(min(*stated_count, static_cast<u32>(MAXIMUM_REORDER_FRAME_COUNT)));
+     } else if (!(constraint_set3_flag && first_is_one_of(profile_idc, 44, 86, 100, 110, 122, 244))) {
+@@ -292,6 +296,17 @@ Optional<H264::SequenceParameterSet> H264::parse_sequence_parameter_set(Readonly
+     return parameter_set;
+ }
+ 
++Optional<CodingIndependentCodePoints> H264::colour_from_configuration_record(ReadonlyBytes record)
++{
++    auto parameter_sets = parse_parameter_sets_from_configuration_record(record);
++    if (!parameter_sets.has_value() || parameter_sets->sequence.is_empty())
++        return {};
++    auto sps = parse_sequence_parameter_set(parameter_sets->sequence.first());
++    if (!sps.has_value())
++        return {};
++    return sps->colour;
++}
++
+ // ITU-T H.264 (08/2024), 7.3.2.2: pic_parameter_set_rbsp(), through seq_parameter_set_id.
+ Optional<H264::PictureParameterSet> H264::parse_picture_parameter_set(ReadonlyBytes nal_unit)
+ {
+diff --git a/Libraries/LibMedia/Codecs/H264.h b/Libraries/LibMedia/Codecs/H264.h
+index 0bc62b2461..44082da3b0 100644
+--- a/Libraries/LibMedia/Codecs/H264.h
++++ b/Libraries/LibMedia/Codecs/H264.h
+@@ -12,6 +12,7 @@
+ #include <AK/Optional.h>
+ #include <AK/Span.h>
+ #include <AK/Vector.h>
++#include <LibMedia/Color/CodingIndependentCodePoints.h>
+ #include <LibMedia/Export.h>
+ 
+ namespace Media::Codecs {
+@@ -64,8 +65,13 @@ public:
+     struct SequenceParameterSet {
+         u8 seq_parameter_set_id;
+         u8 max_num_reorder_frames;
++        // The VUI's video signal type (E.1.1): range always, the colour description when present. Empty without one.
++        Optional<CodingIndependentCodePoints> colour {};
+     };
+ 
++    // The colour the first sequence parameter set of an AVC configuration record states, if any.
++    static MEDIA_API Optional<CodingIndependentCodePoints> colour_from_configuration_record(ReadonlyBytes);
++
+     struct PictureParameterSet {
+         u8 pic_parameter_set_id;
+         u8 seq_parameter_set_id;
+diff --git a/Libraries/LibMedia/Containers/ISOBMFF/Reader.cpp b/Libraries/LibMedia/Containers/ISOBMFF/Reader.cpp
+index abaf2f7584..03cd18c443 100644
+--- a/Libraries/LibMedia/Containers/ISOBMFF/Reader.cpp
++++ b/Libraries/LibMedia/Containers/ISOBMFF/Reader.cpp
+@@ -556,6 +556,7 @@ DecoderErrorOr<SampleEntry> Reader::parse_sample_entry(Streamer& streamer, BoxHe
+     }
+ 
+     Optional<CodingIndependentCodePoints> color_from_colour_information_box;
++    Optional<CodingIndependentCodePoints> color_from_bitstream;
+     TRY(parse_child_boxes(streamer, header, IsTopLevel::No, [&](BoxHeader const& child) -> DecoderErrorOr<IterationDecision> {
+         auto read_configuration = [&] -> DecoderErrorOr<FixedArray<u8>> {
+             return streamer.read_bytes(child.content_size.value());
+@@ -575,6 +576,7 @@ DecoderErrorOr<SampleEntry> Reader::parse_sample_entry(Streamer& streamer, BoxHe
+             TRY(require_sample_entry_codec(CodecID::H264));
+             entry.codec_initialization_data = TRY(read_configuration());
+             adopt_parameters(Codecs::H264::parse_configuration_record(entry.codec_initialization_data.span()));
++            color_from_bitstream = Codecs::H264::colour_from_configuration_record(entry.codec_initialization_data.span());
+         } else if (child.type == HEVC_CONFIGURATION_BOX) {
+             TRY(require_sample_entry_codec(CodecID::H265));
+             entry.codec_initialization_data = TRY(read_configuration());
+@@ -623,6 +625,14 @@ DecoderErrorOr<SampleEntry> Reader::parse_sample_entry(Streamer& streamer, BoxHe
+ 
+     if (entry.video.has_value()) {
+         auto color_from_configuration_record = entry.parsed_codec.has_value() ? entry.parsed_codec->color_information() : OptionalNone {};
++        // The bitstream's own colour (an AVC sequence parameter set's VUI) under the container's, as Chrome reads it:
++        // a full-range H.264 clip without a colr box was converted as studio range.
++        if (color_from_bitstream.has_value()) {
++            auto cicp = *color_from_bitstream;
++            if (color_from_configuration_record.has_value())
++                cicp.adopt_specified_values(*color_from_configuration_record);
++            color_from_configuration_record = cicp;
++        }
+         if (color_from_configuration_record.has_value() || color_from_colour_information_box.has_value()) {
+             auto cicp = color_from_configuration_record.value_or({});
+             cicp.adopt_specified_values(color_from_colour_information_box.value_or({}));

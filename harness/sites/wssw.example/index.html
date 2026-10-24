@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8"><title>wssw</title></head>
+<body><div id="state">start</div><div id="got"></div>
+<script>
+// A page whose service worker (sw.js) speaks WebSocket: the page hands the worker a URL, the worker echoes through it and
+// reports every event back (tests/pagesw.test.mjs, the chrome group). The page reads the worker's report from its messages.
+window.reports = [];
+const sw = navigator.serviceWorker;
+sw.addEventListener('message', (e) => { window.reports.push(e.data); });
+(async () => {
+    try {
+        await sw.register('sw.js', { scope: './' });
+        await sw.ready;
+        if (!sw.controller)
+            await new Promise((resolve) => sw.addEventListener('controllerchange', resolve, { once: true }));
+        document.getElementById('state').textContent = 'controlled';
+        document.title = 'ready';
+    } catch (e) {
+        document.title = 'error: ' + e;
+    }
+})();
+window.ask = (message) => sw.controller.postMessage(message);
+</script></body></html>

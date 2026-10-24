@@ -1,0 +1,7 @@
+<!doctype html><html><head><meta charset="utf-8"><title>parity</title></head>
+<body style="margin:0;background:#fff">
+<script src="probe.js"></script>
+<script>
+var parity = null;
+parityProbe(document, window, './').then(function (r) { parity = r; parity.done = true; }, function (e) { parity = { done: true, failed: String(e) }; });
+</script></body></html>

@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 14:20:42 -0500
+Subject: [PATCH 10/23] LibWeb: 32-bit targets (Wrappable size checks, a
+ non-constexpr clipboard prefix, an explicit bool from the style group
+ comparison)
+
+---
+ Libraries/LibWeb/Bindings/Wrappable.h      | 4 ++--
+ Libraries/LibWeb/CSS/ComputedValues.cpp    | 2 +-
+ Libraries/LibWeb/Clipboard/ClipboardItem.h | 3 ++-
+ 3 files changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/Libraries/LibWeb/Bindings/Wrappable.h b/Libraries/LibWeb/Bindings/Wrappable.h
+index dcfd4f47b6..9cab30b792 100644
+--- a/Libraries/LibWeb/Bindings/Wrappable.h
++++ b/Libraries/LibWeb/Bindings/Wrappable.h
+@@ -182,7 +182,7 @@ private:
+     GC::Weak<JS::HostObject> m_main_world_wrapper;
+ };
+ 
+-static_assert(sizeof(Wrappable) == 24);
++static_assert(sizeof(Wrappable) == (sizeof(void*) == 8 ? 24 : 12));
+ 
+ // Current LibWeb implementation objects are GC-owned. Keeping that ownership
+ // and its preservation flags in a separate base lets classes migrate to other
+@@ -230,7 +230,7 @@ private:
+     u8 m_preservation_flags { 0 };
+ };
+ 
+-static_assert(sizeof(GCAllocatedWrappable) == 32);
++static_assert(sizeof(GCAllocatedWrappable) == (sizeof(void*) == 8 ? 32 : 16));
+ // GCAllocatedWrappable's dsize is 25 bytes, allowing derived classes to reuse
+ // the remaining tail padding where supported by the ABI.
+ 
+diff --git a/Libraries/LibWeb/CSS/ComputedValues.cpp b/Libraries/LibWeb/CSS/ComputedValues.cpp
+index 84a8ca4797..0bf47ebfe7 100644
+--- a/Libraries/LibWeb/CSS/ComputedValues.cpp
++++ b/Libraries/LibWeb/CSS/ComputedValues.cpp
+@@ -147,7 +147,7 @@ static_assert(to_underlying(MathStyle::Compact) == 1);
+ 
+ bool ComputedValues::layout_affecting_group_payloads_differ(void const* const* a, void const* const* b)
+ {
+-    auto differs = [&]<typename T>() {
++    auto differs = [&]<typename T>() -> bool {
+         auto const* mine = static_cast<T const*>(a[T::style_group_index]);
+         auto const* theirs = static_cast<T const*>(b[T::style_group_index]);
+         return mine != theirs && !(*mine == *theirs);
+diff --git a/Libraries/LibWeb/Clipboard/ClipboardItem.h b/Libraries/LibWeb/Clipboard/ClipboardItem.h
+index 457c5a5ad8..5dc7df715b 100644
+--- a/Libraries/LibWeb/Clipboard/ClipboardItem.h
++++ b/Libraries/LibWeb/Clipboard/ClipboardItem.h
+@@ -19,7 +19,8 @@
+ 
+ namespace Web::Clipboard {
+ 
+-constexpr auto WEB_CUSTOM_FORMAT_PREFIX = "web "_utf16;
++// Not constexpr: a four-character string does not fit a 32-bit target's inline short string.
++inline auto const WEB_CUSTOM_FORMAT_PREFIX = "web "_utf16;
+ 
+ using PresentationStyle = Bindings::PresentationStyle;
+ 

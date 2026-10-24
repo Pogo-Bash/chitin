@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><title>a post after an await</title></head>
+<body>
+<script>
+var results = { events: [] };
+window.addEventListener('load', function () { results.events.push('window load'); });
+// The parent posts to its frame from a promise job: the message's source is the parent (the incumbent is the caller's realm).
+window.postLater = function () { return Promise.resolve().then(function () { document.getElementById('f').contentWindow.postMessage('after an await', '*'); }); };
+</script>
+<iframe id="f" src="realm-msg-child.html"></iframe>
+</body></html>

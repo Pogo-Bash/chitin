@@ -1,0 +1,9 @@
+<!doctype html><!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<meta charset=utf-8><title>coi worker XMLHttpRequest</title>
+<p id=s>running</p>
+<script>
+// XMLHttpRequest in a dedicated Worker (docs/user-tests/plasma.md): a disk Worker reads blocks with synchronous requests.
+const w = new Worker('xhr-worker.js');
+w.onmessage = (e) => { window.result = e.data; document.getElementById('s').textContent = 'done'; };
+w.onerror = (e) => { window.result = { error: e.message || 'worker error' }; };
+</script>

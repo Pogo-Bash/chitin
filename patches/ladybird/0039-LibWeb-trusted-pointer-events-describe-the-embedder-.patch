@@ -1,0 +1,334 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 16:30:51 -0500
+Subject: [PATCH 39/39] LibWeb: trusted pointer events describe the embedder's
+ platform pointer (type, id, contact size, pressure, primary), click, auxclick
+ and contextmenu are PointerEvents, and pointermove and the pointer boundary
+ events have button -1, as in Chrome
+
+---
+ Libraries/LibWeb/DOM/Document.cpp          | 108 ++++++++++++---------
+ Libraries/LibWeb/Page/EventHandler.cpp     |   6 +-
+ Libraries/LibWeb/UIEvents/PointerEvent.cpp |  57 ++++++++++-
+ Libraries/LibWeb/UIEvents/PointerEvent.h   |  24 ++++-
+ 4 files changed, 142 insertions(+), 53 deletions(-)
+
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+index cb97984209..04ac0c6f06 100644
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -3183,23 +3183,9 @@ void Document::set_hovered_node(GC::Ptr<Node> node, Optional<HoverEventData> hov
+         if (hover_event_data.has_value())
+             populate_mouse_event_options_from_hover_event_data(pointer_event_options, *hover_event_data, window_proxy);
+         auto offset = *old_hovered_node_offset;
+-        auto event = create_pointer_event(UIEvents::EventNames::pointerout, move(pointer_event_options), offset);
+-        mark_mouse_transition_event_as_trusted_if_needed(event, hover_event_data);
+-        old_hovered_node->dispatch_event(event);
+-    }
+-
+-    // https://w3c.github.io/uievents/#mouseout
+-    if (old_hovered_node && old_hovered_node != m_hovered_node) {
+-        UIEvents::MouseEventOptions mouse_event_options;
+-        mouse_event_options.bubbles = true;
+-        mouse_event_options.cancelable = true;
+-        mouse_event_options.composed = true;
+-        mouse_event_options.related_target = m_hovered_node;
+-        mouse_event_options.view = window_proxy;
+-        if (hover_event_data.has_value())
+-            populate_mouse_event_options_from_hover_event_data(mouse_event_options, *hover_event_data, window_proxy);
+-        auto offset = *old_hovered_node_offset;
+-        auto event = create_mouse_event(UIEvents::EventNames::mouseout, mouse_event_options, offset);
++        UIEvents::PointerEvent::apply_platform_pointer(pointer_event_options);
++            pointer_event_options.button = -1;
++            auto event = create_pointer_event(UIEvents::EventNames::pointerout, move(pointer_event_options), offset);
+         mark_mouse_transition_event_as_trusted_if_needed(event, hover_event_data);
+         old_hovered_node->dispatch_event(event);
+     }
+@@ -3215,26 +3201,14 @@ void Document::set_hovered_node(GC::Ptr<Node> node, Optional<HoverEventData> hov
+             if (hover_event_data.has_value())
+                 populate_mouse_event_options_from_hover_event_data(pointer_event_options, *hover_event_data, window_proxy);
+             auto offset = target.offset;
++            UIEvents::PointerEvent::apply_platform_pointer(pointer_event_options);
++            pointer_event_options.button = -1;
+             auto event = create_pointer_event(UIEvents::EventNames::pointerleave, move(pointer_event_options), offset);
+             mark_mouse_transition_event_as_trusted_if_needed(event, hover_event_data);
+             target.node->dispatch_event(event);
+         }
+     }
+ 
+-    // https://w3c.github.io/uievents/#mouseleave
+-    if (!mouse_leave_targets.is_empty()) {
+-        for (auto const& target : mouse_leave_targets) {
+-            UIEvents::MouseEventOptions mouse_event_options;
+-            mouse_event_options.related_target = m_hovered_node;
+-            if (hover_event_data.has_value())
+-                populate_mouse_event_options_from_hover_event_data(mouse_event_options, *hover_event_data, window_proxy);
+-            auto offset = target.offset;
+-            auto event = create_mouse_event(UIEvents::EventNames::mouseleave, mouse_event_options, offset);
+-            mark_mouse_transition_event_as_trusted_if_needed(event, hover_event_data);
+-            target.node->dispatch_event(event);
+-        }
+-    }
+-
+     // https://w3c.github.io/pointerevents/#the-pointerover-event
+     if (m_hovered_node && m_hovered_node != old_hovered_node) {
+         UIEvents::PointerEventOptions pointer_event_options;
+@@ -3248,11 +3222,66 @@ void Document::set_hovered_node(GC::Ptr<Node> node, Optional<HoverEventData> hov
+         if (hover_event_data.has_value())
+             populate_mouse_event_options_from_hover_event_data(pointer_event_options, *hover_event_data, window_proxy);
+         auto offset = *hovered_node_offset;
+-        auto event = create_pointer_event(UIEvents::EventNames::pointerover, move(pointer_event_options), offset);
++        UIEvents::PointerEvent::apply_platform_pointer(pointer_event_options);
++            pointer_event_options.button = -1;
++            auto event = create_pointer_event(UIEvents::EventNames::pointerover, move(pointer_event_options), offset);
+         mark_mouse_transition_event_as_trusted_if_needed(event, hover_event_data);
+         m_hovered_node->dispatch_event(event);
+     }
+ 
++    // https://w3c.github.io/pointerevents/#the-pointerenter-event
++    // https://w3c.github.io/uievents/#mouseenter
++    // Enter events are dispatched from ancestor to descendant.
++    // Leave events are dispatched in the opposite order.
++    if (!entered_ancestors.is_empty()) {
++        for (auto target : entered_ancestors.in_reverse()) {
++            UIEvents::PointerEventOptions pointer_event_options;
++            pointer_event_options.related_target = old_hovered_node;
++            pointer_event_options.is_primary = true;
++            pointer_event_options.pointer_type = UIEvents::PointerTypes::Mouse;
++            pointer_event_options.view = window_proxy;
++            if (hover_event_data.has_value())
++                populate_mouse_event_options_from_hover_event_data(pointer_event_options, *hover_event_data, window_proxy);
++            auto offset = target.offset;
++            UIEvents::PointerEvent::apply_platform_pointer(pointer_event_options);
++            pointer_event_options.button = -1;
++            auto pointer_event = create_pointer_event(UIEvents::EventNames::pointerenter, move(pointer_event_options), offset);
++            mark_mouse_transition_event_as_trusted_if_needed(pointer_event, hover_event_data);
++            target.node->dispatch_event(pointer_event);
++        }
++    }
++
++    // INTEROP: as in Chrome (Pointer Events 3 "boundary events"), every pointer boundary event before the mouse ones.
++    // https://w3c.github.io/uievents/#mouseout
++    if (old_hovered_node && old_hovered_node != m_hovered_node) {
++        UIEvents::MouseEventOptions mouse_event_options;
++        mouse_event_options.bubbles = true;
++        mouse_event_options.cancelable = true;
++        mouse_event_options.composed = true;
++        mouse_event_options.related_target = m_hovered_node;
++        mouse_event_options.view = window_proxy;
++        if (hover_event_data.has_value())
++            populate_mouse_event_options_from_hover_event_data(mouse_event_options, *hover_event_data, window_proxy);
++        auto offset = *old_hovered_node_offset;
++        auto event = create_mouse_event(UIEvents::EventNames::mouseout, mouse_event_options, offset);
++        mark_mouse_transition_event_as_trusted_if_needed(event, hover_event_data);
++        old_hovered_node->dispatch_event(event);
++    }
++
++    // https://w3c.github.io/uievents/#mouseleave
++    if (!mouse_leave_targets.is_empty()) {
++        for (auto const& target : mouse_leave_targets) {
++            UIEvents::MouseEventOptions mouse_event_options;
++            mouse_event_options.related_target = m_hovered_node;
++            if (hover_event_data.has_value())
++                populate_mouse_event_options_from_hover_event_data(mouse_event_options, *hover_event_data, window_proxy);
++            auto offset = target.offset;
++            auto event = create_mouse_event(UIEvents::EventNames::mouseleave, mouse_event_options, offset);
++            mark_mouse_transition_event_as_trusted_if_needed(event, hover_event_data);
++            target.node->dispatch_event(event);
++        }
++    }
++
+     // https://w3c.github.io/uievents/#mouseover
+     if (m_hovered_node && m_hovered_node != old_hovered_node) {
+         UIEvents::MouseEventOptions mouse_event_options;
+@@ -3269,27 +3298,14 @@ void Document::set_hovered_node(GC::Ptr<Node> node, Optional<HoverEventData> hov
+         m_hovered_node->dispatch_event(event);
+     }
+ 
+-    // https://w3c.github.io/pointerevents/#the-pointerenter-event
+     // https://w3c.github.io/uievents/#mouseenter
+-    // Enter events are dispatched from ancestor to descendant.
+-    // Leave events are dispatched in the opposite order.
+     if (!entered_ancestors.is_empty()) {
+         for (auto target : entered_ancestors.in_reverse()) {
+-            UIEvents::PointerEventOptions pointer_event_options;
+-            pointer_event_options.related_target = old_hovered_node;
+-            pointer_event_options.is_primary = true;
+-            pointer_event_options.pointer_type = UIEvents::PointerTypes::Mouse;
+-            pointer_event_options.view = window_proxy;
+-            if (hover_event_data.has_value())
+-                populate_mouse_event_options_from_hover_event_data(pointer_event_options, *hover_event_data, window_proxy);
+-            auto offset = target.offset;
+-            auto pointer_event = create_pointer_event(UIEvents::EventNames::pointerenter, move(pointer_event_options), offset);
+-            mark_mouse_transition_event_as_trusted_if_needed(pointer_event, hover_event_data);
+-            target.node->dispatch_event(pointer_event);
+             UIEvents::MouseEventOptions mouse_event_options;
+             mouse_event_options.related_target = old_hovered_node;
+             if (hover_event_data.has_value())
+                 populate_mouse_event_options_from_hover_event_data(mouse_event_options, *hover_event_data, window_proxy);
++            auto offset = target.offset;
+             auto mouse_event = create_mouse_event(UIEvents::EventNames::mouseenter, mouse_event_options, offset);
+             mark_mouse_transition_event_as_trusted_if_needed(mouse_event, hover_event_data);
+             target.node->dispatch_event(mouse_event);
+diff --git a/Libraries/LibWeb/Page/EventHandler.cpp b/Libraries/LibWeb/Page/EventHandler.cpp
+index cf3069922a..9bbc85334e 100644
+--- a/Libraries/LibWeb/Page/EventHandler.cpp
++++ b/Libraries/LibWeb/Page/EventHandler.cpp
+@@ -2707,7 +2707,7 @@ bool EventHandler::fire_click_events(GC::Ref<DOM::Node> node, MouseEventCoordina
+ 
+     if (button == UIEvents::MouseButton::Primary) {
+         // https://w3c.github.io/pointerevents/#click
+-        run_activation_behavior = node->dispatch_event(UIEvents::MouseEvent::create_from_platform_event(HTML::relevant_global_object(*node), m_navigable->active_window_proxy(), UIEvents::EventNames::click, screen_position, coordinates.page_offset, coordinates.viewport_position, coordinates.offset, {}, button, buttons, modifiers, click_count).release_value_but_fixme_should_propagate_errors());
++        run_activation_behavior = node->dispatch_event(UIEvents::PointerEvent::create_from_platform_event(HTML::relevant_global_object(*node), m_navigable->active_window_proxy(), UIEvents::EventNames::click, screen_position, coordinates.page_offset, coordinates.viewport_position, coordinates.offset, {}, button, buttons, modifiers, click_count).release_value_but_fixme_should_propagate_errors());
+ 
+         // https://w3c.github.io/uievents/#event-type-dblclick
+         // This event type MUST be dispatched after the event type click if a click and
+@@ -2716,7 +2716,7 @@ bool EventHandler::fire_click_events(GC::Ref<DOM::Node> node, MouseEventCoordina
+             node->dispatch_event(UIEvents::MouseEvent::create_from_platform_event(HTML::relevant_global_object(*node), m_navigable->active_window_proxy(), UIEvents::EventNames::dblclick, screen_position, coordinates.page_offset, coordinates.viewport_position, coordinates.offset, {}, button, buttons, modifiers, click_count).release_value_but_fixme_should_propagate_errors());
+     } else {
+         // https://w3c.github.io/pointerevents/#auxclick
+-        run_activation_behavior = node->dispatch_event(UIEvents::MouseEvent::create_from_platform_event(HTML::relevant_global_object(*node), m_navigable->active_window_proxy(), UIEvents::EventNames::auxclick, screen_position, coordinates.page_offset, coordinates.viewport_position, coordinates.offset, {}, button, buttons, modifiers, click_count).release_value_but_fixme_should_propagate_errors());
++        run_activation_behavior = node->dispatch_event(UIEvents::PointerEvent::create_from_platform_event(HTML::relevant_global_object(*node), m_navigable->active_window_proxy(), UIEvents::EventNames::auxclick, screen_position, coordinates.page_offset, coordinates.viewport_position, coordinates.offset, {}, button, buttons, modifiers, click_count).release_value_but_fixme_should_propagate_errors());
+     }
+ 
+     return run_activation_behavior;
+@@ -3146,7 +3146,7 @@ void EventHandler::maybe_show_context_menu(GC::Ref<DOM::Node> node, MouseEventCo
+     if ((modifiers & UIEvents::Mod_Shift) == 0) {
+         // 1. Let menuevent = create a PointerEvent with "contextmenu", target
+         // 2. If native is valid, then set MouseEvent attributes from native.
+-        auto menuevent = UIEvents::MouseEvent::create_from_platform_event(HTML::relevant_global_object(*node), m_navigable->active_window_proxy(), UIEvents::EventNames::contextmenu, screen_position, coordinates.page_offset, coordinates.viewport_position, coordinates.offset, {}, UIEvents::MouseButton::Secondary, buttons, modifiers).release_value_but_fixme_should_propagate_errors();
++        auto menuevent = UIEvents::PointerEvent::create_from_platform_event(HTML::relevant_global_object(*node), m_navigable->active_window_proxy(), UIEvents::EventNames::contextmenu, screen_position, coordinates.page_offset, coordinates.viewport_position, coordinates.offset, {}, UIEvents::MouseButton::Secondary, buttons, modifiers).release_value_but_fixme_should_propagate_errors();
+ 
+         // 3. Let result = dispatch menuevent at target.
+         bool result = node->dispatch_event(menuevent);
+diff --git a/Libraries/LibWeb/UIEvents/PointerEvent.cpp b/Libraries/LibWeb/UIEvents/PointerEvent.cpp
+index 2779b01ef7..c7d32fe780 100644
+--- a/Libraries/LibWeb/UIEvents/PointerEvent.cpp
++++ b/Libraries/LibWeb/UIEvents/PointerEvent.cpp
+@@ -41,9 +41,47 @@ double PointerEvent::client_y() const { return should_have_fractional_coordinate
+ double PointerEvent::offset_x() const { return should_have_fractional_coordinates() ? m_offset_x : MouseEvent::offset_x(); }
+ double PointerEvent::offset_y() const { return should_have_fractional_coordinates() ? m_offset_y : MouseEvent::offset_y(); }
+ 
+-WebIDL::ExceptionOr<GC::Ref<PointerEvent>> PointerEvent::create_from_platform_event(JS::Object const& relevant_global_object, GC::Ptr<HTML::WindowProxy> window_proxy, FlyString const& event_name, CSSPixelPoint screen, CSSPixelPoint page, CSSPixelPoint client, CSSPixelPoint offset, Optional<CSSPixelPoint> movement, unsigned button, unsigned buttons, unsigned modifiers)
++static PointerEvent::PlatformPointer s_platform_pointer;
++
++void PointerEvent::set_platform_pointer(PlatformPointer const& pointer)
++{
++    s_platform_pointer = pointer;
++}
++
++PointerEvent::PlatformPointer const& PointerEvent::platform_pointer()
++{
++    return s_platform_pointer;
++}
++
++void PointerEvent::apply_platform_pointer(PointerEventOptions& options)
++{
++    auto const& p = s_platform_pointer;
++    switch (p.type) {
++    case PlatformPointerType::Mouse:
++        options.pointer_type = PointerTypes::Mouse;
++        break;
++    case PlatformPointerType::Pen:
++        options.pointer_type = PointerTypes::Pen;
++        break;
++    case PlatformPointerType::Touch:
++        options.pointer_type = PointerTypes::Touch;
++        break;
++    }
++    options.pointer_id = p.id;
++    options.width = p.width;
++    options.height = p.height;
++    options.is_primary = p.is_primary;
++    // https://w3c.github.io/pointerevents/#dom-pointerevent-pressure
++    if (options.buttons == 0)
++        options.pressure = 0;
++    else
++        options.pressure = p.pressure < 0 ? ACTIVE_PRESSURE_DEFAULT_IN_ACTIVE_BUTTON_STATE : p.pressure;
++}
++
++WebIDL::ExceptionOr<GC::Ref<PointerEvent>> PointerEvent::create_from_platform_event(JS::Object const& relevant_global_object, GC::Ptr<HTML::WindowProxy> window_proxy, FlyString const& event_name, CSSPixelPoint screen, CSSPixelPoint page, CSSPixelPoint client, CSSPixelPoint offset, Optional<CSSPixelPoint> movement, unsigned button, unsigned buttons, unsigned modifiers, int detail)
+ {
+     PointerEventOptions event_options;
++    event_options.detail = detail;
+     event_options.ctrl_key = modifiers & Mod_Ctrl;
+     event_options.shift_key = modifiers & Mod_Shift;
+     event_options.alt_key = modifiers & Mod_Alt;
+@@ -61,6 +99,13 @@ WebIDL::ExceptionOr<GC::Ref<PointerEvent>> PointerEvent::create_from_platform_ev
+     }
+     event_options.button = mouse_button_to_button_code(static_cast<MouseButton>(button));
+     event_options.buttons = buttons;
++    apply_platform_pointer(event_options);
++    // https://w3c.github.io/pointerevents/#the-button-property: -1 when no button changed since the last event (a pointermove).
++    if (event_name == "pointermove"sv)
++        event_options.button = -1;
++    // INTEROP: Chrome makes the click, auxclick and contextmenu a mouse leads to non-primary PointerEvents.
++    if (event_name.is_one_of("click"sv, "auxclick"sv, "contextmenu"sv))
++        event_options.is_primary = false;
+     auto event = PointerEvent::create(event_name, move(event_options), page.x().to_double(), page.y().to_double(), offset.x().to_double(), offset.y().to_double(), HighResolutionTime::current_high_resolution_time(relevant_global_object));
+     event->set_is_trusted(true);
+     event->set_bubbles(true);
+@@ -69,9 +114,10 @@ WebIDL::ExceptionOr<GC::Ref<PointerEvent>> PointerEvent::create_from_platform_ev
+     return event;
+ }
+ 
+-WebIDL::ExceptionOr<GC::Ref<PointerEvent>> PointerEvent::create_from_platform_event(JS::Object const& relevant_global_object, GC::Ptr<HTML::WindowProxy> window_proxy, Utf16FlyString const& event_name, CSSPixelPoint screen, CSSPixelPoint page, CSSPixelPoint client, CSSPixelPoint offset, Optional<CSSPixelPoint> movement, unsigned button, unsigned buttons, unsigned modifiers)
++WebIDL::ExceptionOr<GC::Ref<PointerEvent>> PointerEvent::create_from_platform_event(JS::Object const& relevant_global_object, GC::Ptr<HTML::WindowProxy> window_proxy, Utf16FlyString const& event_name, CSSPixelPoint screen, CSSPixelPoint page, CSSPixelPoint client, CSSPixelPoint offset, Optional<CSSPixelPoint> movement, unsigned button, unsigned buttons, unsigned modifiers, int detail)
+ {
+     PointerEventOptions event_options;
++    event_options.detail = detail;
+     event_options.ctrl_key = modifiers & Mod_Ctrl;
+     event_options.shift_key = modifiers & Mod_Shift;
+     event_options.alt_key = modifiers & Mod_Alt;
+@@ -89,6 +135,13 @@ WebIDL::ExceptionOr<GC::Ref<PointerEvent>> PointerEvent::create_from_platform_ev
+     }
+     event_options.button = mouse_button_to_button_code(static_cast<MouseButton>(button));
+     event_options.buttons = buttons;
++    apply_platform_pointer(event_options);
++    // https://w3c.github.io/pointerevents/#the-button-property: -1 when no button changed since the last event (a pointermove).
++    if (event_name == UIEvents::EventNames::pointermove)
++        event_options.button = -1;
++    // INTEROP: Chrome makes the click, auxclick and contextmenu a mouse leads to non-primary PointerEvents.
++    if (event_name == HTML::EventNames::click || event_name == UIEvents::EventNames::auxclick || event_name == HTML::EventNames::contextmenu)
++        event_options.is_primary = false;
+     auto event = PointerEvent::create(event_name, move(event_options), page.x().to_double(), page.y().to_double(), offset.x().to_double(), offset.y().to_double(), HighResolutionTime::current_high_resolution_time(relevant_global_object));
+     event->set_is_trusted(true);
+     event->set_bubbles(true);
+diff --git a/Libraries/LibWeb/UIEvents/PointerEvent.h b/Libraries/LibWeb/UIEvents/PointerEvent.h
+index 579b699226..3b8e8be60a 100644
+--- a/Libraries/LibWeb/UIEvents/PointerEvent.h
++++ b/Libraries/LibWeb/UIEvents/PointerEvent.h
+@@ -62,8 +62,28 @@ public:
+         HighResolutionTime::DOMHighResTimeStamp);
+     [[nodiscard]] static WebIDL::ExceptionOr<GC::Ref<PointerEvent>> create_for_constructor(FlyString const&, Bindings::PointerEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
+     [[nodiscard]] static WebIDL::ExceptionOr<GC::Ref<PointerEvent>> create_for_constructor(Utf16String const&, Bindings::PointerEventInit const&, HighResolutionTime::DOMHighResTimeStamp);
+-    [[nodiscard]] static WebIDL::ExceptionOr<GC::Ref<PointerEvent>> create_from_platform_event(JS::Object const& relevant_global_object, GC::Ptr<HTML::WindowProxy>, FlyString const& event_name, CSSPixelPoint screen, CSSPixelPoint page, CSSPixelPoint client, CSSPixelPoint offset, Optional<CSSPixelPoint> movement, unsigned button, unsigned buttons, unsigned modifiers);
+-    [[nodiscard]] static WebIDL::ExceptionOr<GC::Ref<PointerEvent>> create_from_platform_event(JS::Object const& relevant_global_object, GC::Ptr<HTML::WindowProxy>, Utf16FlyString const& event_name, CSSPixelPoint screen, CSSPixelPoint page, CSSPixelPoint client, CSSPixelPoint offset, Optional<CSSPixelPoint> movement, unsigned button, unsigned buttons, unsigned modifiers);
++    [[nodiscard]] static WebIDL::ExceptionOr<GC::Ref<PointerEvent>> create_from_platform_event(JS::Object const& relevant_global_object, GC::Ptr<HTML::WindowProxy>, FlyString const& event_name, CSSPixelPoint screen, CSSPixelPoint page, CSSPixelPoint client, CSSPixelPoint offset, Optional<CSSPixelPoint> movement, unsigned button, unsigned buttons, unsigned modifiers, int detail = 0);
++    [[nodiscard]] static WebIDL::ExceptionOr<GC::Ref<PointerEvent>> create_from_platform_event(JS::Object const& relevant_global_object, GC::Ptr<HTML::WindowProxy>, Utf16FlyString const& event_name, CSSPixelPoint screen, CSSPixelPoint page, CSSPixelPoint client, CSSPixelPoint offset, Optional<CSSPixelPoint> movement, unsigned button, unsigned buttons, unsigned modifiers, int detail = 0);
++
++    // The platform pointer the embedder's next input describes (Chitin): its type, id, contact size, pressure (negative: none
++    // reported, so 0.5 while a button is down and 0 otherwise) and whether it is the primary pointer. Trusted pointer events,
++    // and the click, auxclick and contextmenu PointerEvents the mouse events lead to, take these from it.
++    enum class PlatformPointerType : u8 {
++        Mouse,
++        Pen,
++        Touch,
++    };
++    struct PlatformPointer {
++        PlatformPointerType type { PlatformPointerType::Mouse };
++        WebIDL::Long id { 1 };
++        double width { 1 };
++        double height { 1 };
++        float pressure { -1 };
++        bool is_primary { true };
++    };
++    static void set_platform_pointer(PlatformPointer const&);
++    static PlatformPointer const& platform_pointer();
++    static void apply_platform_pointer(PointerEventOptions&);
+ 
+     virtual ~PointerEvent() override;
+ 
+-- 
+2.50.1 (Apple Git-155)
+

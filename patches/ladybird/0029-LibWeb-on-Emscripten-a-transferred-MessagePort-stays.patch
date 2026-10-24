@@ -1,0 +1,193 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 06:23:53 -0500
+Subject: [PATCH 29/29] LibWeb: on Emscripten a transferred MessagePort stays
+ entangled in-process instead of trapping on a socketpair
+
+An embedder without IPC keeps every agent in one process. The port that stays waits under an id carried by the
+transfer data; the port the transfer creates entangles with it directly. Messages the waiting end posts in the
+meantime are kept and flushed on entanglement. A waiting end that is itself transferred hands its place on.
+---
+ Libraries/LibWeb/HTML/MessagePort.cpp | 102 +++++++++++++++++++++++++-
+ Libraries/LibWeb/HTML/MessagePort.h   |   6 ++
+ 2 files changed, 106 insertions(+), 2 deletions(-)
+
+diff --git a/Libraries/LibWeb/HTML/MessagePort.cpp b/Libraries/LibWeb/HTML/MessagePort.cpp
+index 34903c616f..b9ed0a7f7b 100644
+--- a/Libraries/LibWeb/HTML/MessagePort.cpp
++++ b/Libraries/LibWeb/HTML/MessagePort.cpp
+@@ -32,6 +32,22 @@ namespace Web::HTML {
+ 
+ constexpr u8 IPC_FILE_TAG = 0xA5;
+ 
++#ifdef AK_OS_EMSCRIPTEN
++// AD-HOC: An embedder without IPC (Emscripten: no socketpair) keeps both ends of a transferred channel in this process.
++//         The end that stays waits in this table under an id; the transfer data carries the id instead of a transport
++//         handle. IN_PROCESS_CLAIM_TAG: the receiving port entangles with the waiting one. IN_PROCESS_WAIT_TAG: the
++//         waiting end was itself transferred, and the receiving port waits under the same id in its place.
++constexpr u8 IN_PROCESS_CLAIM_TAG = 0xA6;
++constexpr u8 IN_PROCESS_WAIT_TAG = 0xA7;
++
++static HashMap<u64, GC::Root<MessagePort>>& in_process_waiting_ports()
++{
++    static NeverDestroyed<HashMap<u64, GC::Root<MessagePort>>> ports;
++    return *ports;
++}
++static u64 s_next_in_process_peer_id = 1;
++#endif
++
+ GC_DEFINE_ALLOCATOR(MessagePort);
+ 
+ static GC::WeakHashSet<MessagePort>& all_message_ports()
+@@ -103,6 +119,15 @@ void MessagePort::visit_edges(Cell::Visitor& visitor)
+     visitor.visit(m_worker_event_target);
+ }
+ 
++bool MessagePort::is_waiting_for_in_process_peer() const
++{
++#ifdef AK_OS_EMSCRIPTEN
++    return m_in_process_peer_id != 0;
++#else
++    return false;
++#endif
++}
++
+ bool MessagePort::is_entangled() const
+ {
+     return m_remote_port || m_transport;
+@@ -116,6 +141,50 @@ void MessagePort::set_worker_event_target(GC::Ref<DOM::EventTarget> target)
+ // https://html.spec.whatwg.org/multipage/web-messaging.html#message-ports:transfer-steps
+ WebIDL::ExceptionOr<void> MessagePort::transfer_steps(JS::Realm& realm, HTML::TransferDataEncoder& data_holder)
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    if (!m_transport) {
++        // 2. Set dataHolder.[[PortMessageQueue]] to value's port message queue.
++        TRY(encode_or_throw_data_clone_error(realm, data_holder, m_pending_incoming_messages));
++        TRY(encode_or_throw_data_clone_error(realm, data_holder, m_pending_outgoing_messages));
++        TRY(encode_or_throw_data_clone_error(realm, data_holder, m_should_shutdown_on_enable));
++        u8 tag = 0;
++        u64 id = 0;
++        if (m_remote_port) {
++            tag = IN_PROCESS_CLAIM_TAG;
++            id = s_next_in_process_peer_id++;
++        } else if (m_in_process_peer_id) {
++            tag = IN_PROCESS_WAIT_TAG;
++            id = m_in_process_peer_id;
++        }
++        TRY(encode_or_throw_data_clone_error(realm, data_holder, tag));
++        if (tag != 0) {
++            if (m_fail_next_transfer_for_testing) {
++                m_fail_next_transfer_for_testing = false;
++                return WebIDL::DataCloneError::create("Forced MessagePort transfer failure"_utf16);
++            }
++            TRY(encode_or_throw_data_clone_error(realm, data_holder, id));
++        }
++
++        // 1. Set value's has been shipped flag to true.
++        m_has_been_shipped = true;
++        if (tag == IN_PROCESS_CLAIM_TAG) {
++            // 3. If value is entangled with another port remotePort, then: remotePort waits for the port this transfer creates.
++            auto remote_port = m_remote_port;
++            remote_port->m_remote_port = nullptr;
++            m_remote_port = nullptr;
++            remote_port->m_in_process_peer_id = id;
++            in_process_waiting_ports().set(id, GC::make_root(*remote_port));
++        } else if (tag == IN_PROCESS_WAIT_TAG) {
++            // The id's waiting port is replaced by the one the receiver creates.
++            in_process_waiting_ports().remove(id);
++            m_in_process_peer_id = 0;
++        }
++        m_pending_incoming_messages.clear();
++        m_pending_outgoing_messages.clear();
++        m_should_shutdown_on_enable = false;
++        return {};
++    }
++#endif
+     bool has_remote_port_handle = false;
+     IPC::TransportHandle remote_port_handle;
+     GC::Ptr<MessagePort> remote_port;
+@@ -204,6 +273,29 @@ WebIDL::ExceptionOr<void> MessagePort::transfer_receiving_steps(JS::Realm& realm
+     m_should_shutdown_on_enable = TRY(decode_or_throw_data_clone_error<bool>(realm, data_holder));
+     auto fd_tag = TRY(decode_or_throw_data_clone_error<u8>(realm, data_holder));
+ 
++#ifdef AK_OS_EMSCRIPTEN
++    if (fd_tag == IN_PROCESS_CLAIM_TAG || fd_tag == IN_PROCESS_WAIT_TAG) {
++        auto id = TRY(decode_or_throw_data_clone_error<u64>(realm, data_holder));
++        // In this process the port message queue is delivered by this port's own tasks, not a transport's.
++        m_has_been_shipped = false;
++        m_has_ever_been_entangled = true;
++        if (fd_tag == IN_PROCESS_WAIT_TAG) {
++            m_in_process_peer_id = id;
++            in_process_waiting_ports().set(id, GC::make_root(*this));
++            return {};
++        }
++        // 3. If dataHolder.[[RemotePort]] is not null, then entangle dataHolder.[[RemotePort]] and value.
++        auto waiting = in_process_waiting_ports().take(id);
++        if (waiting.has_value()) {
++            GC::Ref<MessagePort> remote_port = *waiting.value();
++            remote_port->m_in_process_peer_id = 0;
++            if (!remote_port->is_detached())
++                entangle_with(*remote_port);
++        }
++        return {};
++    }
++#endif
++
+     // 3. If dataHolder.[[RemotePort]] is not null, then entangle dataHolder.[[RemotePort]] and value.
+     //     (This will disentangle dataHolder.[[RemotePort]] from the original port that was transferred.)
+     if (fd_tag == IPC_FILE_TAG) {
+@@ -228,6 +320,12 @@ WebIDL::ExceptionOr<void> MessagePort::transfer_receiving_steps(JS::Realm& realm
+ 
+ void MessagePort::disentangle()
+ {
++#ifdef AK_OS_EMSCRIPTEN
++    if (m_in_process_peer_id) {
++        in_process_waiting_ports().remove(m_in_process_peer_id);
++        m_in_process_peer_id = 0;
++    }
++#endif
+     if (m_remote_port) {
+         m_remote_port->m_remote_port = nullptr;
+         m_remote_port = nullptr;
+@@ -335,7 +433,7 @@ WebIDL::ExceptionOr<void> MessagePort::message_port_post_message_steps(JS::Realm
+         }));
+     } else if (m_transport) {
+         post_port_message(serialize_with_transfer_result);
+-    } else if (!is_detached() && !m_has_been_shipped && !m_has_ever_been_entangled) {
++    } else if (!is_detached() && !m_has_been_shipped && (!m_has_ever_been_entangled || is_waiting_for_in_process_peer())) {
+         // AD-HOC: A port can exist before it has a transport to send on. Keep the serialized record on the port
+         //         and flush it once the port becomes entangled.
+         m_pending_outgoing_messages.append(move(serialize_with_transfer_result));
+@@ -514,7 +612,7 @@ void MessagePort::close()
+     set_detached(true);
+ 
+     // 2. If this MessagePort object is entangled, disentangle it.
+-    if (is_entangled())
++    if (is_entangled() || is_waiting_for_in_process_peer())
+         disentangle();
+ 
+     m_pending_incoming_messages.clear();
+diff --git a/Libraries/LibWeb/HTML/MessagePort.h b/Libraries/LibWeb/HTML/MessagePort.h
+index b82142adc6..ca4da6e4e5 100644
+--- a/Libraries/LibWeb/HTML/MessagePort.h
++++ b/Libraries/LibWeb/HTML/MessagePort.h
+@@ -105,6 +105,7 @@ private:
+     ErrorOr<void> send_message_on_transport(SerializedTransferRecord const&);
+     void read_from_transport();
+     void update_keep_alive();
++    bool is_waiting_for_in_process_peer() const;
+ 
+     // The HTML spec implies(!) that this is MessagePort.[[RemotePort]]
+     GC::Ptr<MessagePort> m_remote_port;
+@@ -113,6 +114,11 @@ private:
+     bool m_has_been_shipped { false };
+     bool m_has_ever_been_entangled { false };
+     bool m_fail_next_transfer_for_testing { false };
++#ifdef AK_OS_EMSCRIPTEN
++    // AD-HOC: Every agent of an embedder without IPC lives in one process. A transferred port's peer stays here and
++    //         waits under this id for the port that the transfer creates, which entangles with it directly.
++    u64 m_in_process_peer_id { 0 };
++#endif
+ 
+     OwnPtr<IPC::Transport> m_transport;
+ 

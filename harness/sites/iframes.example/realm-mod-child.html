@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><title>module child</title></head>
+<body>
+<script type="module">
+import { seenTitle, sameWindow, where } from './shared-mod.js';
+const local = 'mine';
+window.childSaw = [seenTitle, sameWindow, where(), local, typeof parentSaw, import.meta.url.endsWith('/realm-mod-child.html') || import.meta.url.indexOf('realm-mod-child.html') >= 0].join(' ');
+parent.results.events.push('child module');
+</script>
+</body></html>

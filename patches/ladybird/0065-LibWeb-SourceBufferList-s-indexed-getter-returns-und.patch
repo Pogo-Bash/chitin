@@ -1,0 +1,64 @@
+From 99edbafb9aa03deffc346f56cc18c8bb45831f4e Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 09:07:14 -0500
+Subject: [PATCH] LibWeb: SourceBufferList's indexed getter returns undefined
+ past the length
+
+SourceBufferList::item() indexed its vector without a range check, and the
+bindings walked it for own-keys up to the first missing index, so
+Object.keys(mediaSource.sourceBuffers), or sourceBuffers[n] past the
+length, hit a VERIFY. item() now returns null there and the getter uses
+the generator's pointer mode, as AudioTrackList and TextTrackList do.
+---
+ Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.cpp | 6 +++++-
+ Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.h   | 2 +-
+ .../libweb_bindings/named_and_indexed_properties.py         | 2 --
+ 3 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.cpp b/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.cpp
+index 47cb179f4f..d2e1a84978 100644
+--- a/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.cpp
++++ b/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.cpp
+@@ -60,8 +60,12 @@ size_t SourceBufferList::length() const
+     return m_buffers.size();
+ }
+ 
+-GC::Ref<SourceBuffer> const& SourceBufferList::item(u32 index) const
++// https://w3c.github.io/media-source/#dfn-sourcebufferlist-getter
++// An index at or past the length has no SourceBuffer: the getter returns undefined there (and own-keys stops), as in Chrome.
++GC::Ptr<SourceBuffer> SourceBufferList::item(u32 index) const
+ {
++    if (index >= m_buffers.size())
++        return nullptr;
+     return m_buffers[index];
+ }
+ 
+diff --git a/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.h b/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.h
+index 83c4993e98..0bde8e4a24 100644
+--- a/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.h
++++ b/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.h
+@@ -20,7 +20,7 @@ public:
+     void remove_all_buffers(Badge<MediaSource>);
+ 
+     size_t length() const;
+-    GC::Ref<SourceBuffer> const& item(u32 index) const;
++    GC::Ptr<SourceBuffer> item(u32 index) const;
+ 
+     void set_onaddsourcebuffer(GC::Ptr<WebIDL::CallbackType>);
+     GC::Ptr<WebIDL::CallbackType> onaddsourcebuffer();
+diff --git a/Meta/Generators/libweb_bindings/named_and_indexed_properties.py b/Meta/Generators/libweb_bindings/named_and_indexed_properties.py
+index 861af9ef1b..121789c6d4 100644
+--- a/Meta/Generators/libweb_bindings/named_and_indexed_properties.py
++++ b/Meta/Generators/libweb_bindings/named_and_indexed_properties.py
+@@ -171,8 +171,6 @@ def indexed_property_getter_value_mode(interface: Interface) -> str:
+         return "optional"
+     if interface.name in ("SVGLengthList", "SVGNumberList", "SVGTransformList"):
+         return "svg_list"
+-    if interface.name in ("SourceBufferList",):
+-        return "value"
+     return "pointer"
+ 
+ 
+-- 
+2.50.1 (Apple Git-155)
+

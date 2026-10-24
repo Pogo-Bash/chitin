@@ -1,0 +1,131 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>opfs</title></head>
+<body>
+<div id="out">start</div>
+<script>
+// OPFS from the page (tests/opfs.test.mjs): the interfaces, the files, Chrome's errors, and the page's service worker
+// seeing the same files (sw.js).
+const name = (p) => p.then(() => 'ok', (e) => (e instanceof DOMException ? 'DOMException:' : e instanceof TypeError ? 'TypeError:' : 'other:') + e.name);
+window.run = async function run() {
+    const out = {};
+    out.storage = [navigator.storage instanceof StorageManager, String(navigator.storage), typeof navigator.storage.getDirectory];
+    const est = await navigator.storage.estimate();
+    out.estimate = [typeof est.usage, typeof est.quota];
+    out.persisted = typeof await navigator.storage.persisted();
+    const root = await navigator.storage.getDirectory();
+    out.root = [root.kind, root.name, root instanceof FileSystemDirectoryHandle, root instanceof FileSystemHandle, String(root), Object.prototype.toString.call(root)];
+    const docs = await root.getDirectoryHandle('docs', { create: true });
+    const a = await docs.getFileHandle('a.txt', { create: true });
+    out.file = [a.kind, a.name, a instanceof FileSystemFileHandle, a instanceof FileSystemHandle];
+    let w = await a.createWritable();
+    out.writable = [w instanceof FileSystemWritableFileStream, w instanceof WritableStream, String(w)];
+    await w.write('hello ');
+    await w.write(new TextEncoder().encode('wor').buffer);
+    await w.write(new Uint8Array([108, 100]));
+    await w.write(new Blob(['!']));
+    await w.write({ type: 'write', data: '?', position: 11 });
+    await w.seek(5);
+    await w.write('_');
+    await w.truncate(12);
+    await w.close();
+    const f = await a.getFile();
+    out.read = [f instanceof File, f instanceof Blob, f.name, f.size, await f.text(), typeof f.lastModified];
+    w = await a.createWritable({ keepExistingData: true });
+    await w.seek(0);
+    await w.write('J');
+    await w.close();
+    out.keep = await (await a.getFile()).text();
+    const b = await docs.getFileHandle('b.bin', { create: true });
+    const rs = new ReadableStream({ start(c) { c.enqueue(new Uint8Array([1, 2, 3])); c.enqueue(new Uint8Array([4])); c.close(); } });
+    await rs.pipeTo(await b.createWritable());
+    out.piped = Array.from(new Uint8Array(await (await b.getFile()).arrayBuffer()));
+    out.errors = {
+        missing: await name(docs.getFileHandle('nope')),
+        mismatchDir: await name(docs.getDirectoryHandle('a.txt')),
+        mismatchFile: await name(root.getFileHandle('docs')),
+        badName: await name(docs.getFileHandle('a/b', { create: true })),
+        emptyName: await name(docs.getFileHandle('')),
+        notEmpty: await name(root.removeEntry('docs')),
+        noEntry: await name(root.removeEntry('zzz')),
+        noArgs: await name(docs.getFileHandle()),
+        isSameBad: await name(a.isSameEntry({})),
+    };
+    out.errorClass = await docs.getFileHandle('nope').catch((e) => [e.constructor === DOMException, e.code, e instanceof Error]);
+    const names = [];
+    for await (const [k, v] of docs) names.push(k + ':' + v.kind);
+    out.entries = names.sort();
+    const keys = [];
+    for await (const k of docs.keys()) keys.push(k);
+    const vals = [];
+    for await (const v of docs.values()) vals.push(v.name + (v instanceof FileSystemFileHandle));
+    out.keysValues = [keys.sort(), vals.sort()];
+    out.iterTag = Object.prototype.toString.call(docs.entries());
+    const a2 = await docs.getFileHandle('a.txt');
+    out.resolve = [await root.resolve(a), await root.resolve(root), await docs.resolve(root), await a.isSameEntry(a2), await a.isSameEntry(b)];
+    await docs.removeEntry('b.bin');
+    const left = [];
+    for await (const k of docs.keys()) left.push(k);
+    out.afterRemove = left.sort();
+    out.shape = {
+        sync: [typeof FileSystemSyncAccessHandle, 'createSyncAccessHandle' in FileSystemFileHandle.prototype],
+        enumerable: Object.keys(FileSystemDirectoryHandle.prototype).sort(),
+        construct: await name(Promise.resolve().then(() => new FileSystemFileHandle())),
+        illegal: await name(Promise.resolve().then(() => FileSystemHandle.prototype.isSameEntry.call({}, a))),
+    };
+    return out;
+};
+// The sequence WPT's fs/ writes use, many times over (a race between a close and the next getFile showed up in Chrome).
+window.stress = async function stress(n) {
+    const root = await navigator.storage.getDirectory();
+    const dir = await root.getDirectoryHandle('stress', { create: true });
+    const errors = [];
+    for (let i = 0; i < n; i++) {
+        try {
+            const h = await dir.getFileHandle('f' + i, { create: true });
+            let w = await h.createWritable();
+            await w.write(new Blob(['x']));
+            await w.close();
+            w = await h.createWritable();
+            await w.write('1234567890');
+            await w.write({ type: 'write', position: 4, data: 'abc' });
+            await w.close();
+            const text = await new Response(await h.getFile()).text();
+            if (text !== '1234abc890') errors.push(i + ': ' + text);
+        } catch (e) { errors.push(i + ': ' + e.name + ' ' + e.message); }
+    }
+    await root.removeEntry('stress', { recursive: true });
+    return errors;
+};
+window.queued = async function queued() {
+    const root = await navigator.storage.getDirectory();
+    const h = await root.getFileHandle('queued.txt', { create: true });
+    const out = {};
+    const timeout = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r('timeout'), ms))]);
+    const stream = await h.createWritable();
+    out.locked = [];
+    stream.write('abc'); out.locked.push(stream.locked);
+    stream.write('def'); out.locked.push(stream.locked);
+    stream.truncate(9); out.locked.push(stream.locked);
+    stream.seek(0); out.locked.push(stream.locked);
+    stream.write('xyz'); out.locked.push(stream.locked);
+    out.close = await timeout(stream.close().then(() => 'ok', (e) => e.name), 5000);
+    out.text = await timeout(new Response(await h.getFile()).text(), 5000);
+    await root.removeEntry('queued.txt');
+    return out;
+};
+window.viaWorker = async function viaWorker() {
+    await navigator.serviceWorker.register('sw.js', { scope: './' });
+    await navigator.serviceWorker.ready;
+    if (!navigator.serviceWorker.controller)
+        await new Promise((resolve) => navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true }));
+    const channel = new MessageChannel();
+    const reply = new Promise((resolve) => { channel.port1.onmessage = (e) => resolve(e.data); });
+    navigator.serviceWorker.controller.postMessage({ type: 'opfs' }, [channel.port2]);
+    const fromWorker = await reply;
+    const root = await navigator.storage.getDirectory();
+    const docs = await root.getDirectoryHandle('docs');
+    return { fromWorker, pageReadsWorkers: await (await (await docs.getFileHandle('from-sw.txt')).getFile()).text() };
+};
+document.getElementById('out').textContent = 'ready';
+</script>
+</body></html>

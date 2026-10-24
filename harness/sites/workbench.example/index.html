@@ -1,0 +1,46 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<html lang="en"><head><meta charset="utf-8"><title>workbench</title>
+<meta name="viewport" content="width=device-width">
+<style>
+@font-face { font-family: WBAscii; src: url(ascii-only.woff2) format('woff2'); }
+html, body { margin: 0; background: #fff; color: #111; font: 14px/1.3 sans-serif; }
+#stage { position: absolute; left: 0; top: 140px; width: 1320px; height: 1400px; }
+.wb-box { background: #f6f6f2; outline: 1px solid #ccc; }
+.wb-label { font: 11px monospace; color: #666; height: 16px; }
+#input-fixture { position: fixed; left: 8px; top: 8px; width: 600px; height: 120px; background: #eef; z-index: 10; }
+#input-fixture input, #input-fixture button, #input-fixture textarea { font: 14px sans-serif; }
+#wb-scroll { position: absolute; left: 420px; top: 8px; width: 160px; height: 100px; overflow: auto; background: #dde; }
+#wb-hover { position: absolute; left: 300px; top: 60px; width: 100px; height: 50px; background: #cdc; }
+</style></head>
+<body>
+<div id="input-fixture">
+  <input id="wb-text" value="" style="position:absolute;left:8px;top:8px;width:160px">
+  <button id="wb-btn" style="position:absolute;left:180px;top:8px;width:80px">Press</button>
+  <input id="wb-cb" type="checkbox" style="position:absolute;left:270px;top:10px">
+  <textarea id="wb-ta" style="position:absolute;left:8px;top:50px;width:240px;height:50px"></textarea>
+  <div id="wb-hover">hover</div>
+  <div id="wb-scroll"><div style="height:600px">scroll me</div></div>
+</div>
+<div id="stage"></div>
+<script src="wb.js"></script>
+<script src="sections/dom.js"></script>
+<script src="sections/css.js"></script>
+<script src="sections/fonts.js"></script>
+<script src="sections/canvas.js"></script>
+<script src="sections/images.js"></script>
+<script src="sections/media.js"></script>
+<script src="sections/workers.js"></script>
+<script src="sections/storage.js"></script>
+<script src="sections/crypto.js"></script>
+<script src="sections/net.js"></script>
+<script src="sections/frames.js"></script>
+<script src="sections/timing.js"></script>
+<script src="sections/observers.js"></script>
+<script src="sections/history.js"></script>
+<script src="sections/forms.js"></script>
+<script src="sections/input.js"></script>
+<script>addEventListener('load', () => setTimeout(() => WB.start(), 50));</script>
+</body></html>

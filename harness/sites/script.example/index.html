@@ -1,0 +1,88 @@
+<!doctype html>
+<!--
+  SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+  Copyright (c) 2026 [OWNER NAME]
+  Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>before scripts</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; }
+  #box { width: 120px; height: 40px; background: #999; }
+  #box.on { background: #e63946; }
+  li { height: 20px; }
+</style>
+</head>
+<body>
+<div id="box"></div>
+<ul id="list"></ul>
+<p id="out">no script ran</p>
+<button id="btn">press</button>
+<script>
+  // The first script: the DOM as the parser built it so far, the classes, the global.
+  var results = {};
+  results.title = document.title;
+  results.hasBox = !!document.getElementById('box');
+  results.nodeType = document.getElementById('box').nodeType;
+  results.proto = Object.getPrototypeOf(document.getElementById('box')) === HTMLDivElement.prototype;
+  results.chain = HTMLDivElement.prototype instanceof HTMLElement && HTMLElement.prototype instanceof Element && Element.prototype instanceof Node && Node.prototype instanceof EventTarget;
+  results.tag = Object.prototype.toString.call(document.body);
+  results.native = String(Node.prototype.appendChild);
+  results.nativeGetter = String(Object.getOwnPropertyDescriptor(Node.prototype, 'firstChild').get);
+  results.constants = Node.ELEMENT_NODE === 1 && Node.prototype.TEXT_NODE === 3;
+  results.windowIsSelf = window === self && window === globalThis;
+  results.illegal = (function () { try { new Node(); return 'constructed'; } catch (e) { return e.constructor === TypeError ? e.message : 'other'; } })();
+  results.badArg = (function () { try { document.body.appendChild(42); return 'ok'; } catch (e) { return e.constructor === TypeError; } })();
+  document.title = 'set by script';
+  results.titleAfter = document.title;
+</script>
+<script>
+  // DOM building, a NodeList, classList, events, timers, JSON, storage.
+  var list = document.getElementById('list');
+  for (var i = 0; i < 3; i++) {
+    var li = document.createElement('li');
+    li.textContent = 'item ' + i;
+    li.className = 'row';
+    list.appendChild(li);
+  }
+  results.liCount = document.querySelectorAll('li').length;
+  results.liIndex = document.querySelectorAll('li')[1].textContent;
+  results.liForOf = Array.from(document.querySelectorAll('li')).map(function (e) { return e.textContent; }).join(',');
+  results.children = list.children.length;
+  var box = document.getElementById('box');
+  results.classListBefore = box.classList.contains('on');
+  box.classList.add('on');
+  results.classListAfter = box.className;
+  results.json = JSON.stringify({ a: [1, 2, { b: 'c' }] }) === '{"a":[1,2,{"b":"c"}]}' && JSON.parse('{"x":[1]}').x[0] === 1;
+  results.events = 0;
+  document.getElementById('btn').addEventListener('click', function (e) {
+    results.events++;
+    results.eventType = e.type;
+    results.eventTarget = e.target === this;
+    results.eventIsEvent = e instanceof MouseEvent && e instanceof Event;
+    document.getElementById('out').textContent = 'clicked ' + results.events;
+  });
+  var custom = 0;
+  document.addEventListener('ping', function (e) { custom = e.detail; });
+  document.dispatchEvent(new CustomEvent('ping', { detail: 7 }));
+  results.custom = custom;
+  results.timer = 'pending';
+  setTimeout(function () { results.timer = 'fired'; document.title = 'timer fired'; }, 10);
+  try {
+    localStorage.setItem('k', 'v1');
+    results.storage = localStorage.getItem('k');
+  } catch (e) { results.storage = 'error: ' + e.message; }
+  results.styleWidth = getComputedStyle(box).width;
+  results.offsetWidth = box.offsetWidth;
+  results.loadEvent = 'pending';
+  window.addEventListener('load', function () { results.loadEvent = 'fired'; });
+  document.addEventListener('DOMContentLoaded', function () { results.dcl = 'fired'; });
+  results.scriptText = document.currentScript ? typeof document.currentScript.text : 'no currentScript';
+  results.error = 'none';
+  window.onerror = function (m) { results.error = m; };
+</script>
+<script src="/late.js"></script>
+</body>
+</html>

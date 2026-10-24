@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><title>parent (shadow)</title></head>
+<body style="margin:0;background:#ffffff">
+<div style="height:40px">parent page</div>
+<div id="host" style="margin-left:20px"></div>
+<script>
+// A cross-site iframe inside a closed shadow root, as Cloudflare Turnstile places its widget (docs/captcha.md): it is a
+// nested segment like one in the document (tests/chrome/run.mjs workersGroup).
+var results = {};
+var root = document.getElementById('host').attachShadow({ mode: 'closed' });
+var f = document.createElement('iframe');
+f.src = 'https://widget.example/';
+f.style.cssText = 'display:block;width:200px;height:100px;border:0';
+root.appendChild(f);
+results.cwParentIsWindow = f.contentWindow.parent === window;
+results.shadowRoot = document.getElementById('host').shadowRoot;
+</script>
+</body></html>

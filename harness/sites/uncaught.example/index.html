@@ -1,0 +1,24 @@
+<!doctype html>
+<title>uncaught</title>
+<script>
+// Exceptions thrown from callbacks the page does not catch reach window.onerror (and the error event) as in Chrome, never the
+// segment Worker's own global (YouTube's message-less DOMException and "$F" were uncaught there).
+window.seen = [];
+const put = (k, v) => seen.push(k + '=' + JSON.stringify(v));
+const got = [];
+window.onerror = (message, source, line, col, error) => { got.push([typeof error, error && error.name || String(error && error.x)]); return true; };
+class $F { constructor() { this.x = '$F'; } }
+queueMicrotask(() => { throw new DOMException(); });
+setTimeout(() => { throw new $F(); }, 0);
+const ch = new MessageChannel();
+ch.port2.onmessage = () => { throw new TypeError('port'); };
+ch.port1.postMessage(1);
+// A throwing rAF callback trapped the engine (a debugger stub in engine/libjs-runtime); it must run and the engine go on.
+// Its error is left out of `errors`: LibWeb reports it to the console only, not to window.onerror (docs/youtube.md).
+requestAnimationFrame(() => { put('raf', 1); throw new RangeError('raf'); });
+document.addEventListener('custom', () => { throw new SyntaxError('listener'); });
+document.dispatchEvent(new Event('custom'));
+reportError(new URIError("reported"));
+Promise.resolve().then(() => queueMicrotask(() => { throw new EvalError("nested"); }));
+setTimeout(() => { put('errors', got.filter((g) => g[1] !== 'RangeError').slice().sort((a, b) => String(a).localeCompare(String(b)))); put('done', 1); }, 500);
+</script>

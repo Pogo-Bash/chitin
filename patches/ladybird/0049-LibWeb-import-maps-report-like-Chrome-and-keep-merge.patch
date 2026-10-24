@@ -1,0 +1,161 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 18:14:56 -0500
+Subject: [PATCH] LibWeb: import maps report like Chrome and keep merged
+ integrity
+
+Parse errors of an import map are worded as Chrome words them and fire
+the error event at the window ("report the exception"), a JSON array
+parsed by the host's engine is not taken for a JSON object, and merging
+a second map's integrity entries no longer writes into a copy (the
+non-const integrity() returned the map by value). The window's error
+event message is Chrome's: "Uncaught TypeError: message".
+---
+ Libraries/LibWeb/HTML/ErrorInformation.cpp    | 12 ++++++---
+ Libraries/LibWeb/HTML/Scripting/ImportMap.cpp | 26 ++++++++++++++-----
+ Libraries/LibWeb/HTML/Scripting/ImportMap.h   |  2 +-
+ .../HTML/Scripting/ImportMapParseResult.cpp   |  3 ++-
+ 4 files changed, 31 insertions(+), 12 deletions(-)
+
+diff --git a/Libraries/LibWeb/HTML/ErrorInformation.cpp b/Libraries/LibWeb/HTML/ErrorInformation.cpp
+index ce36547415..b318664ced 100644
+--- a/Libraries/LibWeb/HTML/ErrorInformation.cpp
++++ b/Libraries/LibWeb/HTML/ErrorInformation.cpp
+@@ -21,15 +21,21 @@ ErrorInformation extract_error_information(JS::VM& vm, JS::Value exception)
+ 
+     // 3. Set attributes[message], attributes[filename], attributes[lineno], and attributes[colno] to
+     //    implementation-defined values derived from exception.
++    // Chitin: worded as Chrome words it: "Uncaught TypeError: message" for an error, "Uncaught 5" for a primitive.
+     attributes.message = [&] {
+         if (auto object = exception.as_if<JS::Object>()) {
+             if (MUST(object->has_own_property(vm.names.message))) {
+-                auto message = object->get_without_side_effects(vm.names.message);
+-                return message.to_utf16_string_without_side_effects();
++                auto message = object->get_without_side_effects(vm.names.message).to_utf16_string_without_side_effects();
++                auto name_value = object->get_without_side_effects(vm.names.name);
++                auto name = name_value.is_string() ? name_value.to_utf16_string_without_side_effects() : "Error"_utf16;
++                if (message.is_empty())
++                    return Utf16String::formatted("Uncaught {}", name);
++                return Utf16String::formatted("Uncaught {}: {}", name, message);
+             }
++            return Utf16String::formatted("Uncaught exception: {}", exception);
+         }
+ 
+-        return Utf16String::formatted("Uncaught exception: {}", exception);
++        return Utf16String::formatted("Uncaught {}", exception.to_utf16_string_without_side_effects());
+     }();
+ 
+     // FIXME: This offset is relative to the javascript source. Other browsers appear to do it relative
+diff --git a/Libraries/LibWeb/HTML/Scripting/ImportMap.cpp b/Libraries/LibWeb/HTML/Scripting/ImportMap.cpp
+index 6eab667bd2..106fef9e2b 100644
+--- a/Libraries/LibWeb/HTML/Scripting/ImportMap.cpp
++++ b/Libraries/LibWeb/HTML/Scripting/ImportMap.cpp
+@@ -9,6 +9,7 @@
+ #include <LibJS/Console.h>
+ #include <LibJS/Runtime/Array.h>
+ #include <LibJS/Runtime/ConsoleObject.h>
++#include <LibJS/Runtime/Error.h>
+ #include <LibWeb/DOMURL/DOMURL.h>
+ #include <LibWeb/HTML/Scripting/Fetching.h>
+ #include <LibWeb/HTML/Scripting/ImportMap.h>
+@@ -25,7 +26,14 @@ namespace Web::HTML {
+ static bool
+ value_is_ordered_map(JS::Value const& value)
+ {
+-    return value.is_object() && !is<JS::Array>(value.as_object());
++    if (!value.is_object() || is<JS::Array>(value.as_object()))
++        return false;
++    // Chitin: JSON is parsed by the host's engine, so an array may be a host object: an array's own "length" is not
++    // enumerable, a JSON object's own keys all are.
++    auto length = value.as_object().internal_get_own_property("length"_utf16_fly_string);
++    if (!length.is_error() && length.value().has_value() && length.value()->enumerable.has_value() && !*length.value()->enumerable)
++        return false;
++    return true;
+ }
+ 
+ // https://html.spec.whatwg.org/multipage/webappapis.html#parse-an-import-map-string
+@@ -34,11 +42,15 @@ WebIDL::ExceptionOr<ImportMap> parse_import_map_string(JS::Realm& realm, Utf16Vi
+     HTML::TemporaryExecutionContext execution_context { realm };
+ 
+     // 1. Let parsed be the result of parsing a JSON string to an Infra value given input.
+-    auto parsed = TRY(Infra::parse_json_string_to_javascript_value(realm, input));
++    // Chitin: the errors are worded as Chrome words them (a page may show or compare them).
++    auto parsed_or_error = Infra::parse_json_string_to_javascript_value(realm, input);
++    if (parsed_or_error.is_error())
++        return JS::throw_completion(JS::SyntaxError::create(realm, "Failed to parse import map: invalid JSON"_utf16));
++    auto parsed = parsed_or_error.release_value();
+ 
+     // 2. If parsed is not an ordered map, then throw a TypeError indicating that the top-level value needs to be a JSON object.
+     if (!value_is_ordered_map(parsed))
+-        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "The top-level value of an importmap needs to be a JSON object."_utf16 };
++        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Failed to parse import map: not an object"_utf16 };
+     auto& parsed_object = parsed.as_object();
+ 
+     // 3. Let sortedAndNormalizedImports be an empty ordered map.
+@@ -50,7 +62,7 @@ WebIDL::ExceptionOr<ImportMap> parse_import_map_string(JS::Realm& realm, Utf16Vi
+ 
+         // If parsed["imports"] is not an ordered map, then throw a TypeError indicating that the value for the "imports" top-level key needs to be a JSON object.
+         if (!value_is_ordered_map(imports))
+-            return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "The 'imports' top-level value of an importmap needs to be a JSON object."_utf16 };
++            return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Failed to parse import map: \"imports\" top-level key must be a JSON object."_utf16 };
+ 
+         // Set sortedAndNormalizedImports to the result of sorting and normalizing a module specifier map given parsed["imports"] and baseURL.
+         sorted_and_normalized_imports = TRY(sort_and_normalise_module_specifier_map(realm, imports.as_object(), base_url));
+@@ -65,7 +77,7 @@ WebIDL::ExceptionOr<ImportMap> parse_import_map_string(JS::Realm& realm, Utf16Vi
+ 
+         // If parsed["scopes"] is not an ordered map, then throw a TypeError indicating that the value for the "scopes" top-level key needs to be a JSON object.
+         if (!value_is_ordered_map(scopes))
+-            return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "The 'scopes' top-level value of an importmap needs to be a JSON object."_utf16 };
++            return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Failed to parse import map: \"scopes\" top-level key must be a JSON object."_utf16 };
+ 
+         // Set sortedAndNormalizedScopes to the result of sorting and normalizing scopes given parsed["scopes"] and baseURL.
+         sorted_and_normalized_scopes = TRY(sort_and_normalise_scopes(realm, scopes.as_object(), base_url));
+@@ -80,7 +92,7 @@ WebIDL::ExceptionOr<ImportMap> parse_import_map_string(JS::Realm& realm, Utf16Vi
+ 
+         // 1. If parsed["integrity"] is not an ordered map, then throw a TypeError indicating that the value for the "integrity" top-level key needs to be a JSON object.
+         if (!value_is_ordered_map(integrity))
+-            return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "The 'integrity' top-level value of an importmap needs to be a JSON object."_utf16 };
++            return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Failed to parse import map: \"integrity\" top-level key must be a JSON object."_utf16 };
+ 
+         // 2. Set normalizedIntegrity to the result of normalizing a module integrity map given parsed["integrity"] and baseURL.
+         normalized_integrity = TRY(normalize_module_integrity_map(realm, integrity.as_object(), base_url));
+@@ -213,7 +225,7 @@ WebIDL::ExceptionOr<HashMap<URL::URL, ModuleSpecifierMap>> sort_and_normalise_sc
+ 
+         // 1. If potentialSpecifierMap is not an ordered map, then throw a TypeError indicating that the value of the scope with prefix scopePrefix needs to be a JSON object.
+         if (!potential_specifier_map.is_object())
+-            return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, Utf16String::formatted("The value of the scope with the prefix '{}' needs to be a JSON object.", scope_prefix) };
++            return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, Utf16String::formatted("Failed to parse import map: the value of the scope with prefix \"{}\" must be a JSON object.", scope_prefix) };
+ 
+         // 2. Let scopePrefixURL be the result of URL parsing scopePrefix with baseURL.
+         auto scope_prefix_url = DOMURL::parse(scope_prefix, base_url);
+diff --git a/Libraries/LibWeb/HTML/Scripting/ImportMap.h b/Libraries/LibWeb/HTML/Scripting/ImportMap.h
+index 5238db6d6c..34d321a044 100644
+--- a/Libraries/LibWeb/HTML/Scripting/ImportMap.h
++++ b/Libraries/LibWeb/HTML/Scripting/ImportMap.h
+@@ -31,7 +31,7 @@ public:
+     void set_scopes(HashMap<URL::URL, ModuleSpecifierMap> const& scopes) { m_scopes = scopes; }
+ 
+     ModuleIntegrityMap const& integrity() const { return m_integrity; }
+-    ModuleIntegrityMap integrity() { return m_integrity; }
++    ModuleIntegrityMap& integrity() { return m_integrity; } // Chitin: a reference (a copy lost every merged integrity entry)
+     void set_integrity(ModuleIntegrityMap const& integrity) { m_integrity = integrity; }
+ 
+ private:
+diff --git a/Libraries/LibWeb/HTML/Scripting/ImportMapParseResult.cpp b/Libraries/LibWeb/HTML/Scripting/ImportMapParseResult.cpp
+index f77537a32b..0bd46e0c85 100644
+--- a/Libraries/LibWeb/HTML/Scripting/ImportMapParseResult.cpp
++++ b/Libraries/LibWeb/HTML/Scripting/ImportMapParseResult.cpp
+@@ -63,8 +63,9 @@ void ImportMapParseResult::register_import_map(Window& global)
+ {
+     // 1. If result's error to rethrow is not null, then report the exception given by result's error to rethrow and return.
+     if (m_error_to_rethrow.has_value()) {
++        // Chitin: "report the exception" fires the error event at the global (window.onerror), as Chrome does.
+         auto completion = WebIDL::exception_to_throw_completion(global.vm(), global.principal_realm(), m_error_to_rethrow.value());
+-        HTML::report_exception(completion, global.principal_realm());
++        global.report_an_exception(completion.value());
+         return;
+     }
+ 
+-- 
+2.50.1 (Apple Git-155)
+

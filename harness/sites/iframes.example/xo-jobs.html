@@ -1,0 +1,28 @@
+<!doctype html>
+<html><head><title>cross-origin same-site frames: promise jobs, messages, callbacks</title></head>
+<body>
+<script>
+// Two cross-origin same-site frames (hCaptcha's shape: a checkbox frame and a challenge frame on another host of
+// the site) that run promise chains, async functions, microtasks, timers, MessageChannels and postMessage between
+// each other and the parent. Every job a frame's realm queues must run between the HTML "prepare to run script" and
+// "clean up after running script" of that realm (tests/frame-realms.test.mjs).
+var results = { events: [], fromChild: [] };
+window.addEventListener('load', function () { results.events.push('window load'); });
+window.addEventListener('message', function (e) { 
+    results.events.push('message ' + e.data + ' source ' + (e.source === document.getElementById('a').contentWindow ? 'a' : e.source === document.getElementById('b').contentWindow ? 'b' : e.source === window ? 'self' : e.source === null ? 'null' : 'other'));
+    if (typeof e.data === 'string' && e.data.indexOf('ping ') === 0) {
+        Promise.resolve().then(function () { e.source.postMessage('pong ' + e.data.slice(5), '*'); });
+        return;
+    }
+    results.fromChild.push(e.data);
+    if (e.data === 'a ready' || e.data === 'b ready') {
+        var ready = results.fromChild.filter(function (m) { return / ready$/.test(m); }).length;
+        if (ready === 2)
+            for (var i = 0; i < frames.length; i++)
+                frames[i].postMessage('go', '*');
+    }
+});
+</script>
+<iframe id="a" name="a" src="https://assets.iframes.example/xo-jobs-child.html#a"></iframe>
+<iframe id="b" name="b" src="https://assets.iframes.example/xo-jobs-child.html#b"></iframe>
+</body></html>

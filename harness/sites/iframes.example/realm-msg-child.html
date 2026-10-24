@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><title>message child</title></head>
+<body>
+<script>
+var got = [];
+window.addEventListener('message', function (e) { got.push({ data: e.data, fromParent: e.source === parent }); });
+parent.postMessage({ hello: 'from child', list: [1, 2, 3] }, '*');
+</script>
+</body></html>

@@ -1,0 +1,164 @@
+From aafdc2f0ad0b9a2d604684b857bac4de6eecff64 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 14:29:31 -0500
+Subject: [PATCH] LibWeb: WebGL compressed texture extensions enable their
+ formats
+
+Only the S3TC extensions registered their formats, so compressedTexImage* refused ETC2/EAC, ETC1, ASTC, BPTC, RGTC and
+PVRTC with INVALID_ENUM after the extension was enabled, and COMPRESSED_TEXTURE_FORMATS left them out.
+---
+ .../Extensions/EXTTextureCompressionBPTC.cpp  |  9 +++++
+ .../Extensions/EXTTextureCompressionRGTC.cpp  |  9 +++++
+ .../Extensions/WebGLCompressedTextureASTC.cpp | 33 +++++++++++++++++++
+ .../Extensions/WebGLCompressedTextureETC.cpp  | 15 +++++++++
+ .../Extensions/WebGLCompressedTextureETC1.cpp |  6 ++++
+ .../WebGLCompressedTexturePVRTC.cpp           |  9 +++++
+ 6 files changed, 81 insertions(+)
+
+diff --git a/Libraries/LibWeb/WebGL/Extensions/EXTTextureCompressionBPTC.cpp b/Libraries/LibWeb/WebGL/Extensions/EXTTextureCompressionBPTC.cpp
+index 8b91e70a81..7639a2cf7b 100644
+--- a/Libraries/LibWeb/WebGL/Extensions/EXTTextureCompressionBPTC.cpp
++++ b/Libraries/LibWeb/WebGL/Extensions/EXTTextureCompressionBPTC.cpp
+@@ -23,6 +23,15 @@ GC::Ref<Bindings::Wrappable> EXTTextureCompressionBPTC::create(GC::Ref<WebGLRend
+ EXTTextureCompressionBPTC::EXTTextureCompressionBPTC(JS::Realm&, GC::Ref<WebGLRenderingContextBase> context)
+     : m_context(context)
+ {
++    // The extension's formats, which compressedTexImage* and COMPRESSED_TEXTURE_FORMATS accept once it is enabled: BPTC (EXT_texture_compression_bptc).
++    static constexpr WebIDL::UnsignedLong formats[] = {
++        0x8E8C,
++        0x8E8D,
++        0x8E8E,
++        0x8E8F,
++    };
++    for (auto format : formats)
++        m_context->enable_compressed_texture_format(format);
+ }
+ 
+ 
+diff --git a/Libraries/LibWeb/WebGL/Extensions/EXTTextureCompressionRGTC.cpp b/Libraries/LibWeb/WebGL/Extensions/EXTTextureCompressionRGTC.cpp
+index 762509481e..5572871d08 100644
+--- a/Libraries/LibWeb/WebGL/Extensions/EXTTextureCompressionRGTC.cpp
++++ b/Libraries/LibWeb/WebGL/Extensions/EXTTextureCompressionRGTC.cpp
+@@ -23,6 +23,15 @@ GC::Ref<Bindings::Wrappable> EXTTextureCompressionRGTC::create(GC::Ref<WebGLRend
+ EXTTextureCompressionRGTC::EXTTextureCompressionRGTC(JS::Realm&, GC::Ref<WebGLRenderingContextBase> context)
+     : m_context(context)
+ {
++    // The extension's formats, which compressedTexImage* and COMPRESSED_TEXTURE_FORMATS accept once it is enabled: RGTC (EXT_texture_compression_rgtc).
++    static constexpr WebIDL::UnsignedLong formats[] = {
++        0x8DBB,
++        0x8DBC,
++        0x8DBD,
++        0x8DBE,
++    };
++    for (auto format : formats)
++        m_context->enable_compressed_texture_format(format);
+ }
+ 
+ 
+diff --git a/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTextureASTC.cpp b/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTextureASTC.cpp
+index ab7fb771a3..7a1cf5c55d 100644
+--- a/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTextureASTC.cpp
++++ b/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTextureASTC.cpp
+@@ -23,6 +23,39 @@ GC::Ref<Bindings::Wrappable> WebGLCompressedTextureASTC::create(GC::Ref<WebGLRen
+ WebGLCompressedTextureASTC::WebGLCompressedTextureASTC(JS::Realm&, GC::Ref<WebGLRenderingContextBase> context)
+     : m_context(context)
+ {
++    // The extension's formats, which compressedTexImage* and COMPRESSED_TEXTURE_FORMATS accept once it is enabled: ASTC LDR (WEBGL_compressed_texture_astc).
++    static constexpr WebIDL::UnsignedLong formats[] = {
++        0x93B0,
++        0x93B1,
++        0x93B2,
++        0x93B3,
++        0x93B4,
++        0x93B5,
++        0x93B6,
++        0x93B7,
++        0x93B8,
++        0x93B9,
++        0x93BA,
++        0x93BB,
++        0x93BC,
++        0x93BD,
++        0x93D0,
++        0x93D1,
++        0x93D2,
++        0x93D3,
++        0x93D4,
++        0x93D5,
++        0x93D6,
++        0x93D7,
++        0x93D8,
++        0x93D9,
++        0x93DA,
++        0x93DB,
++        0x93DC,
++        0x93DD,
++    };
++    for (auto format : formats)
++        m_context->enable_compressed_texture_format(format);
+ }
+ 
+ Vector<String> WebGLCompressedTextureASTC::get_supported_profiles()
+diff --git a/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTextureETC.cpp b/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTextureETC.cpp
+index 6d80e5d170..b260461ff7 100644
+--- a/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTextureETC.cpp
++++ b/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTextureETC.cpp
+@@ -23,6 +23,21 @@ GC::Ref<Bindings::Wrappable> WebGLCompressedTextureETC::create(GC::Ref<WebGLRend
+ WebGLCompressedTextureETC::WebGLCompressedTextureETC(JS::Realm&, GC::Ref<WebGLRenderingContextBase> context)
+     : m_context(context)
+ {
++    // The extension's formats, which compressedTexImage* and COMPRESSED_TEXTURE_FORMATS accept once it is enabled: ETC2 / EAC (WEBGL_compressed_texture_etc).
++    static constexpr WebIDL::UnsignedLong formats[] = {
++        0x9270,
++        0x9271,
++        0x9272,
++        0x9273,
++        0x9274,
++        0x9275,
++        0x9276,
++        0x9277,
++        0x9278,
++        0x9279,
++    };
++    for (auto format : formats)
++        m_context->enable_compressed_texture_format(format);
+ }
+ 
+ 
+diff --git a/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTextureETC1.cpp b/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTextureETC1.cpp
+index 15098f544c..17ec5fbb2e 100644
+--- a/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTextureETC1.cpp
++++ b/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTextureETC1.cpp
+@@ -23,6 +23,12 @@ GC::Ref<Bindings::Wrappable> WebGLCompressedTextureETC1::create(GC::Ref<WebGLRen
+ WebGLCompressedTextureETC1::WebGLCompressedTextureETC1(JS::Realm&, GC::Ref<WebGLRenderingContextBase> context)
+     : m_context(context)
+ {
++    // The extension's formats, which compressedTexImage* and COMPRESSED_TEXTURE_FORMATS accept once it is enabled: ETC1 (WEBGL_compressed_texture_etc1).
++    static constexpr WebIDL::UnsignedLong formats[] = {
++        0x8D64,
++    };
++    for (auto format : formats)
++        m_context->enable_compressed_texture_format(format);
+ }
+ 
+ 
+diff --git a/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTexturePVRTC.cpp b/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTexturePVRTC.cpp
+index 9f4b3ed292..455812448a 100644
+--- a/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTexturePVRTC.cpp
++++ b/Libraries/LibWeb/WebGL/Extensions/WebGLCompressedTexturePVRTC.cpp
+@@ -23,6 +23,15 @@ GC::Ref<Bindings::Wrappable> WebGLCompressedTexturePVRTC::create(GC::Ref<WebGLRe
+ WebGLCompressedTexturePVRTC::WebGLCompressedTexturePVRTC(JS::Realm&, GC::Ref<WebGLRenderingContextBase> context)
+     : m_context(context)
+ {
++    // The extension's formats, which compressedTexImage* and COMPRESSED_TEXTURE_FORMATS accept once it is enabled: PVRTC (WEBGL_compressed_texture_pvrtc).
++    static constexpr WebIDL::UnsignedLong formats[] = {
++        0x8C00,
++        0x8C01,
++        0x8C02,
++        0x8C03,
++    };
++    for (auto format : formats)
++        m_context->enable_compressed_texture_format(format);
+ }
+ 
+ 

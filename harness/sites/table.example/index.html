@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>A table</title>
+<style>
+  html { background: #fff; }
+  body { margin: 16px; font-family: "Noto Sans", sans-serif; font-size: 14px; color: #111; }
+  table { border-collapse: collapse; width: 560px; }
+  caption { font-weight: bold; text-align: left; padding: 4px 0 8px; }
+  th, td { border: 1px solid #999; padding: 6px 10px; text-align: left; }
+  th { background: #dde6f0; }
+  td.num { text-align: right; font-family: "Noto Sans Mono", monospace; }
+  tr:nth-child(even) td { background: #f4f6f8; }
+  tfoot td { font-weight: bold; background: #eee; }
+  .separate { border-collapse: separate; border-spacing: 6px; margin-top: 24px; width: 400px; }
+  .separate td { background: #ffe9b0; border: 1px solid #c9a24a; }
+</style>
+</head>
+<body>
+<table>
+  <caption>Phase 0 call costs (Node, ns)</caption>
+  <thead><tr><th>Boundary</th><th>ns</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>empty export call</td><td class="num">2.3</td><td>nearly free</td></tr>
+    <tr><td>wrap(handle), cached</td><td class="num">15.3</td><td>WeakRef lookup</td></tr>
+    <tr><td>createElement</td><td class="num">223</td><td>wrapper creation dominates</td></tr>
+    <tr><td>appendChild</td><td class="num">293</td><td>anchor upkeep</td></tr>
+    <tr><td colspan="2">rowspan and colspan</td><td rowspan="2">spans two rows</td></tr>
+    <tr><td>dispatchEvent</td><td class="num">430</td></tr>
+  </tbody>
+  <tfoot><tr><td>total rows</td><td class="num">6</td><td></td></tr></tfoot>
+</table>
+<table class="separate">
+  <tr><td>separate</td><td>borders</td><td>with spacing</td></tr>
+  <tr><td>a</td><td>b</td><td>c</td></tr>
+</table>
+</body>
+</html>

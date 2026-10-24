@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>classic</title></head>
+<body>
+<script>
+  let shared = 41;
+  const answer = 1;
+  class Counter { static n() { return 7; } }
+  var viaVar = 'v';
+</script>
+<script src="second.js"></script>
+<script>
+  window.stackLine = (function () {
+    try { null.x; } catch (e) { return e.stack; }
+  })();
+  window.stackTop = (function () { return new Error('mark').stack; })();
+  window.sameLexical = typeof shared + ':' + shared;
+</script>
+</body>
+</html>

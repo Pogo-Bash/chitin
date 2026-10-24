@@ -1,0 +1,1 @@
+import{r as e,t}from"./index-DVZ2rK1D.js";var n=class extends t{static properties={itemId:{}};render(){return e`<section><h2>Item <span id="detail-id">${this.itemId}</span></h2><a id="back" href="/items">Back</a></section>`}};customElements.define(`detail-view`,n);

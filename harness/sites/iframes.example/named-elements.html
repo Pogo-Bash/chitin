@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><title>named elements</title></head>
+<body>
+<canvas id="canvas" width="20" height="10"></canvas>
+<div id="twice"></div><span id="twice"></span>
+<img name="pic" alt="">
+<div id="alert"></div>
+<script>
+// Named access on the window (tests/chrome/run.mjs): window[id], a bare identifier for an element id (the Khronos deqp
+// vertex array tests read `canvas.width`), names of img/form/embed/object, HTMLCollection for a repeated name, the window's
+// own names first, and the set kept in step with the document.
+var results = { events: [] };
+results.first = typeof canvas === 'object' && canvas === document.getElementById('canvas') && canvas.width === 20;
+window.addEventListener('load', function () { results.events.push('window load'); });
+</script>
+</body></html>

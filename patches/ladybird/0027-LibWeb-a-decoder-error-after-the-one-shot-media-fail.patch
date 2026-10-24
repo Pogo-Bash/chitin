@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 02:54:36 -0500
+Subject: [PATCH] LibWeb: a decoder error after the one-shot media failure
+ callback has run is dropped instead of trapping
+
+---
+ Libraries/LibWeb/HTML/HTMLMediaElement.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/Libraries/LibWeb/HTML/HTMLMediaElement.cpp b/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
+index 5c51750bd8..a4dbca5395 100644
+--- a/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
+@@ -2249,7 +2249,12 @@ void HTMLMediaElement::handle_playback_manager_error(Media::DecoderError&& error
+         }
+ 
+         // -> If the media data can be fetched but is found by inspection to be in an unsupported format, or can otherwise not be rendered at all
+-        VERIFY(self.m_playback_manager_failure_callback);
++        // NB: The failure callback is one-shot, and every playback manager gets one. Once it has run, the resource
++        //     selection algorithm already has the failure in hand (the dedicated media source failure steps, which set
++        //     MEDIA_ERR_SRC_NOT_SUPPORTED and fire error, are queued), so a later decoder error from the same playback
++        //     manager adds nothing: it must neither trap nor fire a second error event.
++        if (!self.m_playback_manager_failure_callback)
++            return;
+         auto failure_callback = move(self.m_playback_manager_failure_callback);
+         failure_callback(Utf16String::from_utf8(error.description()));
+     });

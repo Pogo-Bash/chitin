@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>m2</title></head>
+<body>
+<input id="box">
+<script>
+  // What Wikipedia's Vue/Codex does on the first keystroke, in the small.
+  var results = { order: [] };
+  // 1. String to number conversions (the engine's own ToNumber trapped on its whitespace table).
+  results.numbers = [+' 12 ', Number('  5﻿'), Number('0x10'), Number('')].join(',');
+  // 2. A V8 promise job (no engine frame under it) calling bindings and a handler.
+  Promise.resolve().then(function () {
+    var box = document.getElementById('box');
+    box.addEventListener('input', function () { results.order.push('input'); });
+    results.order.push('microtask');
+    results.fromMicrotask = typeof document.createElement('div').appendChild;
+  });
+  // 3. new Image() (a legacy factory) and the interface that shares its prototype.
+  var img = new Image();
+  results.image = [img instanceof HTMLImageElement, img.tagName, Object.getPrototypeOf(Image) === Function.prototype, Image.prototype === HTMLImageElement.prototype].join(',');
+  try { new HTMLImageElement(); results.illegal = 'no throw'; } catch (e) { results.illegal = e.constructor.name; }
+  try { Image(); results.noNew = 'no throw'; } catch (e) { results.noNew = e.constructor.name; }
+  results.option = new Option('t', 'v').value;
+  // 4. fetch: text, json, clone, headers, and a rejection.
+  fetch('data.json').then(function (r) { results.status = r.status; return r.clone().text(); })
+    .then(function (t) { results.text = t.length; return fetch('data.json'); })
+    .then(function (r) { return r.json(); })
+    .then(function (j) { results.json = j.pages.length; return fetch('missing.json'); })
+    .then(function (r) { results.missing = r.status + ' ' + r.ok; results.done = true; })
+    .catch(function (e) { results.fetchError = String(e); });
+</script>
+</body>
+</html>

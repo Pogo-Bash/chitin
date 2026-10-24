@@ -1,0 +1,71 @@
+<!doctype html>
+<title>idb transactions</title>
+<script>
+// What YouTube's IndexedDB layer does: overlapping readwrite transactions on one store, opened back to back and from
+// promise continuations, each auto-committing once its awaited requests are done.
+window.seen = [];
+const put = (k, v) => seen.push(k + '=' + JSON.stringify(v));
+const req = (r) => new Promise((resolve, reject) => { r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
+const done = (tx) => new Promise((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error); });
+const o = indexedDB.open('tx', 1);
+o.onupgradeneeded = () => { o.result.createObjectStore('s'); o.result.createObjectStore('t'); };
+o.onsuccess = async () => {
+    const db = o.result;
+    try {
+        // 0. An explicit commit() and a second readwrite transaction opened right after it, in the same task.
+        const x = db.transaction('s', 'readwrite');
+        x.objectStore('s').put(0, 'c');
+        if (x.commit) x.commit();
+        const y = db.transaction('s', 'readwrite');
+        y.objectStore('s').put(5, 'c');
+        await Promise.all([done(x), done(y)]);
+        put('commit', await req(db.transaction('s').objectStore('s').get('c')));
+        // 1. Two readwrite transactions in one task; the second waits for the first.
+        const a = db.transaction('s', 'readwrite'), b = db.transaction('s', 'readwrite');
+        a.objectStore('s').put(1, 'k');
+        b.objectStore('s').put(2, 'k');
+        await Promise.all([done(a), done(b)]);
+        put('order', await req(db.transaction('s').objectStore('s').get('k')));
+        // 2. A transaction with no requests behind a busy one: it commits once the first finishes.
+        const c = db.transaction('s', 'readwrite'), d = db.transaction('s', 'readwrite');
+        c.objectStore('s').put(3, 'k');
+        await Promise.all([done(c), done(d)]);
+        put('empty', 'ok');
+        // 3. Awaited chains: get then put in each, three overlapping transactions opened from continuations.
+        const bump = async () => {
+            const tx = db.transaction(['s', 't'], 'readwrite');
+            const s = tx.objectStore('s');
+            const v = await req(s.get('n'));
+            await req(s.put((v || 0) + 1, 'n'));
+            await req(tx.objectStore('t').put(Date.now(), 'at'));
+            return done(tx);
+        };
+        await Promise.all([bump(), bump(), bump()]);
+        put('chain', await req(db.transaction('s').objectStore('s').get('n')));
+        // 4. A new transaction opened from inside a success callback of a blocking one.
+        await new Promise((resolve, reject) => {
+            const e = db.transaction('s', 'readwrite');
+            e.objectStore('s').put(10, 'm').onsuccess = () => {
+                const f = db.transaction('s', 'readwrite');
+                f.objectStore('s').get('m').onsuccess = (ev) => { put('inner', ev.target.result); };
+                f.oncomplete = resolve; f.onabort = reject;
+            };
+        });
+        // 5. Readonly behind readwrite, opened in a microtask of the writer's success.
+        const g = db.transaction('s', 'readwrite'), gDone = done(g);
+        await req(g.objectStore('s').put(20, 'r'));
+        const h = db.transaction('s');
+        put('ro', await req(h.objectStore('s').get('r')));
+        await gDone;
+        // 6. Map and Set inside a stored value.
+        const w = db.transaction('t', 'readwrite');
+        w.objectStore('t').put({ m: new Map([[1, 'y']]), s: new Set(['x', 'z']) }, 'ms');
+        await done(w);
+        const ms = await req(db.transaction('t').objectStore('t').get('ms'));
+        put('mapset', [ms.m instanceof Map, ms.m.get(1), ms.s instanceof Set, [...ms.s]]);
+        put('done', 1);
+    } catch (e) {
+        put('error', String(e));
+    }
+};
+</script>

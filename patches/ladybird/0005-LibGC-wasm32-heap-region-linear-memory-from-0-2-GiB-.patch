@@ -1,0 +1,210 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 13:29:21 -0500
+Subject: [PATCH 05/23] LibGC: wasm32 heap region (linear memory from 0, 2
+ GiB), no decommit thread; StackInfo, StackUnwinder and libtommath digits for
+ Emscripten
+
+---
+ AK/StackInfo.cpp                            |  9 +++++++
+ AK/StackUnwinder.h                          |  3 +++
+ Libraries/LibCore/System.cpp                |  3 +++
+ Libraries/LibCrypto/BigInt/TommathForward.h |  2 +-
+ Libraries/LibGC/BlockAllocator.cpp          | 30 +++++++++++++++++++++
+ Libraries/LibGC/CAPI.cpp                    |  2 +-
+ Libraries/LibGC/HeapRegion.h                |  6 ++++-
+ Libraries/LibGC/NanBoxedValue.h             |  2 +-
+ Libraries/LibGC/PrimitiveStorage.h          |  5 ++++
+ 9 files changed, 58 insertions(+), 4 deletions(-)
+
+diff --git a/AK/StackInfo.cpp b/AK/StackInfo.cpp
+index b4324cb7d6..56d5e702af 100644
+--- a/AK/StackInfo.cpp
++++ b/AK/StackInfo.cpp
+@@ -18,6 +18,10 @@
+ #elif defined(AK_OS_FREEBSD) || defined(AK_OS_OPENBSD)
+ #    include <pthread.h>
+ #    include <pthread_np.h>
++#elif defined(AK_OS_EMSCRIPTEN)
++#    include <emscripten/stack.h>
++#elif defined(AK_OS_EMSCRIPTEN)
++#    include <emscripten/stack.h>
+ #elif defined(AK_OS_WINDOWS)
+ #    include <Windows.h>
+ // NOTE: Prevent clang-format from re-ordering this header order
+@@ -87,6 +91,11 @@ StackInfo::StackInfo()
+     FlatPtr top_of_stack = (FlatPtr)thread_stack.ss_sp;
+     m_size = (size_t)thread_stack.ss_size;
+     m_base = top_of_stack - m_size;
++#elif defined(AK_OS_EMSCRIPTEN)
++    // The C shadow stack in linear memory (address-taken locals and spills). Values held only in wasm
++    // locals are not in it; LibGC copes with that by collecting between tasks (docs/phase1.md).
++    m_base = static_cast<FlatPtr>(emscripten_stack_get_end());
++    m_size = static_cast<size_t>(emscripten_stack_get_base() - emscripten_stack_get_end());
+ #elif defined(AK_OS_WINDOWS)
+     ULONG_PTR low_limit = 0;
+     ULONG_PTR high_limit = 0;
+diff --git a/AK/StackUnwinder.h b/AK/StackUnwinder.h
+index 647e3b02cd..a1529cdc02 100644
+--- a/AK/StackUnwinder.h
++++ b/AK/StackUnwinder.h
+@@ -36,7 +36,10 @@ void unwind_stack_from_frame_pointer(FlatPtr frame_pointer, CallableAs<Optional<
+     static constexpr ptrdiff_t FRAME_POINTER_RETURN_ADDRESS_OFFSET = -8;
+     static constexpr ptrdiff_t FRAME_POINTER_PREVIOUS_FRAME_POINTER_OFFSET = -16;
+ #else
++    // No frame records to walk (WebAssembly keeps return addresses out of linear memory).
+     return;
++    static constexpr ptrdiff_t FRAME_POINTER_RETURN_ADDRESS_OFFSET = 0;
++    static constexpr ptrdiff_t FRAME_POINTER_PREVIOUS_FRAME_POINTER_OFFSET = 0;
+ #endif
+ 
+     FlatPtr current_frame_pointer = frame_pointer;
+diff --git a/Libraries/LibCore/System.cpp b/Libraries/LibCore/System.cpp
+index a84c597b07..9882f01347 100644
+--- a/Libraries/LibCore/System.cpp
++++ b/Libraries/LibCore/System.cpp
+@@ -890,6 +890,9 @@ ErrorOr<ByteString> current_executable_path()
+     if (sizeof(info.name) > sizeof(path))
+         return Error::from_errno(ENAMETOOLONG);
+     strlcpy(path, info.name, sizeof(path) - 1);
++#elif defined(AK_OS_EMSCRIPTEN)
++    // There is no executable: the engine is a module instantiated by its embedder.
++    return Error::from_string_literal("current_executable_path: no executable on Emscripten");
+ #else
+ #    warning "Not sure how to get current_executable_path on this platform!"
+     // GetModuleFileName on Windows, unsure about OpenBSD.
+diff --git a/Libraries/LibCrypto/BigInt/TommathForward.h b/Libraries/LibCrypto/BigInt/TommathForward.h
+index 33def098d3..28121a850f 100644
+--- a/Libraries/LibCrypto/BigInt/TommathForward.h
++++ b/Libraries/LibCrypto/BigInt/TommathForward.h
+@@ -10,7 +10,7 @@
+ #include <stdint.h>
+ 
+ extern "C" {
+-#if defined(AK_OS_WINDOWS)
++#if defined(AK_OS_WINDOWS) || defined(__wasm32__)
+ typedef uint32_t mp_digit;
+ #else
+ typedef uint64_t mp_digit;
+diff --git a/Libraries/LibGC/BlockAllocator.cpp b/Libraries/LibGC/BlockAllocator.cpp
+index a50dadd17c..14524ebe20 100644
+--- a/Libraries/LibGC/BlockAllocator.cpp
++++ b/Libraries/LibGC/BlockAllocator.cpp
+@@ -49,6 +49,28 @@ static_assert((HeapBlock::BLOCK_SIZE & (HeapBlock::BLOCK_SIZE - 1)) == 0);
+ static_assert(CHUNK_SIZE % HeapBlock::BLOCK_SIZE == 0);
+ static_assert(BLOCKS_PER_CHUNK == 128);
+ 
++#if defined(AK_OS_EMSCRIPTEN)
++// Emscripten: no address space to reserve. The region is linear memory from 0 (HeapRegion.h), and
++// chunks are aligned allocations from the libc allocator, which grows the memory as needed.
++class HeapRegion {
++public:
++    static constexpr size_t size = HEAP_REGION_SIZE;
++
++    HeapRegion() { js_heap_region_base = 0; }
++
++    void* allocate_chunk()
++    {
++        auto* chunk = aligned_alloc(CHUNK_SIZE, CHUNK_SIZE);
++        VERIFY(chunk);
++        VERIFY(reinterpret_cast<FlatPtr>(chunk) + CHUNK_SIZE <= size);
++        __builtin_memset(chunk, 0, CHUNK_SIZE);
++        return chunk;
++    }
++
++    FlatPtr start() const { return 0; }
++    FlatPtr end() const { return size; }
++};
++#else
+ class HeapRegion {
+ public:
+     static constexpr size_t size = HEAP_REGION_SIZE;
+@@ -103,6 +125,7 @@ private:
+     u8* m_base { nullptr };
+     size_t m_next_chunk_offset { 0 };
+ };
++#endif
+ 
+ static HeapRegion& heap_region()
+ {
+@@ -186,6 +209,10 @@ DecommitWorker& DecommitWorker::the()
+ 
+ DecommitWorker::DecommitWorker()
+ {
++#if defined(AK_OS_EMSCRIPTEN)
++    // Single-threaded, and wasm memory cannot be given back: freed blocks are simply reused.
++    return;
++#endif
+     m_thread = Threading::Thread::construct("DecommitWorker"sv, [this] {
+         run();
+         return static_cast<intptr_t>(0);
+@@ -208,6 +235,9 @@ void DecommitWorker::deregister(BlockAllocator& a)
+ 
+ void DecommitWorker::kick()
+ {
++#if defined(AK_OS_EMSCRIPTEN)
++    return;
++#endif
+     {
+         MutexLocker locker(m_mutex);
+         m_kicked = true;
+diff --git a/Libraries/LibGC/CAPI.cpp b/Libraries/LibGC/CAPI.cpp
+index 4ee6bf6757..2fb4c20bfb 100644
+--- a/Libraries/LibGC/CAPI.cpp
++++ b/Libraries/LibGC/CAPI.cpp
+@@ -145,7 +145,7 @@ struct CAPI {
+ 
+     static_assert(sizeof(Heap::m_allocated_bytes_since_last_gc) == sizeof(size_t));
+     static_assert(sizeof(Heap::m_gc_bytes_threshold) == sizeof(size_t));
+-    static_assert(sizeof(Heap::m_total_allocated_bytes) == sizeof(size_t));
++    static_assert(sizeof(Heap::m_total_allocated_bytes) == sizeof(size_t) || sizeof(size_t) < sizeof(u64));
+ 
+     // Foreign code reads and writes the head of the list as a plain pointer.
+     static_assert(sizeof(RawPtr<Cell>) == sizeof(Cell*));
+diff --git a/Libraries/LibGC/HeapRegion.h b/Libraries/LibGC/HeapRegion.h
+index 22dfb5e991..b3164daeda 100644
+--- a/Libraries/LibGC/HeapRegion.h
++++ b/Libraries/LibGC/HeapRegion.h
+@@ -13,7 +13,11 @@
+ 
+ namespace GC {
+ 
+-#if AK_IS_ARCH_RISCV64()
++#if AK_IS_ARCH_WASM32()
++// wasm32: the region is linear memory from address 0, and the engine's memory is capped at 2 GiB so
++// that every cell address is a region offset (base 0). Blocks come from the libc allocator.
++static constexpr size_t HEAP_REGION_SIZE = 2ull * GiB;
++#elif AK_IS_ARCH_RISCV64()
+ // Sv39 provides 256 GiB of user virtual address space after splitting the
+ // address space between userspace and the kernel. Keep room for the second
+ // region-sized reservation used to align the cage base.
+diff --git a/Libraries/LibGC/NanBoxedValue.h b/Libraries/LibGC/NanBoxedValue.h
+index 1428825d8e..d34feeb91b 100644
+--- a/Libraries/LibGC/NanBoxedValue.h
++++ b/Libraries/LibGC/NanBoxedValue.h
+@@ -14,7 +14,7 @@
+ namespace GC {
+ 
+ static_assert(sizeof(double) == 8);
+-static_assert(sizeof(void*) == sizeof(u64));
++static_assert(sizeof(void*) <= sizeof(u64));
+ // To make our Value representation compact we can use the fact that IEEE
+ // doubles have a lot (2^52 - 2) of NaN bit patterns. The canonical form being
+ // just 0x7FF8000000000000 i.e. sign = 0 exponent is all ones and the top most
+diff --git a/Libraries/LibGC/PrimitiveStorage.h b/Libraries/LibGC/PrimitiveStorage.h
+index 7c0630f0f1..e69e414cf0 100644
+--- a/Libraries/LibGC/PrimitiveStorage.h
++++ b/Libraries/LibGC/PrimitiveStorage.h
+@@ -30,7 +30,12 @@ public:
+         Yes,
+     };
+ 
++    // Without 64-bit addresses there is no cage; ensure_cage() reports ENOMEM (the size only has to fit).
++#if defined(__wasm32__)
++    static constexpr size_t default_cage_size = 1ull * GiB;
++#else
+     static constexpr size_t default_cage_size = 4ull * TiB;
++#endif
+     static_assert(is_power_of_two(default_cage_size));
+     static constexpr size_t cage_offset_mask = default_cage_size - 1;
+     static constexpr size_t invalid_offset = NumericLimits<size_t>::max();

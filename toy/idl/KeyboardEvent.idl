@@ -1,0 +1,7 @@
+// Chitin phase-0 subset of Ladybird's Libraries/LibWeb/UIEvents/KeyboardEvent.idl (BSD-2-Clause, the Ladybird developers).
+// Members kept as written upstream; members the toy does not implement are left out.
+// https://w3c.github.io/uievents/#keyboardevent
+[Exposed=Window]
+interface KeyboardEvent : Event {
+    readonly attribute DOMString key;
+};

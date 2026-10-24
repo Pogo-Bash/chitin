@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>body</title></head>
+<body>
+<script>
+  // Response bodies, every reader: arrayBuffer, blob, formData, body streams, bytes.
+  var results = {};
+  function desc(v) { return Object.prototype.toString.call(v); }
+  fetch('bin.dat').then(function (r) { return r.arrayBuffer(); }).then(function (ab) {
+    results.ab = desc(ab) + ' ' + (ab instanceof ArrayBuffer) + ' ' + ab.byteLength + ' ' + Array.from(new Uint8Array(ab)).join(',');
+    return fetch('bin.dat');
+  }).then(function (r) { return r.blob(); }).then(function (b) {
+    results.blob = desc(b) + ' ' + (b instanceof Blob) + ' ' + b.size;
+    return b.arrayBuffer();
+  }).then(function (ab) {
+    results.blobAb = (ab instanceof ArrayBuffer) + ' ' + ab.byteLength;
+    return fetch('bin.dat');
+  }).then(function (r) {
+    results.body = desc(r.body) + ' ' + (r.body instanceof ReadableStream);
+    var rd = r.body.getReader();
+    var total = 0;
+    return rd.read().then(function step(x) {
+      if (x.done) { results.stream = total; return; }
+      results.chunk = desc(x.value) + ' ' + (x.value instanceof Uint8Array);
+      total += x.value.byteLength;
+      return rd.read().then(step);
+    });
+  }).then(function () {
+    var fd = new FormData(); fd.append('a', '1'); fd.append('f', new Blob(['xyz']), 'x.txt');
+    var req = new Response(fd);
+    return req.formData();
+  }).then(function (fd) {
+    results.formData = desc(fd) + ' ' + fd.get('a') + ' ' + (fd.get('f') instanceof File) + ' ' + fd.get('f').name;
+    return new Response(new Uint8Array([1, 2, 3])).arrayBuffer();
+  }).then(function (ab) {
+    results.ctor = ab.byteLength;
+    return new Response('héllo').bytes ? new Response('héllo').bytes() : null;
+  }).then(function (u8) {
+    results.bytes = u8 && (desc(u8) + ' ' + u8.length);
+    // Engine functions that fill the page's buffer in place and return it.
+    var u32 = new Uint32Array(4);
+    var back = crypto.getRandomValues(u32);
+    results.inPlace = (back === u32) + ' ' + (u32[0] + u32[1] + u32[2] + u32[3] !== 0);
+    var dest = new Uint8Array(8);
+    var enc = new TextEncoder().encodeInto('héy', dest);
+    results.encodeInto = enc.read + ' ' + enc.written + ' ' + Array.from(dest).join(',');
+    results.done = true;
+  }).catch(function (e) { results.error = String(e && e.stack || e); });
+</script>
+</body>
+</html>

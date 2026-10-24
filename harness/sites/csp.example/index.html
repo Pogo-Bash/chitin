@@ -1,0 +1,48 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<!-- Script execution outcomes Chrome and Chitin must agree on (tests/chrome/run.mjs, scriptOutcomesGroup): CSP nonces
+     (parser-inserted, set by IDL and by attribute, wrong, missing; 'strict-dynamic'), Subresource Integrity (right,
+     wrong, unknown algorithm), crossorigin on classic and module scripts, nomodule, a stylesheet with
+     crossorigin. Each case pushes "<name>:<outcome>" into window.ran; the title becomes "done" 2 s after the parser. -->
+<meta http-equiv="Content-Security-Policy" content="object-src 'none'; script-src 'nonce-n0nce' 'unsafe-eval' 'strict-dynamic' https: http:; base-uri 'self'">
+<title>csp</title>
+<link rel="stylesheet" crossorigin href="s.css" nonce="n0nce">
+<script nonce="n0nce">
+window.ran = [];
+function mark(name, outcome) { ran.push(name + ':' + outcome); }
+function add(name, setup, parent) {
+    const s = document.createElement('script');
+    setup(s);
+    s.onload = () => mark(name, 'load');
+    s.onerror = () => mark(name, 'error');
+    (parent || document.head).appendChild(s);
+}
+// Script-inserted scripts: 'strict-dynamic' trusts them whatever their nonce (CSP3 section 8.2).
+add('dyn-idl-nonce', (s) => { s.nonce = 'n0nce'; s.src = 'a.js?dyn-idl-nonce'; });
+add('dyn-no-nonce', (s) => { s.src = 'a.js?dyn-no-nonce'; });
+add('dyn-sri-good', (s) => { s.integrity = 'sha384-ZDvMhjZKWIOTKssSu+VHItfPBqp1qS/UhaFI4WYSWhRXBV0hq0q5IrPF1278KCm6'; s.crossOrigin = 'anonymous'; s.src = 'a.js?dyn-sri-good'; });
+add('dyn-sri-bad', (s) => { s.integrity = 'sha384-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'; s.src = 'a.js?dyn-sri-bad'; });
+add('dyn-sri-unknown-alg', (s) => { s.integrity = 'md5-xxxx'; s.src = 'a.js?dyn-sri-unknown-alg'; });
+add('dyn-module-crossorigin', (s) => { s.type = 'module'; s.crossOrigin = 'anonymous'; s.nonce = 'n0nce'; s.src = 'm.js?dyn-module-crossorigin'; });
+</script>
+<!-- Parser-inserted: only a matching nonce lets these run under 'strict-dynamic'. -->
+<script nonce="n0nce" src="a.js?parser-nonce" onload="mark('parser-nonce','load')" onerror="mark('parser-nonce','error')"></script>
+<script nonce="n0nce" type="module" crossorigin src="m.js?parser-module-nonce"></script>
+<script nonce="n0nce" type="module" crossorigin="anonymous" integrity="sha256-n5EadGFM3YE7z5VTnMfgXZnZM6Hn4R9ArI/S+o2VlbI=" src="m.js"></script>
+<script nonce="n0nce" type="module">import './m.js?inline-import'; mark('inline-module-import', 'run');</script>
+<script nonce="n0nce" nomodule>mark('nomodule', 'run');</script>
+<script nonce="n0nce">
+const holder = document.createElement('div');
+holder.innerHTML = '<img src="nothing.png" onerror="mark(\'attr-handler\', \'run\')">';
+document.documentElement.append(holder);
+setTimeout(() => {
+    // An inline event handler attribute is not allowed by a nonce (no 'unsafe-inline', no 'unsafe-hashes'): it never runs.
+    mark('stylesheet-crossorigin', getComputedStyle(document.body).color);
+    const first = document.querySelector('script');
+    mark('nonce-reflection', JSON.stringify([first.getAttribute('nonce'), first.nonce]));
+    document.title = 'done';
+}, 2000);
+</script>
+

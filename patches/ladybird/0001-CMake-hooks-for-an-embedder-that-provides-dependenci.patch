@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 13:19:21 -0500
+Subject: [PATCH 01/23] CMake: hooks for an embedder that provides dependencies
+ itself (Chitin)
+
+LADYBIRD_EMBEDDER_CMAKE names a file that may define ladybird_embedder_find_dependencies() and
+ladybird_embedder_adjust_targets(); LADYBIRD_LIBRARIES_ONLY configures only the libraries.
+---
+ CMakeLists.txt                          | 19 +++++++++++++++++++
+ Meta/CMake/check_for_dependencies.cmake |  5 +++++
+ 2 files changed, 24 insertions(+)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 76636afe95..03310b8615 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -48,6 +48,17 @@ set(LADYBIRD_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+ list(APPEND CMAKE_MODULE_PATH "${LADYBIRD_SOURCE_DIR}/Meta/CMake")
+ 
+ include(cmake_options)
++
++# An embedder that builds Ladybird's libraries into another program, for a platform without vcpkg or
++# pkg-config (such as Emscripten), can provide the dependency targets itself and adjust the library
++# targets once they are defined. LADYBIRD_EMBEDDER_CMAKE names a file that may define the functions
++# ladybird_embedder_find_dependencies() and ladybird_embedder_adjust_targets().
++set(LADYBIRD_EMBEDDER_CMAKE "" CACHE FILEPATH "A CMake file with an embedder's dependency and target hooks")
++option(LADYBIRD_LIBRARIES_ONLY "Configure only the libraries, without utilities, tests, services or UI" OFF)
++if (LADYBIRD_EMBEDDER_CMAKE)
++    include("${LADYBIRD_EMBEDDER_CMAKE}")
++endif()
++
+ include(compile_options)
+ include(check_for_dependencies)
+ include(ladybird_helper_processes)
+@@ -123,6 +134,14 @@ add_lagom_library_install_rules(JSClangPlugin)
+ add_subdirectory(AK)
+ add_subdirectory(Libraries)
+ 
++if (COMMAND ladybird_embedder_adjust_targets)
++    ladybird_embedder_adjust_targets()
++endif()
++
++if (LADYBIRD_LIBRARIES_ONLY)
++    return()
++endif()
++
+ if (ENABLE_FUZZERS)
+     add_subdirectory(Meta/Fuzzers)
+ endif()
+diff --git a/Meta/CMake/check_for_dependencies.cmake b/Meta/CMake/check_for_dependencies.cmake
+index d676306996..e1ebac1c05 100644
+--- a/Meta/CMake/check_for_dependencies.cmake
++++ b/Meta/CMake/check_for_dependencies.cmake
+@@ -1,5 +1,10 @@
+ include_guard()
+ 
++if (COMMAND ladybird_embedder_find_dependencies)
++    ladybird_embedder_find_dependencies()
++    return()
++endif()
++
+ find_package(PkgConfig REQUIRED)
+ 
+ if (NOT WIN32 AND NOT ANDROID)

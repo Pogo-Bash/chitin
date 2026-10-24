@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>reload</title>
+<!-- MediaWiki's startup pattern: a queue on the global that the loader replaces when it arrives.
+     Loaded a second time into the same global, the first script would find the loader's push and
+     implement the module twice. -->
+<script>RLQ = window.RLQ || []; RLQ.push(function () { impl('user.options'); });</script>
+<script>
+var implemented = {};
+function impl(name) {
+    if (implemented[name])
+        throw new Error('module already implemented: ' + name);
+    implemented[name] = true;
+}
+var queued = RLQ;
+RLQ = { push: function (fn) { fn(); } };
+while (queued.length)
+    queued.shift()();
+window.pageVar = 1;
+var declared = 2;
+window.ticks = 0;
+setInterval(function () { window.ticks++; }, 5);
+window.addEventListener('resize', function () { window.resizes = (window.resizes || 0) + 1; });
+document.title = 'implemented ' + Object.keys(implemented).join(',');
+</script>
+</html>

@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><title>delete child</title>
+<script>
+// A UMD library's global, assigned and then deleted by the frame's strict code (hCaptcha's frame: window.msgpack).
+var out = {};
+(function (t) { ("undefined" != typeof window ? window : this).lib = t(); })(function () { return { v: 1 }; });
+(function () {
+    "use strict";
+    out.before = typeof window.lib;
+    try { out.deleted = delete window.lib; } catch (e) { out.deleted = e.name; }
+    out.after = typeof window.lib;
+    self.other = 2;
+    try { out.deletedSelf = delete self.other; } catch (e) { out.deletedSelf = e.name; }
+    var declared;
+    try { out.deletedVar = delete window.out; } catch (e) { out.deletedVar = e.name; }
+})();
+parent.results.fromChild.push(JSON.stringify(out));
+</script></head><body></body></html>

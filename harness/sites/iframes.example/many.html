@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><title>many iframes</title></head>
+<body>
+<script>
+var results = { events: [], frameLoads: 0 };
+for (var i = 0; i < 12; i++) {
+    var f = document.createElement('iframe');
+    f.src = i % 2 ? 'child.html' : 'about:blank';
+    f.addEventListener('load', function () { results.frameLoads++; });
+    document.body.appendChild(f);
+}
+window.addEventListener('load', function () { results.events.push('window load'); });
+</script>
+</body></html>

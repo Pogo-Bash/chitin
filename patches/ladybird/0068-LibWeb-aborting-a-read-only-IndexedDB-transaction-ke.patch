@@ -1,0 +1,37 @@
+From 055f6688d565070cbf0349767fecaadf6be36c32 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 09:16:04 -0500
+Subject: [PATCH] LibWeb: aborting a read-only IndexedDB transaction keeps the
+ database's version
+
+revert_all_mutations() restored m_original_version for every transaction,
+but only transactions that set up mutation logs (not read-only ones, nor
+ones aborted while blocked) ever set it: aborting a read-only transaction
+set the database's version to 0, and databases() no longer listed it.
+Only an upgrade transaction's abort restores the version now.
+---
+ Libraries/LibWeb/IndexedDB/IDBTransaction.cpp | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/Libraries/LibWeb/IndexedDB/IDBTransaction.cpp b/Libraries/LibWeb/IndexedDB/IDBTransaction.cpp
+index a1f322a6ce..eb22ad472d 100644
+--- a/Libraries/LibWeb/IndexedDB/IDBTransaction.cpp
++++ b/Libraries/LibWeb/IndexedDB/IDBTransaction.cpp
+@@ -231,8 +231,12 @@ void IDBTransaction::revert_all_mutations()
+         entry.log->revert(*entry.store, database, m_connection);
+     }
+ 
+-    database->set_version(m_original_version);
+-    m_connection->set_version(m_original_version);
++    // Only an upgrade transaction changes the version. A read-only transaction (and one still blocked) never set up its
++    // logs, so its original version is the zero it was made with: restoring it set the database's version to 0.
++    if (is_upgrade_transaction()) {
++        database->set_version(m_original_version);
++        m_connection->set_version(m_original_version);
++    }
+ }
+ 
+ void IDBTransaction::discard_mutation_logs()
+-- 
+2.50.1 (Apple Git-155)
+

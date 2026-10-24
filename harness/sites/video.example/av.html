@@ -1,0 +1,61 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<title>video with sound</title>
+<style>body { margin: 0 } video { display: block; width: 640px; height: 360px } button { position: absolute; left: 0; top: 0; width: 640px; height: 360px; opacity: 0.01 }</style>
+<video id="v" playsinline></video>
+<button id="b">play</button>
+<script>
+// The 2 s VP9/Opus clip (a 440 Hz tone) with its sound: ?mode=
+//   muted     muted autoplay: play() at once
+//   unmuted   play() at once with sound and no user activation (Chrome: NotAllowedError)
+//   click     play() with sound from a click on the button over the video (a user activation)
+//   seek      muted: pause at 0.5 s, seek to 1.5 s, play again to the end
+//   unmute    muted play(), then unmuted at 0.5 s without an activation
+//   unmute-attr  the same with the autoplay attribute instead of play()
+const mode = new URLSearchParams(location.search).get('mode') || 'muted';
+window.seen = [];
+window.times = [];
+window.t0 = performance.now();
+const v = document.getElementById('v');
+const stamp = () => Math.round(v.currentTime * 100) / 100;
+for (const name of ['loadedmetadata', 'loadeddata', 'canplay', 'play', 'playing', 'pause', 'seeking', 'seeked', 'waiting', 'ended', 'error', 'volumechange'])
+    v.addEventListener(name, () => seen.push(name + ':' + v.readyState + '@' + stamp()));
+v.addEventListener('timeupdate', () => times.push(stamp()));
+v.addEventListener('ended', () => { window.endedAfter = Math.round(performance.now() - window.t0); });
+// How much had arrived when playback started (a progressive load starts before the end).
+v.addEventListener('playing', () => { if (window.bufferedAtPlaying === undefined) window.bufferedAtPlaying = v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0; }, { once: true });
+const play = () => v.play().then(() => seen.push('play resolved'), (e) => seen.push('play rejected ' + e.name));
+v.muted = mode === 'muted' || mode === 'seek' || mode === 'unmute' || mode === 'unmute-attr';
+v.src = new URLSearchParams(location.search).get('src') || 'vp9-opus.webm';
+if (mode === 'unmute-attr') {
+    v.autoplay = true;
+} else if (mode === 'click') {
+    document.getElementById('b').addEventListener('click', () => { seen.push('click'); window.t0 = performance.now(); play(); });
+} else {
+    play();
+}
+if (mode === 'seek') {
+    const to = Number(new URLSearchParams(location.search).get('to') || 1.5);
+    let phase = 0;
+    v.addEventListener('timeupdate', () => {
+        if (phase === 0 && v.currentTime >= 0.5) {
+            phase = 1;
+            v.pause();
+            v.currentTime = to;
+        }
+    });
+    v.addEventListener('seeked', () => { if (phase === 1) { phase = 2; play(); } });
+}
+if (mode === 'unmute' || mode === 'unmute-attr') {
+    let done = false;
+    v.addEventListener('timeupdate', () => {
+        if (!done && v.currentTime >= 0.5) {
+            done = true;
+            v.muted = false;
+            seen.push('unmuted, paused=' + v.paused);
+        }
+    });
+}
+</script>

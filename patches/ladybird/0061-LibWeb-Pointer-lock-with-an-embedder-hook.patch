@@ -1,0 +1,405 @@
+From 2ff7453b3a2ccdf2e549bd2cf181cf07f468f2df Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 23:33:49 -0500
+Subject: [PATCH] LibWeb: Pointer lock with an embedder hook
+
+requestPointerLock() returns a promise settled by the embedder
+(PageClient::page_did_request_pointer_lock, Document::did_lock_pointer),
+pointerLockElement on DocumentOrShadowRoot, onpointerlockchange/error,
+exitPointerLock(), and mouse events retargeted to the lock element.
+---
+ Libraries/LibWeb/DOM/Document.cpp             | 121 +++++++++++++++++-
+ Libraries/LibWeb/DOM/Document.h               |  16 +++
+ Libraries/LibWeb/DOM/Document.idl             |   4 +-
+ Libraries/LibWeb/DOM/DocumentOrShadowRoot.idl |   5 +
+ Libraries/LibWeb/DOM/Element.cpp              |   8 +-
+ Libraries/LibWeb/DOM/RequestFullscreenError.h |   2 +-
+ Libraries/LibWeb/DOM/ShadowRoot.cpp           |  10 ++
+ Libraries/LibWeb/DOM/ShadowRoot.h             |   1 +
+ Libraries/LibWeb/Gamepad/NavigatorGamepad.cpp |  10 +-
+ Libraries/LibWeb/HTML/EventNames.h            |   2 +
+ Libraries/LibWeb/Page/EventHandler.cpp        |  20 +++
+ Libraries/LibWeb/Page/Page.h                  |   3 +
+ 12 files changed, 193 insertions(+), 9 deletions(-)
+
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+index c0f75ea69e..b725b2b037 100644
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -867,6 +867,9 @@ void Document::visit_edges(Cell::Visitor& visitor)
+     visitor.visit(m_active_favicon);
+     visitor.visit(m_browsing_context);
+     visitor.visit(m_focused_area);
++    visitor.visit(m_pointer_lock_element);
++    visitor.visit(m_pending_pointer_lock_element);
++    visitor.visit(m_pending_pointer_lock_promise);
+     visitor.visit(m_active_element);
+     visitor.visit(m_target_element);
+     visitor.visit(m_autofocus_candidates);
+@@ -11415,9 +11418,125 @@ void Document::remove_pending_css_import_rule(Badge<CSS::StyleSheetImport>, Nonn
+         page().client().request_frame();
+ }
+ 
++// https://w3c.github.io/pointerlock/#dom-document-exitpointerlock
+ void Document::exit_pointer_lock()
+ {
+-    dbgln("FIXME: exit_pointer_lock()");
++    // A pending request is cancelled with the lock: its promise rejects as Chrome's does.
++    if (m_pending_pointer_lock_promise) {
++        auto promise = m_pending_pointer_lock_promise;
++        m_pending_pointer_lock_promise = nullptr;
++        m_pending_pointer_lock_element = nullptr;
++        WebIDL::reject_promise(*promise, WebIDL::NotAllowedError::create("The user has exited the lock before this request was completed."_utf16));
++        fire_pointer_lock_event(HTML::EventNames::pointerlockerror);
++        page().client().page_did_request_pointer_unlock();
++        return;
++    }
++    // 1. If this's pointer lock element is null, return.
++    if (!m_pointer_lock_element)
++        return;
++    // 2. Unlock: the embedder releases the host's lock; the element is unset and pointerlockchange fires.
++    m_pointer_lock_element = nullptr;
++    page().client().page_did_request_pointer_unlock();
++    fire_pointer_lock_event(HTML::EventNames::pointerlockchange);
++}
++
++GC::Ptr<Element> Document::retargeted_pointer_lock_element() const
++{
++    if (!m_pointer_lock_element)
++        return nullptr;
++    auto* candidate = retarget(m_pointer_lock_element.ptr(), const_cast<Document*>(this));
++    if (auto* element = as_if<Element>(candidate); element && &element->root() == &root())
++        return element;
++    return nullptr;
++}
++
++void Document::fire_pointer_lock_event(Utf16FlyString const& name)
++{
++    // Chrome fires both events at the document, not bubbling, from a task.
++    HTML::queue_global_task(HTML::Task::Source::UserInteraction, HTML::relevant_global_object(*this), GC::create_function(heap(), [this, name] {
++        auto event = Event::create(HTML::relevant_global_object(*this), name);
++        dispatch_event(event);
++    }));
++}
++
++// https://w3c.github.io/pointerlock/#dom-element-requestpointerlock
++WebIDL::ExceptionOr<void> Document::request_pointer_lock(GC::Ref<Element> element, bool unadjusted_movement, GC::Ref<WebIDL::Promise> promise)
++{
++    // The target must be connected and in this fully active document's tree (Chrome's WrongDocumentError).
++    if (!element->is_connected() || !is_fully_active() || &element->shadow_including_root() != this)
++        return WebIDL::WrongDocumentError::create("The root document of this element is not valid for pointer lock."_utf16);
++    if (m_pending_pointer_lock_promise)
++        return WebIDL::InvalidStateError::create("Pointer lock pending."_utf16);
++    // Changing the target of a held lock needs no activation; a new lock needs the page's transient activation.
++    if (!m_pointer_lock_element) {
++        auto window = this->window();
++        if (!window || !window->has_transient_activation())
++            return WebIDL::NotAllowedError::create("A user gesture is required to request Pointer Lock."_utf16);
++    }
++    m_pending_pointer_lock_element = element;
++    m_pending_pointer_lock_promise = promise;
++    page().client().page_did_request_pointer_lock(unadjusted_movement);
++    return {};
++}
++
++void Document::did_lock_pointer(int error)
++{
++    auto element = m_pending_pointer_lock_element;
++    auto promise = m_pending_pointer_lock_promise;
++    m_pending_pointer_lock_element = nullptr;
++    m_pending_pointer_lock_promise = nullptr;
++    if (!promise)
++        return;
++    if (error || !element || !element->is_connected()) {
++        if (error == 2)
++            WebIDL::reject_promise(*promise, WebIDL::NotSupportedError::create("The options asked for in this request are not supported on this platform."_utf16));
++        else
++            WebIDL::reject_promise(*promise, WebIDL::NotAllowedError::create("The user has exited the lock before this request was completed."_utf16));
++        fire_pointer_lock_event(HTML::EventNames::pointerlockerror);
++        if (!error)
++            page().client().page_did_request_pointer_unlock();
++        return;
++    }
++    // The promise first, pointerlockchange after the page's reactions to it (Chrome's order): a reaction of ours, attached after
++    // the page's, queues the event.
++    m_pointer_lock_element = element;
++    WebIDL::resolve_promise(*promise);
++    WebIDL::upon_fulfillment(*promise, GC::create_function(heap(), [this](JS::Value) -> WebIDL::ExceptionOr<JS::Value> {
++        fire_pointer_lock_event(HTML::EventNames::pointerlockchange);
++        return JS::js_undefined();
++    }));
++}
++
++void Document::did_unlock_pointer()
++{
++    if (m_pending_pointer_lock_promise) {
++        did_lock_pointer(1);
++        return;
++    }
++    if (!m_pointer_lock_element)
++        return;
++    m_pointer_lock_element = nullptr;
++    fire_pointer_lock_event(HTML::EventNames::pointerlockchange);
++}
++
++WebIDL::CallbackType* Document::onpointerlockchange()
++{
++    return event_handler_attribute(HTML::EventNames::pointerlockchange);
++}
++
++void Document::set_onpointerlockchange(WebIDL::CallbackType* value)
++{
++    set_event_handler_attribute(HTML::EventNames::pointerlockchange, value);
++}
++
++WebIDL::CallbackType* Document::onpointerlockerror()
++{
++    return event_handler_attribute(HTML::EventNames::pointerlockerror);
++}
++
++void Document::set_onpointerlockerror(WebIDL::CallbackType* value)
++{
++    set_event_handler_attribute(HTML::EventNames::pointerlockerror, value);
+ }
+ 
+ static bool contains_named_namespace(CSS::SelectorList const& selectors)
+diff --git a/Libraries/LibWeb/DOM/Document.h b/Libraries/LibWeb/DOM/Document.h
+index 1b5e13d6bb..ccc8ce5eaa 100644
+--- a/Libraries/LibWeb/DOM/Document.h
++++ b/Libraries/LibWeb/DOM/Document.h
+@@ -1601,7 +1601,20 @@ public:
+     void invalidate_content_blocker_style_sheet();
+     bool content_blocker_style_sheet_may_need_refresh_for_class_or_id(Utf16FlyString const* id, ReadonlySpan<Utf16FlyString> class_names);
+ 
++    // https://w3c.github.io/pointerlock/
+     void exit_pointer_lock();
++    GC::Ptr<Element> pointer_lock_element() const { return m_pointer_lock_element; }
++    GC::Ptr<Element> retargeted_pointer_lock_element() const;
++    WebIDL::ExceptionOr<void> request_pointer_lock(GC::Ref<Element>, bool unadjusted_movement, GC::Ref<WebIDL::Promise>);
++    // The embedder's answer to PageClient::page_did_request_pointer_lock (error: 0 none, 1 NotAllowedError, 2 NotSupportedError),
++    // and its report that the lock ended outside the page (Esc, focus lost).
++    void did_lock_pointer(int error);
++    void did_unlock_pointer();
++    void fire_pointer_lock_event(Utf16FlyString const& name);
++    [[nodiscard]] WebIDL::CallbackType* onpointerlockchange();
++    void set_onpointerlockchange(WebIDL::CallbackType*);
++    [[nodiscard]] WebIDL::CallbackType* onpointerlockerror();
++    void set_onpointerlockerror(WebIDL::CallbackType*);
+ 
+     RefPtr<SelectorQuery const> selector_query_for(Utf16View) const;
+     QuerySelectorResultCache& query_selector_result_cache();
+@@ -1727,6 +1740,9 @@ private:
+ 
+     GC::Ref<Page> m_page;
+     GC::Ptr<CSS::StyleComputer> m_style_computer;
++    GC::Ptr<Element> m_pointer_lock_element;
++    GC::Ptr<Element> m_pending_pointer_lock_element;
++    GC::Ptr<WebIDL::Promise> m_pending_pointer_lock_promise;
+     GC::Ptr<CSS::FontComputer> m_font_computer;
+     GC::Ptr<CSS::StyleSheetList> m_style_sheets;
+     GC::Ptr<Node> m_active_favicon;
+diff --git a/Libraries/LibWeb/DOM/Document.idl b/Libraries/LibWeb/DOM/Document.idl
+index 71fc8cba80..94245794cc 100644
+--- a/Libraries/LibWeb/DOM/Document.idl
++++ b/Libraries/LibWeb/DOM/Document.idl
+@@ -142,8 +142,8 @@ partial interface Document {
+ // https://w3c.github.io/pointerlock/#extensions-to-the-document-interface
+ // FIXME: Move this to a proper home when we have a pointerlock spec folder.
+ partial interface Document {
+-    [FIXME] attribute EventHandler onpointerlockchange;
+-    [FIXME] attribute EventHandler onpointerlockerror;
++    attribute EventHandler onpointerlockchange;
++    attribute EventHandler onpointerlockerror;
+     undefined exitPointerLock();
+ };
+ 
+diff --git a/Libraries/LibWeb/DOM/DocumentOrShadowRoot.idl b/Libraries/LibWeb/DOM/DocumentOrShadowRoot.idl
+index c60d9e67db..25befcb398 100644
+--- a/Libraries/LibWeb/DOM/DocumentOrShadowRoot.idl
++++ b/Libraries/LibWeb/DOM/DocumentOrShadowRoot.idl
+@@ -7,3 +7,8 @@ interface mixin DocumentOrShadowRoot {
+ partial interface mixin DocumentOrShadowRoot {
+     readonly attribute Element? activeElement;
+ };
++
++// https://w3c.github.io/pointerlock/#extensions-to-the-documentorshadowroot-mixin
++partial interface mixin DocumentOrShadowRoot {
++    [ImplementedAs=retargeted_pointer_lock_element] readonly attribute Element? pointerLockElement;
++};
+diff --git a/Libraries/LibWeb/DOM/Element.cpp b/Libraries/LibWeb/DOM/Element.cpp
+index ee3c16a46c..73ed8f8269 100644
+--- a/Libraries/LibWeb/DOM/Element.cpp
++++ b/Libraries/LibWeb/DOM/Element.cpp
+@@ -6953,11 +6953,11 @@ GC::Ref<WebIDL::Promise> request_pointer_lock(DOM::Element& element, Optional<Po
+         };
+     }
+     auto promise = WebIDL::create_promise_for(element);
+-    auto result = element.request_pointer_lock(dom_options);
+-    if (result.is_error())
++    auto result = element.document().request_pointer_lock(element, dom_options.unadjusted_movement, promise);
++    if (result.is_error()) {
+         WebIDL::reject_promise_with_exception(promise, result.release_error());
+-    else
+-        WebIDL::resolve_promise(promise);
++        element.document().fire_pointer_lock_event(HTML::EventNames::pointerlockerror);
++    }
+     return promise;
+ }
+ 
+diff --git a/Libraries/LibWeb/DOM/RequestFullscreenError.h b/Libraries/LibWeb/DOM/RequestFullscreenError.h
+index 5716936124..c713cc2fe7 100644
+--- a/Libraries/LibWeb/DOM/RequestFullscreenError.h
++++ b/Libraries/LibWeb/DOM/RequestFullscreenError.h
+@@ -29,7 +29,7 @@ inline Utf16View request_fullscreen_error_to_string(RequestFullscreenError error
+     case RequestFullscreenError::UnsupportedElement:
+         return u"Not supported element"sv;
+     case RequestFullscreenError::NoTransientUserActivation:
+-        return u"No transient user activation available to consume"sv;
++        return u"Permissions check failed"sv; // Chrome's message
+     case RequestFullscreenError::ElementNodeDocIsNotPendingDoc:
+         return u"Element's node document is not pending doc"sv;
+     }
+diff --git a/Libraries/LibWeb/DOM/ShadowRoot.cpp b/Libraries/LibWeb/DOM/ShadowRoot.cpp
+index 211709b8d3..f6a31772d4 100644
+--- a/Libraries/LibWeb/DOM/ShadowRoot.cpp
++++ b/Libraries/LibWeb/DOM/ShadowRoot.cpp
+@@ -84,6 +84,16 @@ void ShadowRoot::set_style_node_id(CSS::StyleNodeID style_node_id)
+ }
+ 
+ // https://fullscreen.spec.whatwg.org/#dom-document-fullscreenelement
++GC::Ptr<Element> ShadowRoot::retargeted_pointer_lock_element() const
++{
++    if (!host() || !host()->is_connected())
++        return nullptr;
++    auto* candidate = retarget(document().pointer_lock_element().ptr(), const_cast<ShadowRoot*>(this));
++    if (auto* element = as_if<Element>(candidate); element && &element->root() == &root())
++        return element;
++    return nullptr;
++}
++
+ GC::Ptr<Element> ShadowRoot::retargeted_fullscreen_element() const
+ {
+     // 1. If this is a shadow root and its host is not connected, then return null.
+diff --git a/Libraries/LibWeb/DOM/ShadowRoot.h b/Libraries/LibWeb/DOM/ShadowRoot.h
+index 4cb8cd8d76..5cb03b4492 100644
+--- a/Libraries/LibWeb/DOM/ShadowRoot.h
++++ b/Libraries/LibWeb/DOM/ShadowRoot.h
+@@ -113,6 +113,7 @@ public:
+     virtual void finalize() override;
+ 
+     GC::Ptr<Element> retargeted_fullscreen_element() const;
++    GC::Ptr<Element> retargeted_pointer_lock_element() const;
+ 
+     // A shadow root is not an element and has no style of its own, but it is a parent in the style
+     // tree: it is what a shadow-tree element's relations name, and it is what bounds the region a
+diff --git a/Libraries/LibWeb/Gamepad/NavigatorGamepad.cpp b/Libraries/LibWeb/Gamepad/NavigatorGamepad.cpp
+index f0190c0483..3bcb01a78a 100644
+--- a/Libraries/LibWeb/Gamepad/NavigatorGamepad.cpp
++++ b/Libraries/LibWeb/Gamepad/NavigatorGamepad.cpp
+@@ -41,8 +41,15 @@ WebIDL::ExceptionOr<GC::RootVector<GC::Ptr<Gamepad>>> NavigatorGamepadPartial::g
+     window.page().client().page_did_start_using_gamepads();
+ 
+     // 4. If this.[[hasGamepadGesture]] is false, then return an empty list.
+-    if (!m_has_gamepad_gesture)
++    // AD-HOC: Chrome's list always has four entries (null where no gamepad is), with or without the gesture.
++    auto chrome_length = [&] {
++        while (gamepads.size() < 4)
++            gamepads.append(nullptr);
++    };
++    if (!m_has_gamepad_gesture) {
++        chrome_length();
+         return gamepads;
++    }
+ 
+     // 5. Let now be the current high resolution time given the current global object.
+     auto now = HighResolutionTime::current_high_resolution_time(HTML::relevant_global_object(window));
+@@ -66,6 +73,7 @@ WebIDL::ExceptionOr<GC::RootVector<GC::Ptr<Gamepad>>> NavigatorGamepadPartial::g
+     }
+ 
+     // 8. Return gamepads.
++    chrome_length();
+     return gamepads;
+ }
+ 
+diff --git a/Libraries/LibWeb/HTML/EventNames.h b/Libraries/LibWeb/HTML/EventNames.h
+index c144654ad2..82fb2b53dc 100644
+--- a/Libraries/LibWeb/HTML/EventNames.h
++++ b/Libraries/LibWeb/HTML/EventNames.h
+@@ -102,6 +102,8 @@ namespace Web::HTML::EventNames {
+     __ENUMERATE_HTML_EVENT(pageswap)                 \
+     __ENUMERATE_HTML_EVENT(paste)                    \
+     __ENUMERATE_HTML_EVENT(pause)                    \
++    __ENUMERATE_HTML_EVENT(pointerlockchange)        \
++    __ENUMERATE_HTML_EVENT(pointerlockerror)         \
+     __ENUMERATE_HTML_EVENT(play)                     \
+     __ENUMERATE_HTML_EVENT(playing)                  \
+     __ENUMERATE_HTML_EVENT(popstate)                 \
+diff --git a/Libraries/LibWeb/Page/EventHandler.cpp b/Libraries/LibWeb/Page/EventHandler.cpp
+index 9bbc85334e..47ad70e442 100644
+--- a/Libraries/LibWeb/Page/EventHandler.cpp
++++ b/Libraries/LibWeb/Page/EventHandler.cpp
+@@ -365,6 +365,11 @@ EventResult EventHandler::handle_mousedown(CSSPixelPoint visual_viewport_positio
+         target = move(*result);
+         chrome_widget = target->chrome_widget;
+         node = target->dom_node();
++        // https://w3c.github.io/pointerlock/: while the pointer is locked, mouse events go to the lock element.
++        if (auto lock = document->pointer_lock_element(); lock && lock->is_connected()) {
++            node = lock;
++            chrome_widget = nullptr;
++        }
+     } else {
+         return EventResult::Dropped;
+     }
+@@ -586,6 +591,11 @@ EventResult EventHandler::handle_mousemove(CSSPixelPoint visual_viewport_positio
+         target = move(*result);
+         chrome_widget = target->chrome_widget;
+         node = target->dom_node();
++        // https://w3c.github.io/pointerlock/: while the pointer is locked, mouse events go to the lock element.
++        if (auto lock = document->pointer_lock_element(); lock && lock->is_connected()) {
++            node = lock;
++            chrome_widget = nullptr;
++        }
+         start_index = target->index_in_node;
+         hit_text_fragment = target->is_text_fragment;
+     }
+@@ -747,6 +757,11 @@ EventResult EventHandler::handle_mouseup(CSSPixelPoint visual_viewport_position,
+         target = move(*result);
+         chrome_widget = target->chrome_widget;
+         node = target->dom_node();
++        // https://w3c.github.io/pointerlock/: while the pointer is locked, mouse events go to the lock element.
++        if (auto lock = document->pointer_lock_element(); lock && lock->is_connected()) {
++            node = lock;
++            chrome_widget = nullptr;
++        }
+     }
+ 
+     auto click_count = m_mousedown_click_count;
+@@ -1401,6 +1416,11 @@ void EventHandler::update_hover_after_scroll(CSSPixelPoint visual_viewport_posit
+         target = move(*result);
+         chrome_widget = target->chrome_widget;
+         node = target->dom_node();
++        // https://w3c.github.io/pointerlock/: while the pointer is locked, mouse events go to the lock element.
++        if (auto lock = document->pointer_lock_element(); lock && lock->is_connected()) {
++            node = lock;
++            chrome_widget = nullptr;
++        }
+         hit_text_fragment = target->is_text_fragment;
+     }
+ 
+diff --git a/Libraries/LibWeb/Page/Page.h b/Libraries/LibWeb/Page/Page.h
+index 22c40481e2..c81ec9ce3f 100644
+--- a/Libraries/LibWeb/Page/Page.h
++++ b/Libraries/LibWeb/Page/Page.h
+@@ -673,6 +673,9 @@ public:
+     virtual void page_did_request_minimize_window() { }
+     virtual void page_did_request_fullscreen_window() { }
+     virtual void page_did_request_exit_fullscreen() { }
++    // Pointer lock (https://w3c.github.io/pointerlock/): the embedder answers a request with Document::did_lock_pointer.
++    virtual void page_did_request_pointer_lock([[maybe_unused]] bool unadjusted_movement) { }
++    virtual void page_did_request_pointer_unlock() { }
+     virtual void page_did_create_new_document(Web::DOM::Document&) { }
+     virtual void page_did_change_active_document_in_top_level_browsing_context(Web::DOM::Document&) { }
+     virtual void page_did_finish_loading(HTML::CrossProcessId, Optional<Utf16String> const&) { }
+-- 
+2.50.1 (Apple Git-155)
+

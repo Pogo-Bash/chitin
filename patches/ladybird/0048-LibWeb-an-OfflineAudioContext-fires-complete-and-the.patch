@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 18:59:15 -0500
+Subject: [PATCH] LibWeb: an OfflineAudioContext fires complete and then
+ resolves startRendering()'s promise in one task, as Chrome does; with the
+ spec's two tasks a page awaiting the promise saw the buffer before the event
+
+---
+ Libraries/LibWeb/WebAudio/OfflineAudioContext.cpp | 15 +++++++--------
+ 1 file changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/Libraries/LibWeb/WebAudio/OfflineAudioContext.cpp b/Libraries/LibWeb/WebAudio/OfflineAudioContext.cpp
+index 988bb0ee98..ce1c6a6d73 100644
+--- a/Libraries/LibWeb/WebAudio/OfflineAudioContext.cpp
++++ b/Libraries/LibWeb/WebAudio/OfflineAudioContext.cpp
+@@ -183,6 +183,13 @@ void OfflineAudioContext::finish_rendering(GC::Ref<WebIDL::Promise> promise)
+         auto& realm = WebIDL::promise_realm(promise);
+         HTML::TemporaryExecutionContext context(realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+ 
++        // AD-HOC: Chrome fires complete first and then resolves the promise, in the one task (its
++        //         FireCompletionEvent): a page that awaits startRendering() sees the event before the buffer
++        //         (spec: resolve, then queue another task for the event).
++        OfflineAudioCompletionEventInit event_init { {}, *this->m_rendered_buffer };
++        auto event = OfflineAudioCompletionEvent::create(HTML::EventNames::complete, event_init, HighResolutionTime::current_high_resolution_time(relevant_global_object()));
++        this->dispatch_event(event);
++
+         // 4.1 Resolve the promise created by startRendering() with [[rendered buffer]].
+         resolve_audio_buffer_promise(realm, promise, *this->m_rendered_buffer);
+ 
+@@ -191,14 +198,6 @@ void OfflineAudioContext::finish_rendering(GC::Ref<WebIDL::Promise> promise)
+         m_pending_promises.remove_all_matching([promise](GC::Ref<WebIDL::Promise> const& p) {
+             return p.ptr() == promise.ptr();
+         });
+-
+-        // 4.2: Queue a media element task to fire an event named complete at the OfflineAudioContext using OfflineAudioCompletionEvent
+-        //      whose renderedBuffer property is set to [[rendered buffer]].
+-        queue_a_media_element_task(GC::create_function(GC::Heap::the(), [this]() {
+-            OfflineAudioCompletionEventInit event_init { {}, *this->m_rendered_buffer };
+-            auto event = OfflineAudioCompletionEvent::create(HTML::EventNames::complete, event_init, HighResolutionTime::current_high_resolution_time(relevant_global_object()));
+-            this->dispatch_event(event);
+-        }));
+     }));
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+

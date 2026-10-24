@@ -1,0 +1,613 @@
+From d4786b852db75dc08f99ace660d3b7756d55590c Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 14:10:28 -0500
+Subject: [PATCH] LibWeb: WebGL 2 uploads from a pixel unpack buffer,
+ OVR_multiview2, and 64-bit IDL integers converted in integers
+
+The GLintptr overloads of texImage2D/3D, texSubImage2D/3D and the compressed uploads were [FIXME]: overload
+resolution failed for every call with a PIXEL_UNPACK_BUFFER offset. They replay on the executor as one
+TexImageFromPixelUnpackBuffer command. OVR_multiview2 gets its extension object (framebufferTextureMultiviewOVR).
+ConvertToInt for long long / unsigned long long did its modulo 2^64 in doubles, where -1 rounds to 2^64 and comes
+back as 0 (bufferData(target, -1, usage) raised no INVALID_VALUE).
+---
+ .../LibCompositing/WebGL/GLFunctions.json     | 66 +++++++++++++++++++
+ Libraries/LibWeb/CMakeLists.txt               |  1 +
+ Libraries/LibWeb/Forward.h                    |  1 +
+ .../LibWeb/WebGL/Extensions/OVRMultiview2.cpp | 54 +++++++++++++++
+ .../LibWeb/WebGL/Extensions/OVRMultiview2.h   | 35 ++++++++++
+ .../LibWeb/WebGL/Extensions/OVRMultiview2.idl | 10 +++
+ .../WebGL/WebGL2RenderingContextBase.idl      |  8 +--
+ .../WebGL/WebGL2RenderingContextImpl.cpp      | 45 +++++++++++++
+ .../LibWeb/WebGL/WebGL2RenderingContextImpl.h |  6 ++
+ .../WebGL/WebGL2RenderingContextOverloads.cpp | 32 +++++++++
+ .../WebGL/WebGL2RenderingContextOverloads.h   |  4 ++
+ .../WebGL/WebGL2RenderingContextOverloads.idl |  8 +--
+ .../LibWeb/WebGL/WebGLContextProxyBase.cpp    | 22 +++++++
+ .../LibWeb/WebGL/WebGLContextProxyBase.h      |  5 ++
+ .../WebGL/WebGLRenderingContextBase.cpp       |  3 +-
+ .../LibWeb/WebGL/WebGLRenderingContextBase.h  |  2 +
+ .../LibWeb/WebIDL/AbstractOperations.cpp      |  9 +++
+ Libraries/LibWeb/idl_files.cmake              |  1 +
+ Services/Compositor/HostWebGLContext.cpp      | 32 +++++++++
+ 19 files changed, 335 insertions(+), 9 deletions(-)
+ create mode 100644 Libraries/LibWeb/WebGL/Extensions/OVRMultiview2.cpp
+ create mode 100644 Libraries/LibWeb/WebGL/Extensions/OVRMultiview2.h
+ create mode 100644 Libraries/LibWeb/WebGL/Extensions/OVRMultiview2.idl
+
+diff --git a/Libraries/LibCompositing/WebGL/GLFunctions.json b/Libraries/LibCompositing/WebGL/GLFunctions.json
+index 7f2342ad74..21b76eea5a 100644
+--- a/Libraries/LibCompositing/WebGL/GLFunctions.json
++++ b/Libraries/LibCompositing/WebGL/GLFunctions.json
+@@ -4851,6 +4851,72 @@
+             }
+         ]
+     },
++    {
++        "name": "TexImageFromPixelUnpackBuffer",
++        "category": "builtin-command",
++        "wire_command": [
++            {
++                "type": "GLenum",
++                "name": "call"
++            },
++            {
++                "type": "GLenum",
++                "name": "target"
++            },
++            {
++                "type": "GLint",
++                "name": "level"
++            },
++            {
++                "type": "GLenum",
++                "name": "internalformat"
++            },
++            {
++                "type": "GLint",
++                "name": "xoffset"
++            },
++            {
++                "type": "GLint",
++                "name": "yoffset"
++            },
++            {
++                "type": "GLint",
++                "name": "zoffset"
++            },
++            {
++                "type": "GLsizei",
++                "name": "width"
++            },
++            {
++                "type": "GLsizei",
++                "name": "height"
++            },
++            {
++                "type": "GLsizei",
++                "name": "depth"
++            },
++            {
++                "type": "GLint",
++                "name": "border"
++            },
++            {
++                "type": "GLenum",
++                "name": "format"
++            },
++            {
++                "type": "GLenum",
++                "name": "type"
++            },
++            {
++                "type": "GLsizei",
++                "name": "image_size"
++            },
++            {
++                "type": "GLintptr",
++                "name": "offset"
++            }
++        ]
++    },
+     {
+         "name": "ReadPixelsIntoPixelPackBuffer",
+         "category": "builtin-command",
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index c95bf28596..466fa8fc93 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -1065,6 +1065,7 @@ set(SOURCES
+     WebGL/Extensions/OESElementIndexUint.cpp
+     WebGL/Extensions/OESStandardDerivatives.cpp
+     WebGL/Extensions/OESVertexArrayObject.cpp
++    WebGL/Extensions/OVRMultiview2.cpp
+     WebGL/Extensions/WebGLLoseContext.cpp
+     WebGL/Extensions/EXTClipControl.cpp
+     WebGL/Extensions/EXTColorBufferHalfFloat.cpp
+diff --git a/Libraries/LibWeb/Forward.h b/Libraries/LibWeb/Forward.h
+index 770e5b95fa..90cfcfd995 100644
+--- a/Libraries/LibWeb/Forward.h
++++ b/Libraries/LibWeb/Forward.h
+@@ -1313,6 +1313,7 @@ class EXTTextureNorm16;
+ class OESElementIndexUint;
+ class OESStandardDerivatives;
+ class OESVertexArrayObject;
++class OVRMultiview2;
+ class WebGLCompressedTextureS3TC;
+ class WebGLCompressedTextureS3TCsRGB;
+ class WebGLDrawBuffers;
+diff --git a/Libraries/LibWeb/WebGL/Extensions/OVRMultiview2.cpp b/Libraries/LibWeb/WebGL/Extensions/OVRMultiview2.cpp
+new file mode 100644
+index 0000000000..a245fc0a63
+--- /dev/null
++++ b/Libraries/LibWeb/WebGL/Extensions/OVRMultiview2.cpp
+@@ -0,0 +1,54 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <AK/StringBuilder.h>
++#include <GLES2/gl2.h>
++#include <LibWeb/Bindings/OVRMultiview2.h>
++#include <LibWeb/WebGL/Extensions/OVRMultiview2.h>
++#include <LibWeb/WebGL/WebGLRenderingContextBase.h>
++#include <LibWeb/WebGL/WebGLTexture.h>
++
++namespace Web::WebGL {
++
++GC_DEFINE_ALLOCATOR(OVRMultiview2);
++
++GC::Ref<Bindings::Wrappable> OVRMultiview2::create(GC::Ref<WebGLRenderingContextBase> context)
++{
++    auto& realm = context->realm();
++    return realm.create<OVRMultiview2>(realm, context);
++}
++
++OVRMultiview2::OVRMultiview2(JS::Realm&, GC::Ref<WebGLRenderingContextBase> context)
++    : m_context(context)
++{
++}
++
++void OVRMultiview2::framebuffer_texture_multiview_ovr(GLenum target, GLenum attachment, GC::Ptr<WebGLTexture> texture, GLint level, GLint base_view_index, GLsizei num_views)
++{
++    StringBuilder args;
++    args.appendff("{},{},", target, attachment);
++    if (texture) {
++        // A texture of another context (or a deleted one) is INVALID_OPERATION, as for framebufferTextureLayer.
++        auto handle = texture->handle(m_context.ptr());
++        if (handle.is_error()) {
++            m_context->set_error(GL_INVALID_OPERATION);
++            return;
++        }
++        args.appendff("\"@{}\"", handle.value());
++    } else {
++        args.append("null"sv);
++    }
++    args.appendff(",{},{},{}", level, base_view_index, num_views);
++    m_context->host_extension_call("OVR_multiview2"sv, "framebufferTextureMultiviewOVR"sv, args.string_view());
++}
++
++void OVRMultiview2::visit_edges(Visitor& visitor)
++{
++    Base::visit_edges(visitor);
++    visitor.visit(m_context);
++}
++
++}
+diff --git a/Libraries/LibWeb/WebGL/Extensions/OVRMultiview2.h b/Libraries/LibWeb/WebGL/Extensions/OVRMultiview2.h
+new file mode 100644
+index 0000000000..6aa951442c
+--- /dev/null
++++ b/Libraries/LibWeb/WebGL/Extensions/OVRMultiview2.h
+@@ -0,0 +1,35 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <LibWeb/Bindings/Wrappable.h>
++#include <LibWeb/Forward.h>
++#include <LibWeb/WebGL/Types.h>
++#include <LibWebCommon/WebIDL/Types.h>
++
++namespace Web::WebGL {
++
++// Answered by a WebGL executor's host extension (as the generated extensions of patch 0064); the texture goes to the
++// host as its GL name.
++class OVRMultiview2 : public Bindings::GCAllocatedWrappable {
++    WEB_WRAPPABLE(OVRMultiview2, Bindings::GCAllocatedWrappable);
++    GC_DECLARE_ALLOCATOR(OVRMultiview2);
++
++public:
++    static GC::Ref<Bindings::Wrappable> create(GC::Ref<WebGLRenderingContextBase>);
++    void framebuffer_texture_multiview_ovr(GLenum target, GLenum attachment, GC::Ptr<WebGLTexture> texture, GLint level, GLint base_view_index, GLsizei num_views);
++
++protected:
++    void visit_edges(Visitor&) override;
++
++private:
++    OVRMultiview2(JS::Realm&, GC::Ref<WebGLRenderingContextBase>);
++
++    GC::Ref<WebGLRenderingContextBase> m_context;
++};
++
++}
+diff --git a/Libraries/LibWeb/WebGL/Extensions/OVRMultiview2.idl b/Libraries/LibWeb/WebGL/Extensions/OVRMultiview2.idl
+new file mode 100644
+index 0000000000..2ef46126fc
+--- /dev/null
++++ b/Libraries/LibWeb/WebGL/Extensions/OVRMultiview2.idl
+@@ -0,0 +1,10 @@
++// https://registry.khronos.org/webgl/extensions/OVR_multiview2/
++// NOTE: Named as Chrome names the interface (OVRMultiview2); LegacyNoInterfaceObject keeps the name off the global.
++[Exposed=(Window,Worker), LegacyNoInterfaceObject]
++interface OVRMultiview2 {
++    const GLenum FRAMEBUFFER_ATTACHMENT_TEXTURE_NUM_VIEWS_OVR = 0x9630;
++    const GLenum FRAMEBUFFER_ATTACHMENT_TEXTURE_BASE_VIEW_INDEX_OVR = 0x9632;
++    const GLenum MAX_VIEWS_OVR = 0x9631;
++    const GLenum FRAMEBUFFER_INCOMPLETE_VIEW_TARGETS_OVR = 0x9633;
++    undefined framebufferTextureMultiviewOVR(GLenum target, GLenum attachment, WebGLTexture? texture, GLint level, GLint baseViewIndex, GLsizei numViews);
++};
+diff --git a/Libraries/LibWeb/WebGL/WebGL2RenderingContextBase.idl b/Libraries/LibWeb/WebGL/WebGL2RenderingContextBase.idl
+index a4a9279e21..ab2e52dcf8 100644
+--- a/Libraries/LibWeb/WebGL/WebGL2RenderingContextBase.idl
++++ b/Libraries/LibWeb/WebGL/WebGL2RenderingContextBase.idl
+@@ -293,7 +293,7 @@ interface mixin WebGL2RenderingContextBase {
+     undefined texStorage2D(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height);
+     undefined texStorage3D(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth);
+ 
+-    [FIXME] undefined texImage3D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, GLintptr pboOffset);
++    undefined texImage3D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, GLintptr pboOffset);
+ 
+     // May throw DOMException
+     undefined texImage3D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, TexImageSource source);
+@@ -301,7 +301,7 @@ interface mixin WebGL2RenderingContextBase {
+     undefined texImage3D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, [AllowShared] ArrayBufferView? srcData);
+     undefined texImage3D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, [AllowShared] ArrayBufferView srcData, unsigned long long srcOffset);
+ 
+-    [FIXME] undefined texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, GLintptr pboOffset);
++    undefined texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, GLintptr pboOffset);
+ 
+     // May throw DOMException
+     undefined texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, TexImageSource source);
+@@ -310,10 +310,10 @@ interface mixin WebGL2RenderingContextBase {
+ 
+     [FIXME] undefined copyTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x, GLint y, GLsizei width, GLsizei height);
+ 
+-    [FIXME] undefined compressedTexImage3D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLsizei imageSize, GLintptr offset);
++    undefined compressedTexImage3D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLsizei imageSize, GLintptr offset);
+     undefined compressedTexImage3D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, [AllowShared] ArrayBufferView srcData, optional unsigned long long srcOffset = 0, optional GLuint srcLengthOverride = 0);
+ 
+-    [FIXME] undefined compressedTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLsizei imageSize, GLintptr offset);
++    undefined compressedTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLsizei imageSize, GLintptr offset);
+     undefined compressedTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, [AllowShared] ArrayBufferView srcData, optional unsigned long long srcOffset = 0, optional GLuint srcLengthOverride = 0);
+ 
+     // Programs and shaders
+diff --git a/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp b/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp
+index 2d78223e65..06f1bd8833 100644
+--- a/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp
++++ b/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp
+@@ -1451,4 +1451,49 @@ void WebGL2RenderingContextImpl::compressed_tex_sub_image3d(WebIDL::UnsignedLong
+         GL_INVALID_VALUE);
+ }
+ 
++bool WebGL2RenderingContextImpl::validate_pixel_unpack_buffer_upload(WebIDL::LongLong offset)
++{
++    if (!m_pixel_unpack_buffer_binding) {
++        set_error(GL_INVALID_OPERATION);
++        return false;
++    }
++    if (offset < 0) {
++        set_error(GL_INVALID_VALUE);
++        return false;
++    }
++    return true;
++}
++
++void WebGL2RenderingContextImpl::tex_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long depth, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, WebIDL::LongLong pbo_offset)
++{
++    m_context->make_current();
++    if (!validate_pixel_unpack_buffer_upload(pbo_offset))
++        return;
++    m_context->tex_image_from_pixel_unpack_buffer(2, target, level, internalformat, 0, 0, 0, width, height, depth, border, format, type, 0, pbo_offset);
++}
++
++void WebGL2RenderingContextImpl::tex_sub_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long zoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::Long depth, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, WebIDL::LongLong pbo_offset)
++{
++    m_context->make_current();
++    if (!validate_pixel_unpack_buffer_upload(pbo_offset))
++        return;
++    m_context->tex_image_from_pixel_unpack_buffer(3, target, level, 0, xoffset, yoffset, zoffset, width, height, depth, 0, format, type, 0, pbo_offset);
++}
++
++void WebGL2RenderingContextImpl::compressed_tex_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::UnsignedLong internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long depth, WebIDL::Long border, WebIDL::Long image_size, WebIDL::LongLong offset)
++{
++    m_context->make_current();
++    if (!validate_pixel_unpack_buffer_upload(offset))
++        return;
++    m_context->tex_image_from_pixel_unpack_buffer(6, target, level, internalformat, 0, 0, 0, width, height, depth, border, 0, 0, image_size, offset);
++}
++
++void WebGL2RenderingContextImpl::compressed_tex_sub_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long zoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::Long depth, WebIDL::UnsignedLong format, WebIDL::Long image_size, WebIDL::LongLong offset)
++{
++    m_context->make_current();
++    if (!validate_pixel_unpack_buffer_upload(offset))
++        return;
++    m_context->tex_image_from_pixel_unpack_buffer(7, target, level, 0, xoffset, yoffset, zoffset, width, height, depth, 0, format, 0, image_size, offset);
++}
++
+ }
+diff --git a/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.h b/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.h
+index 7a5ee783a7..94ad054d13 100644
+--- a/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.h
++++ b/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.h
+@@ -110,6 +110,12 @@ public:
+     void delete_vertex_array(GC::Ptr<WebGLVertexArrayObject> vertex_array);
+     bool is_vertex_array(GC::Ptr<WebGLVertexArrayObject> vertex_array);
+     void bind_vertex_array(GC::Ptr<WebGLVertexArrayObject> array);
++    void tex_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long depth, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, WebIDL::LongLong pbo_offset);
++    void tex_sub_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long zoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::Long depth, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, WebIDL::LongLong pbo_offset);
++    void compressed_tex_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::UnsignedLong internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long depth, WebIDL::Long border, WebIDL::Long image_size, WebIDL::LongLong offset);
++    void compressed_tex_sub_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long zoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::Long depth, WebIDL::UnsignedLong format, WebIDL::Long image_size, WebIDL::LongLong offset);
++    // The pixel unpack buffer forms: INVALID_OPERATION without a PIXEL_UNPACK_BUFFER, INVALID_VALUE for a negative offset.
++    bool validate_pixel_unpack_buffer_upload(WebIDL::LongLong offset);
+     void compressed_tex_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::UnsignedLong internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long depth, WebIDL::Long border, WebIDL::ArrayBufferView src_data, WebIDL::UnsignedLongLong src_offset, WebIDL::UnsignedLong src_length_override);
+     void compressed_tex_sub_image3d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long zoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::Long depth, WebIDL::UnsignedLong format, WebIDL::ArrayBufferView src_data, WebIDL::UnsignedLongLong src_offset, WebIDL::UnsignedLong src_length_override);
+ };
+diff --git a/Libraries/LibWeb/WebGL/WebGL2RenderingContextOverloads.cpp b/Libraries/LibWeb/WebGL/WebGL2RenderingContextOverloads.cpp
+index 3157ee0229..793a109f61 100644
+--- a/Libraries/LibWeb/WebGL/WebGL2RenderingContextOverloads.cpp
++++ b/Libraries/LibWeb/WebGL/WebGL2RenderingContextOverloads.cpp
+@@ -487,4 +487,36 @@ void WebGL2RenderingContextOverloads::read_pixels(WebIDL::Long x, WebIDL::Long y
+     m_context->read_pixels_into_pixel_pack_buffer(x, y, width, height, format, type, offset);
+ }
+ 
++void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, WebIDL::LongLong pbo_offset)
++{
++    m_context->make_current();
++    if (!validate_pixel_unpack_buffer_upload(pbo_offset))
++        return;
++    m_context->tex_image_from_pixel_unpack_buffer(0, target, level, internalformat, 0, 0, 0, width, height, 0, border, format, type, 0, pbo_offset);
++}
++
++void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, WebIDL::LongLong pbo_offset)
++{
++    m_context->make_current();
++    if (!validate_pixel_unpack_buffer_upload(pbo_offset))
++        return;
++    m_context->tex_image_from_pixel_unpack_buffer(1, target, level, 0, xoffset, yoffset, 0, width, height, 0, 0, format, type, 0, pbo_offset);
++}
++
++void WebGL2RenderingContextOverloads::compressed_tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::UnsignedLong internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long border, WebIDL::Long image_size, WebIDL::LongLong offset)
++{
++    m_context->make_current();
++    if (!validate_pixel_unpack_buffer_upload(offset))
++        return;
++    m_context->tex_image_from_pixel_unpack_buffer(4, target, level, internalformat, 0, 0, 0, width, height, 0, border, 0, 0, image_size, offset);
++}
++
++void WebGL2RenderingContextOverloads::compressed_tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::UnsignedLong format, WebIDL::Long image_size, WebIDL::LongLong offset)
++{
++    m_context->make_current();
++    if (!validate_pixel_unpack_buffer_upload(offset))
++        return;
++    m_context->tex_image_from_pixel_unpack_buffer(5, target, level, 0, xoffset, yoffset, 0, width, height, 0, 0, format, 0, image_size, offset);
++}
++
+ }
+diff --git a/Libraries/LibWeb/WebGL/WebGL2RenderingContextOverloads.h b/Libraries/LibWeb/WebGL/WebGL2RenderingContextOverloads.h
+index 9101713d86..6c5eb1af45 100644
+--- a/Libraries/LibWeb/WebGL/WebGL2RenderingContextOverloads.h
++++ b/Libraries/LibWeb/WebGL/WebGL2RenderingContextOverloads.h
+@@ -38,6 +38,10 @@ public:
+     void tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, WebIDL::ArrayBufferView src_data, WebIDL::UnsignedLongLong src_offset);
+     void tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, TexImageSource source);
+     void tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, WebIDL::ArrayBufferView src_data, WebIDL::UnsignedLongLong src_offset);
++    void tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, WebIDL::LongLong pbo_offset);
++    void tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, WebIDL::LongLong pbo_offset);
++    void compressed_tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::UnsignedLong internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long border, WebIDL::Long image_size, WebIDL::LongLong offset);
++    void compressed_tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::UnsignedLong format, WebIDL::Long image_size, WebIDL::LongLong offset);
+     void compressed_tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::UnsignedLong internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long border, WebIDL::ArrayBufferView src_data, WebIDL::UnsignedLongLong src_offset, WebIDL::UnsignedLong src_length_override);
+     void compressed_tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::UnsignedLong format, WebIDL::ArrayBufferView src_data, WebIDL::UnsignedLongLong src_offset, WebIDL::UnsignedLong src_length_override);
+     void uniform1fv(GC::Ptr<WebGLUniformLocation> location, Float32List v, WebIDL::UnsignedLongLong src_offset, WebIDL::UnsignedLong src_length);
+diff --git a/Libraries/LibWeb/WebGL/WebGL2RenderingContextOverloads.idl b/Libraries/LibWeb/WebGL/WebGL2RenderingContextOverloads.idl
+index f3bb10080e..645f10aafe 100644
+--- a/Libraries/LibWeb/WebGL/WebGL2RenderingContextOverloads.idl
++++ b/Libraries/LibWeb/WebGL/WebGL2RenderingContextOverloads.idl
+@@ -21,23 +21,23 @@ interface mixin WebGL2RenderingContextOverloads {
+     undefined texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLenum format, GLenum type, TexImageSource source);
+ 
+     // WebGL2 entrypoints:
+-    [FIXME] undefined texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, GLintptr pboOffset);
++    undefined texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, GLintptr pboOffset);
+ 
+     // May throw DOMException
+     undefined texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, TexImageSource source);
+ 
+     undefined texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, [AllowShared] ArrayBufferView srcData, unsigned long long srcOffset);
+ 
+-    [FIXME] undefined texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, GLintptr pboOffset);
++    undefined texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, GLintptr pboOffset);
+ 
+     // May throw DOMException
+     undefined texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, TexImageSource source);
+     undefined texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, [AllowShared] ArrayBufferView srcData, unsigned long long srcOffset);
+ 
+-    [FIXME] undefined compressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, GLintptr offset);
++    undefined compressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, GLintptr offset);
+     undefined compressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, [AllowShared] ArrayBufferView srcData, optional unsigned long long srcOffset = 0, optional GLuint srcLengthOverride = 0);
+ 
+-    [FIXME] undefined compressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, GLintptr offset);
++    undefined compressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, GLintptr offset);
+     undefined compressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, [AllowShared] ArrayBufferView srcData, optional unsigned long long srcOffset = 0, optional GLuint srcLengthOverride = 0);
+ 
+     undefined uniform1fv(WebGLUniformLocation? location, Float32List v, optional unsigned long long srcOffset = 0, optional GLuint srcLength = 0);
+diff --git a/Libraries/LibWeb/WebGL/WebGLContextProxyBase.cpp b/Libraries/LibWeb/WebGL/WebGLContextProxyBase.cpp
+index ca789eb1b0..8b41a926ef 100644
+--- a/Libraries/LibWeb/WebGL/WebGLContextProxyBase.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLContextProxyBase.cpp
+@@ -224,6 +224,28 @@ void WebGLContextProxyBase::read_pixels_into_pixel_pack_buffer(GLint x, GLint y,
+     });
+ }
+ 
++void WebGLContextProxyBase::tex_image_from_pixel_unpack_buffer(GLenum call, GLenum target, GLint level, GLenum internalformat, GLint xoffset, GLint yoffset, GLint zoffset,
++    GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, GLsizei image_size, long long offset)
++{
++    record(Commands::TexImageFromPixelUnpackBuffer {
++        .call = call,
++        .target = target,
++        .level = level,
++        .internalformat = internalformat,
++        .xoffset = xoffset,
++        .yoffset = yoffset,
++        .zoffset = zoffset,
++        .width = width,
++        .height = height,
++        .depth = depth,
++        .border = border,
++        .format = format,
++        .type = type,
++        .image_size = image_size,
++        .offset = static_cast<GLintptr>(offset),
++    });
++}
++
+ void WebGLContextProxyBase::tex_image2d_from_bitmap(GLenum target, GLint level, GLint internalformat, GLenum format, GLenum type, Gfx::DecodedImageFrame frame, Optional<Gfx::IntSize> destination_size, bool flip_y, bool premultiply_alpha)
+ {
+     if (m_lost)
+diff --git a/Libraries/LibWeb/WebGL/WebGLContextProxyBase.h b/Libraries/LibWeb/WebGL/WebGLContextProxyBase.h
+index f7015a752d..6dea7302b1 100644
+--- a/Libraries/LibWeb/WebGL/WebGLContextProxyBase.h
++++ b/Libraries/LibWeb/WebGL/WebGLContextProxyBase.h
+@@ -60,6 +60,11 @@ public:
+     RefPtr<Gfx::Bitmap> read_back_drawing_buffer(Gfx::IntRect const&);
+ 
+     void read_pixels_into_pixel_pack_buffer(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, long long offset);
++    // A (compressed) tex(Sub)Image2D/3D whose pixels are at `offset` in the bound PIXEL_UNPACK_BUFFER. call: 0 texImage2D,
++    // 1 texSubImage2D, 2 texImage3D, 3 texSubImage3D, 4 compressedTexImage2D, 5 compressedTexSubImage2D,
++    // 6 compressedTexImage3D, 7 compressedTexSubImage3D.
++    void tex_image_from_pixel_unpack_buffer(GLenum call, GLenum target, GLint level, GLenum internalformat, GLint xoffset, GLint yoffset, GLint zoffset,
++        GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, GLsizei image_size, long long offset);
+     bool read_buffer_sub_data(GLenum target, long long offset, Bytes destination);
+ 
+     void tex_image2d_from_bitmap(GLenum target, GLint level, GLint internalformat, GLenum format, GLenum type, Gfx::DecodedImageFrame, Optional<Gfx::IntSize> destination_size, bool flip_y, bool premultiply_alpha);
+diff --git a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
+index 854be51eaa..c302008df4 100644
+--- a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
+@@ -72,6 +72,7 @@ extern "C" {
+ #include <LibWeb/WebGL/Extensions/OESTextureFloatLinear.h>
+ #include <LibWeb/WebGL/Extensions/OESTextureHalfFloat.h>
+ #include <LibWeb/WebGL/Extensions/OESTextureHalfFloatLinear.h>
++#include <LibWeb/WebGL/Extensions/OVRMultiview2.h>
+ #include <LibWeb/WebGL/Extensions/WebGLBlendFuncExtended.h>
+ #include <LibWeb/WebGL/Extensions/WebGLClipCullDistance.h>
+ #include <LibWeb/WebGL/Extensions/WebGLColorBufferFloat.h>
+@@ -160,7 +161,7 @@ static HashMap<String, Extension, AK::ASCIICaseInsensitiveStringTraits> const& a
+         { "OES_fbo_render_mipmap"_string, { { "GL_OES_fbo_render_mipmap"sv }, OESFboRenderMipmap::create, WebGLVersion::WebGL1 } },
+         { "OES_sample_variables"_string, { { "GL_OES_sample_variables"sv }, OESSampleVariables::create, WebGLVersion::WebGL2 } },
+         { "OES_shader_multisample_interpolation"_string, { { "GL_OES_shader_multisample_interpolation"sv }, OESShaderMultisampleInterpolation::create, WebGLVersion::WebGL2 } },
+-        { "OVR_multiview2"_string, { { "GL_OVR_multiview2"sv }, nullptr, WebGLVersion::WebGL2 } },
++        { "OVR_multiview2"_string, { { "GL_OVR_multiview2"sv }, OVRMultiview2::create, WebGLVersion::WebGL2 } },
+         { "WEBGL_blend_func_extended"_string, { { "GL_EXT_blend_func_extended"sv }, WebGLBlendFuncExtended::create } },
+         { "WEBGL_clip_cull_distance"_string, { { "GL_EXT_clip_cull_distance"sv }, WebGLClipCullDistance::create, WebGLVersion::WebGL2 } },
+         { "WEBGL_color_buffer_float"_string, { { "EXT_color_buffer_half_float"sv, "OES_texture_float"sv }, WebGLColorBufferFloat::create, WebGLVersion::WebGL1 } },
+diff --git a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.h b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.h
+index a7627e71e4..5af3bf1332 100644
+--- a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.h
++++ b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.h
+@@ -358,6 +358,8 @@ protected:
+     }
+ 
+     GLenum get_error_value();
++    // Extensions that validate their object arguments report as the context does.
++    friend class OVRMultiview2;
+     void set_error(GLenum error);
+     void reset_context_state_after_loss();
+ 
+diff --git a/Libraries/LibWeb/WebIDL/AbstractOperations.cpp b/Libraries/LibWeb/WebIDL/AbstractOperations.cpp
+index 6d0967711a..82c1be6888 100644
+--- a/Libraries/LibWeb/WebIDL/AbstractOperations.cpp
++++ b/Libraries/LibWeb/WebIDL/AbstractOperations.cpp
+@@ -9,6 +9,7 @@
+ #include <AK/ByteBuffer.h>
+ #include <AK/Enumerate.h>
+ #include <AK/NumericLimits.h>
++#include <math.h>
+ #include <AK/Utf16String.h>
+ #include <LibJS/Runtime/AbstractOperations.h>
+ #include <LibJS/Runtime/Array.h>
+@@ -557,6 +558,14 @@ JS::ThrowCompletionOr<T> convert_to_int(JS::VM& vm, JS::Value value, EnforceRang
+     // 9. Set x to IntegerPart(x).
+     x = integer_part(x);
+ 
++    // AD-HOC: For a 64-bit type, steps 10 and 11 in doubles lose the low bits: -1 modulo 2^64 rounds to 2^64, and
++    //         2^64 - 2^64 is 0. Do them in integers (fmod is exact, and its result is an integer below 2^64 in magnitude).
++    if constexpr (sizeof(T) == 8) {
++        auto remainder = fmod(x, 18446744073709551616.0);
++        u64 bits = remainder < 0 ? static_cast<u64>(0) - static_cast<u64>(-remainder) : static_cast<u64>(remainder);
++        return static_cast<T>(bits);
++    }
++
+     // 10. Set x to x modulo 2^bitLength.
+     auto constexpr two_pow_bitlength = NumericLimits<MakeUnsigned<T>>::max() + 1.0;
+     x = JS::modulo(x, two_pow_bitlength);
+diff --git a/Libraries/LibWeb/idl_files.cmake b/Libraries/LibWeb/idl_files.cmake
+index 8b7c733088..1aa25da64b 100644
+--- a/Libraries/LibWeb/idl_files.cmake
++++ b/Libraries/LibWeb/idl_files.cmake
+@@ -631,6 +631,7 @@ libweb_js_bindings(WebGL/Extensions/EXTTextureNorm16)
+ libweb_js_bindings(WebGL/Extensions/OESElementIndexUint)
+ libweb_js_bindings(WebGL/Extensions/OESStandardDerivatives)
+ libweb_js_bindings(WebGL/Extensions/OESVertexArrayObject)
++libweb_js_bindings(WebGL/Extensions/OVRMultiview2)
+ libweb_js_bindings(WebGL/Extensions/WebGLLoseContext)
+ libweb_js_bindings(WebGL/Extensions/EXTClipControl)
+ libweb_js_bindings(WebGL/Extensions/EXTColorBufferHalfFloat)
+diff --git a/Services/Compositor/HostWebGLContext.cpp b/Services/Compositor/HostWebGLContext.cpp
+index 69f46574df..a0c816240f 100644
+--- a/Services/Compositor/HostWebGLContext.cpp
++++ b/Services/Compositor/HostWebGLContext.cpp
+@@ -83,6 +83,38 @@ ErrorOr<void> HostWebGLContext::execute_commands(ReadonlyBytes bytes, Vector<Gfx
+         } else if constexpr (IsSame<Command, Commands::ReadPixelsIntoPixelPackBuffer>) {
+             m_gl_context->read_pixels_robust_angle(command.x, command.y, command.width, command.height, command.format, command.type, 0, nullptr, nullptr, nullptr, reinterpret_cast<void*>(static_cast<uintptr_t>(command.offset)));
+             return {};
++        } else if constexpr (IsSame<Command, Commands::TexImageFromPixelUnpackBuffer>) {
++            auto* pixels = reinterpret_cast<void*>(static_cast<uintptr_t>(command.offset));
++            auto& gl = *m_gl_context;
++            switch (command.call) {
++            case 0:
++                gl.tex_image2d_robust_angle(command.target, command.level, command.internalformat, command.width, command.height, command.border, command.format, command.type, 0, pixels);
++                break;
++            case 1:
++                gl.tex_sub_image2d_robust_angle(command.target, command.level, command.xoffset, command.yoffset, command.width, command.height, command.format, command.type, 0, pixels);
++                break;
++            case 2:
++                gl.tex_image3d_robust_angle(command.target, command.level, command.internalformat, command.width, command.height, command.depth, command.border, command.format, command.type, 0, pixels);
++                break;
++            case 3:
++                gl.tex_sub_image3d_robust_angle(command.target, command.level, command.xoffset, command.yoffset, command.zoffset, command.width, command.height, command.depth, command.format, command.type, 0, pixels);
++                break;
++            case 4:
++                gl.compressed_tex_image2d_robust_angle(command.target, command.level, command.internalformat, command.width, command.height, command.border, command.image_size, 0, pixels);
++                break;
++            case 5:
++                gl.compressed_tex_sub_image2d_robust_angle(command.target, command.level, command.xoffset, command.yoffset, command.width, command.height, command.format, command.image_size, 0, pixels);
++                break;
++            case 6:
++                gl.compressed_tex_image3d_robust_angle(command.target, command.level, command.internalformat, command.width, command.height, command.depth, command.border, command.image_size, 0, pixels);
++                break;
++            case 7:
++                gl.compressed_tex_sub_image3d_robust_angle(command.target, command.level, command.xoffset, command.yoffset, command.zoffset, command.width, command.height, command.depth, command.format, command.image_size, 0, pixels);
++                break;
++            default:
++                return Error::from_string_literal("WebGL pixel unpack buffer upload of an unknown kind");
++            }
++            return {};
+         } else if constexpr (IsSame<Command, Commands::TexImage2DFromBitmap>) {
+             return tex_image2d_from_bitmap(command, bitmaps);
+         } else if constexpr (IsSame<Command, Commands::TexSubImage2DFromBitmap>) {

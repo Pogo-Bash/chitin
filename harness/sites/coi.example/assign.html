@@ -1,0 +1,47 @@
+<!doctype html><!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<meta charset=utf-8><title>coi assign</title>
+<p id=s>running</p>
+<script>
+// plasmaontheweb.com's task Workers: 8 spares are kept ready (each given a shared memory in 'init'); a new task takes one by an
+// 'assign' message carrying a Map of compiled modules, the Worker says 'done' and blocks in Atomics.wait, the page ends it and
+// starts a new spare at once. 80 tasks one after another: every 'assign' must reach its Worker.
+const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+const bytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+const modules = new Map();
+for (let i = 0; i < 31; i++)
+    modules.set('lib' + i, new WebAssembly.Module(bytes));
+const spares = [];
+const spare = () => {
+    const w = new Worker('assign-worker.js');
+    let readyResolve;
+    const s = { w, ready: new Promise((r) => { readyResolve = r; }), done: null };
+    w.onmessage = (e) => { if (e.data.method === 'ready') readyResolve(); else if (s.done) s.done(e.data); };
+    w.postMessage({ method: 'init', memory });
+    return s;
+};
+// ?pre: all 88 runners started and ready before the clock starts (the hand-over alone, without Worker start-up).
+const pre = location.search.includes('pre');
+for (let i = 0; i < (pre ? 88 : 8); i++) spares.push(spare());
+(async () => {
+    let ok = 0, lost = [], wrong = 0;
+    if (pre) await Promise.all(spares.map((s) => s.ready));
+    const t0 = performance.now();
+    let rt = 0;
+    for (let task = 0; task < 80; task++) {
+        const s = spares.shift();
+        const t1 = performance.now();
+        const got = await Promise.race([new Promise((r) => { s.done = r; s.w.postMessage({ method: 'assign', task, modules }); }),
+            new Promise((r) => setTimeout(() => r(null), 3000))]);
+        rt += performance.now() - t1;
+        while ((!pre || location.search.includes('spawn')) && spares.length < (pre ? 88 - task : 8)) spares.push(spare());
+        if (!got) lost.push(task);
+        else if (got.task !== task || got.modules !== 31) wrong++;
+        else ok++;
+        s.w.terminate();
+    }
+    window.timing = { ms: Math.round(performance.now() - t0), handover: Math.round(rt) };
+    window.result = { ok, lost: lost.length, wrong, shared: new Int32Array(memory.buffer)[0] };
+    console.log('assign ' + JSON.stringify(window.result) + ' lost ' + lost.slice(0, 10));
+    document.getElementById('s').textContent = 'done';
+})();
+</script>

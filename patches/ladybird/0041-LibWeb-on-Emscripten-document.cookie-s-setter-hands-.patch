@@ -1,0 +1,47 @@
+From 3e21cfcaa08e00f8d06c53e0b62dc78886deb871 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 17:18:25 -0500
+Subject: [PATCH] LibWeb: on Emscripten document.cookie's setter hands the
+ embedder the raw cookie string, so Partitioned and every attribute reach its
+ jar
+
+---
+ Libraries/LibWeb/DOM/Document.cpp | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+index 04ac0c6f06..a6be68824d 100644
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -264,6 +264,11 @@
+ #include <LibWebCommon/WebDriver/UserPrompt.h>
+ #include <LibWebCommon/WebView/AccessibilityNodeData.h>
+ 
++#ifdef AK_OS_EMSCRIPTEN
++// The embedder's document.cookie setter (Chitin's engine/platform/Host.cpp): returns true when it took the string.
++extern "C" bool ganglion_document_set_cookie(char const* url, size_t url_length, char const* cookie, size_t cookie_length);
++#endif
++
+ namespace Web::DOM {
+ 
+ static CSS::ComputedValuesFFI::FfiUtf16View ffi_utf16_view(Utf16View view)
+@@ -4755,6 +4760,16 @@ WebIDL::ExceptionOr<void> Document::set_cookie(Utf16View cookie_string)
+     // Otherwise, the user agent must act as it would when receiving a set-cookie-string for the document's URL via a
+     // "non-HTTP" API, consisting of the new value encoded as UTF-8.
+     auto cookie_string_utf8 = TRY_OR_THROW_OOM(vm(), cookie_string.to_utf8());
++#ifdef AK_OS_EMSCRIPTEN
++    // An embedder with a cookie jar of its own (Chitin) parses the string itself: the parsed form has no room for
++    // Partitioned or for the attributes it would refuse, and the jar must see what the page wrote.
++    auto serialized_url = m_url.serialize();
++    if (ganglion_document_set_cookie(serialized_url.bytes_as_string_view().characters_without_null_termination(), serialized_url.bytes_as_string_view().length(),
++            cookie_string_utf8.bytes_as_string_view().characters_without_null_termination(), cookie_string_utf8.bytes_as_string_view().length())) {
++        reset_cookie_version();
++        return {};
++    }
++#endif
+     if (auto cookie = HTTP::Cookie::parse_cookie(url(), cookie_string_utf8); cookie.has_value()) {
+         page().client().page_did_set_cookie(relevant_settings_object().id, m_url, cookie.value(), HTTP::Cookie::Source::NonHttp);
+         reset_cookie_version();
+-- 
+2.50.1 (Apple Git-155)
+

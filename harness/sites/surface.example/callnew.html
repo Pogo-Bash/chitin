@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><title>surface callnew</title>
+<!-- Every interface object called without new, one console line before each call (the last line before a crash names the interface). -->
+<script>
+(function () {
+    const BUILTIN = new Set('Object Function Array Number Boolean String Symbol Date Promise RegExp Error AggregateError EvalError RangeError ReferenceError SyntaxError TypeError URIError ArrayBuffer Atomics Uint8Array Int8Array Uint16Array Int16Array Uint32Array Int32Array Float32Array Float64Array Uint8ClampedArray BigUint64Array BigInt64Array DataView Map BigInt Set WeakMap WeakSet Proxy Reflect FinalizationRegistry WeakRef Iterator SharedArrayBuffer WebAssembly Intl JSON Math'.split(' '));
+    const out = {};
+    for (const n of Object.getOwnPropertyNames(globalThis)) {
+        const v = Object.getOwnPropertyDescriptor(globalThis, n).value;
+        if (!/^[A-Z]/.test(n) || BUILTIN.has(n) || typeof v !== 'function' || !v.prototype) continue;
+        console.log('CALLNEW ' + n);
+        try { v(); out[n] = 'returned'; } catch (e) { out[n] = e.name + ': ' + e.message; }
+    }
+    window.__callnew = JSON.stringify(out);
+})();
+</script>

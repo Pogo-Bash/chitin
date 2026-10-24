@@ -1,0 +1,66 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+     Copyright (c) 2026 [OWNER NAME]
+     Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
+     A mock relying party for the sign-in handoff (docs/oauth.md): three ways sites sign in with a third-party provider.
+     The provider is idp.example (?idp= names another origin, as the Chrome test's local servers do). No real account. -->
+<html><head><meta charset="utf-8"><title>rp</title>
+<style>body{font:16px system-ui;margin:16px} button{display:block;width:260px;height:40px;margin:8px 0}</style></head>
+<body>
+<h1>Mock relying party</h1>
+<button id="popup-msg">Sign in (popup, postMessage)</button>
+<button id="popup-poll">Sign in (popup, opener polls)</button>
+<button id="redirect">Sign in (redirect)</button>
+<p id="result">signed out</p>
+<script>
+var IDP = new URLSearchParams(location.search).get('idp') || 'https://idp.example';
+var results = { opened: [], got: [], closedSeen: false, signedIn: null, errors: [] };
+function authorize(redirectPath, state) {
+    return IDP + '/authorize.html?client_id=mock-rp&response_type=code&scope=openid&state=' + state +
+        '&redirect_uri=' + encodeURIComponent(location.origin + redirectPath);
+}
+function done(how) {
+    results.signedIn = how;
+    document.getElementById('result').textContent = 'signed in: ' + how;
+    document.title = 'signed in';
+}
+document.getElementById('popup-msg').addEventListener('click', function () {
+    var state = 'pm' + Math.random().toString(36).slice(2, 10);
+    var w = window.open(authorize('/popup-callback.html', state), 'signin', 'popup,width=500,height=600');
+    results.opened.push({ kind: 'msg', isNull: w === null, type: typeof w, closed: w ? w.closed : null });
+    window.lastPopup = w;
+    if (!w) return;
+    try { w.document; results.crossOriginDocument = 'reachable'; } catch (e) { results.crossOriginDocument = e.name; }
+    window.addEventListener('message', function on(e) {
+        results.got.push({ origin: e.origin, fromPopup: e.source === w, data: e.data });
+        if (e.origin !== location.origin || e.source !== w || !e.data || e.data.state !== state) return;
+        window.removeEventListener('message', on);
+        done('popup-msg code=' + e.data.code);
+    });
+    var t = setInterval(function () { if (w.closed) { clearInterval(t); results.closedSeen = true; } }, 100);
+});
+document.getElementById('popup-poll').addEventListener('click', function () {
+    var state = 'pp' + Math.random().toString(36).slice(2, 10);
+    var w = window.open(authorize('/blank.html', state), 'signin2', 'popup,width=500,height=600');
+    results.opened.push({ kind: 'poll', isNull: w === null });
+    if (!w) return;
+    var t = setInterval(function () {
+        var href = null;
+        try { href = w.location.href; } catch (e) { /* cross-origin while at the provider */ }
+        if (w.closed) { clearInterval(t); results.closedSeen = true; return; }
+        if (!href || href.indexOf(location.origin + '/blank.html') !== 0) return;
+        clearInterval(t);
+        var q = new URLSearchParams(w.location.search);
+        w.close();
+        if (q.get('state') === state) done('popup-poll code=' + q.get('code'));
+        else results.errors.push('poll: state mismatch');
+    }, 100);
+});
+document.getElementById('redirect').addEventListener('click', function () {
+    var state = 'rd' + Math.random().toString(36).slice(2, 10);
+    document.cookie = 'oauth_state=' + state + '; path=/; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : '');
+    location.assign(authorize('/callback.html', state));
+});
+window.addEventListener('error', function (e) { results.errors.push(String(e.message)); });
+</script>
+</body></html>

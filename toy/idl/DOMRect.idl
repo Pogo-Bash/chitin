@@ -1,0 +1,15 @@
+// Chitin phase-0 subset of Ladybird's Libraries/LibWeb/Geometry/DOMRect.idl (BSD-2-Clause, the Ladybird developers).
+// Members kept as written upstream; members the toy does not implement are left out.
+// https://drafts.fxtf.org/geometry/#domrect
+// Implemented entirely in the glue (a plain value object): no engine object, no handle.
+[Exposed=*, ImplementedInBindings]
+interface DOMRect {
+    readonly attribute double x;
+    readonly attribute double y;
+    readonly attribute double width;
+    readonly attribute double height;
+    readonly attribute double top;
+    readonly attribute double right;
+    readonly attribute double bottom;
+    readonly attribute double left;
+};

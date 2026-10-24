@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><title>frame messages</title></head>
+<body>
+<script>
+var results = { events: [], messages: [] };
+window.addEventListener('load', function () { results.events.push('window load'); });
+window.addEventListener('message', function (e) {
+    results.messages.push({ data: e.data, fromFrame: e.source === document.getElementById('f').contentWindow, origin: e.origin,
+        dataIsArray: Array.isArray(e.data && e.data.list), ports: e.ports.length });
+    if (e.ports.length) e.ports[0].postMessage('over the port');
+});
+</script>
+<iframe id="f" src="realm-msg-child.html"></iframe>
+</body></html>

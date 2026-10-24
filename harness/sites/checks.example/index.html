@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>checks</title>
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  .row { height: 30px; position: relative; }
+  input[type=checkbox] { position: absolute; left: 0; top: 4px; width: 20px; height: 20px; margin: 0; }
+  label { position: absolute; left: 40px; top: 4px; width: 200px; height: 20px; background: #ddd; display: block; }
+  /* Wikipedia's dropdown: the checkbox is invisible and covers the button; a sibling shows on :checked. */
+  .dd input { opacity: 0; width: 200px; left: 300px; z-index: 1; }
+  .dd .panel { position: absolute; left: 300px; top: 4px; display: none; }
+  .dd input:checked ~ .panel { display: block; }
+  .sel:has(input:checked) { background: #e00; }
+</style></head>
+<body>
+<div class="row"><input type="checkbox" id="plain"></div>
+<div class="row"><input type="checkbox" id="forlabel"><label for="forlabel" id="forlabelL">for</label></div>
+<div class="row"><label id="wrapL"><input type="checkbox" id="wrap">wrapped</label></div>
+<div class="row dd"><input type="checkbox" id="dd" role="button"><label for="dd" id="ddL">menu</label><div class="panel" id="panel">panel</div></div>
+<div class="row"><input type="checkbox" id="cancel"></div>
+<div class="row"><input type="radio" name="r" id="ra"><input type="radio" name="r" id="rb"></div>
+<div class="row"><input type="checkbox" id="evt"></div>
+<script>
+  var log = [];
+  document.getElementById('cancel').addEventListener('click', function (e) { e.preventDefault(); log.push('cancel-click'); });
+  var evt = document.getElementById('evt');
+  ['click', 'input', 'change'].forEach(function (t) { evt.addEventListener(t, function () { log.push(t + ':' + evt.checked); }); });
+  function checked(id) { return document.getElementById(id).checked; }
+</script>
+</body>
+</html>

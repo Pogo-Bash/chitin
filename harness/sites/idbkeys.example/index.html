@@ -1,0 +1,22 @@
+<!doctype html>
+<title>idb keys</title>
+<script>
+window.seen = [];
+const put = (k, v) => seen.push(k + '=' + JSON.stringify(v));
+put('cmpArr', indexedDB.cmp([1, [2]], [1]));
+put('cmpDate', indexedDB.cmp(new Date(5), 1));
+put('cmpDates', indexedDB.cmp(new Date(5), new Date(6)));
+put('only', IDBKeyRange.only([1, 'a']).lower);
+put('bound', IDBKeyRange.bound([1], [2]).includes([1, 5]));
+const o = indexedDB.open('keys', 1);
+o.onupgradeneeded = () => { o.result.createObjectStore('s', { keyPath: 'id' }); o.result.createObjectStore('k'); };
+o.onsuccess = () => {
+    const tx = o.result.transaction(['s', 'k'], 'readwrite');
+    tx.objectStore('s').put({ id: ['v', 1], when: new Date(7), list: [1, [2]], tags: new Set(['x']), m: new Map([[1, 'y']]) });
+    tx.objectStore('k').put('d', new Date(9));
+    tx.objectStore('s').get(['v', 1]).onsuccess = (e) => put('getArr', [e.target.result.when instanceof Date, e.target.result.when.getTime(), e.target.result.list, typeof e.target.result.tags]);
+    tx.objectStore('k').get(new Date(9)).onsuccess = (e) => put('getDate', e.target.result);
+    tx.objectStore('s').getAll(IDBKeyRange.lowerBound(['v'])).onsuccess = (e) => put('range', e.target.result.length);
+    tx.oncomplete = () => put('done', 1);
+};
+</script>

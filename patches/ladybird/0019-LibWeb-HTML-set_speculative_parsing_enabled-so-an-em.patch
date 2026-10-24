@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 19:43:02 -0500
+Subject: [PATCH 19/23] LibWeb: HTML::set_speculative_parsing_enabled() so an
+ embedder may opt out of the speculative HTML parser
+
+---
+ Libraries/LibWeb/HTML/Parser/HTMLParser.cpp | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/Libraries/LibWeb/HTML/Parser/HTMLParser.cpp b/Libraries/LibWeb/HTML/Parser/HTMLParser.cpp
+index f8be6fe990..851bb7e418 100644
+--- a/Libraries/LibWeb/HTML/Parser/HTMLParser.cpp
++++ b/Libraries/LibWeb/HTML/Parser/HTMLParser.cpp
+@@ -1076,7 +1076,7 @@ void HTMLParser::resume_after_parser_blocking_script()
+         ready = pending->is_ready_to_be_parser_executed();
+     else if (pending_svg)
+         ready = pending_svg->is_ready_to_be_parser_executed();
+-    else
++    if (!pending && !pending_svg)
+         return;
+ 
+     // 5. If the parser's Document has a style sheet that is blocking scripts or the script's ready to be
+@@ -2259,10 +2259,22 @@ RefPtr<CSS::StyleValue const> parse_table_child_element_align_value(Utf16View st
+ }
+ 
+ // https://html.spec.whatwg.org/multipage/parsing.html#start-the-speculative-html-parser
++// The speculative HTML parser is optional ("1. Optionally, return."): an embedder whose fetches are answered by
++// its host may leave it off, so that each resource is fetched once, by the real parser. Kept out of the header
++// so that an embedder can set it without rebuilding everything that includes HTMLParser.h.
++static bool s_embedder_allows_speculative_parsing = true;
++
++void set_speculative_parsing_enabled(bool);
++void set_speculative_parsing_enabled(bool enabled)
++{
++    s_embedder_allows_speculative_parsing = enabled;
++}
++
+ void HTMLParser::start_the_speculative_html_parser()
+ {
+     // 1. Optionally, return.
+-    // NOTE: We do not opt out.
++    if (!s_embedder_allows_speculative_parsing)
++        return;
+ 
+     // 2. If parser's active speculative HTML parser is not null, then stop the speculative HTML parser for parser.
+     if (m_active_speculative_html_parser)

@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 15:45:49 -0500
+Subject: [PATCH] LibWeb: WebGL locations of a lost context are -1 and null;
+ getUniform validates its program and location
+
+---
+ .../WebGL/WebGL2RenderingContextImpl.cpp      |  4 ++++
+ .../WebGL/WebGLRenderingContextImpl.cpp       | 19 ++++++++++++++++---
+ 2 files changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp b/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp
+index b4368d2e67..76f244ca3e 100644
+--- a/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp
++++ b/Libraries/LibWeb/WebGL/WebGL2RenderingContextImpl.cpp
+@@ -1484,6 +1484,10 @@ WebIDL::Long WebGL2RenderingContextImpl::get_frag_data_location(GC::Ref<WebGLPro
+ {
+     m_context->make_current();
+ 
++    // A lost context answers -1, without an error (the executor's answer would be 0).
++    if (is_context_lost())
++        return -1;
++
+     auto handle_or_error = program->handle(this);
+     if (handle_or_error.is_error()) {
+         set_error(GL_INVALID_OPERATION);
+diff --git a/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp b/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp
+index 66e3405cf3..a6564861e7 100644
+--- a/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLRenderingContextImpl.cpp
+@@ -915,6 +915,10 @@ WebIDL::Long WebGLRenderingContextImpl::get_attrib_location(GC::Ref<WebGLProgram
+ {
+     m_context->make_current();
+ 
++    // A lost context answers -1, without an error (the executor's answer would be 0).
++    if (is_context_lost())
++        return -1;
++
+     auto handle_or_error = program->handle(this);
+     if (handle_or_error.is_error()) {
+         set_error(GL_INVALID_OPERATION);
+@@ -2046,12 +2050,17 @@ JS::Value WebGLRenderingContextImpl::get_tex_parameter(WebIDL::UnsignedLong targ
+ 
+ JS::Value WebGLRenderingContextImpl::get_uniform(GC::Ref<WebGLProgram> program, GC::Ref<WebGLUniformLocation> location)
+ {
++    if (is_context_lost())
++        return JS::js_null();
++    // A program of another context, or a location of another program, is INVALID_OPERATION and null (Chrome).
+     auto program_handle = program->handle(this);
+     auto location_handle = location->handle(program.ptr());
+-    if (!program_handle.is_error() && !location_handle.is_error()) {
+-        if (auto value = host_query(HostQuery::Uniform, program_handle.value(), location_handle.value()); value.has_value())
+-            return *value;
++    if (program_handle.is_error() || location_handle.is_error()) {
++        set_error(GL_INVALID_OPERATION);
++        return JS::js_null();
+     }
++    if (auto value = host_query(HostQuery::Uniform, program_handle.value(), location_handle.value()); value.has_value())
++        return *value;
+     dbgln("FIXME: Implement get_uniform");
+     return JS::Value(0);
+ }
+@@ -2060,6 +2069,10 @@ GC::Ptr<WebGLUniformLocation> WebGLRenderingContextImpl::get_uniform_location(GC
+ {
+     m_context->make_current();
+ 
++    // A lost context answers nullptr, without an error (the executor's answer would be 0).
++    if (is_context_lost())
++        return nullptr;
++
+     auto handle_or_error = program->handle(this);
+     if (handle_or_error.is_error()) {
+         set_error(GL_INVALID_OPERATION);

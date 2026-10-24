@@ -1,0 +1,67 @@
+From 0cf9ac14fc8acf97bd5e9f89f3207c8231f8aeff Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 08:59:06 -0500
+Subject: [PATCH] LibMedia: on Emscripten a read of an
+ IncrementallyPopulatedStream's data that has not arrived asks for it and
+ answers Aborted at once instead of waiting, an unknown size is what has
+ arrived, and a Matroska file whose Cues no SeekHead locates is read without
+ them until its Clusters have arrived; one thread cannot wait for data
+ (progressive demuxing)
+
+---
+ Libraries/LibMedia/Containers/Matroska/Reader.cpp   |  7 ++++++-
+ Libraries/LibMedia/IncrementallyPopulatedStream.cpp | 13 +++++++++++++
+ 2 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/Libraries/LibMedia/Containers/Matroska/Reader.cpp b/Libraries/LibMedia/Containers/Matroska/Reader.cpp
+index 22179ca862..110aee7493 100644
+--- a/Libraries/LibMedia/Containers/Matroska/Reader.cpp
++++ b/Libraries/LibMedia/Containers/Matroska/Reader.cpp
+@@ -1082,7 +1082,12 @@ DecoderErrorOr<void> Reader::parse_cues(Streamer& streamer)
+ {
+     VERIFY(m_cues.is_empty());
+ 
+-    auto position = TRY(find_first_top_level_element_with_id(streamer, "Cues"sv, CUES_ID));
++    auto position_or_error = find_first_top_level_element_with_id(streamer, "Cues"sv, CUES_ID);
++    // A search for Cues that no SeekHead locates reads through every Cluster; where that data has not arrived (a read
++    // of a stream being downloaded that answers at once, on Emscripten), the file is read without Cues, as one that has none.
++    if (position_or_error.is_error() && position_or_error.error().category() == DecoderErrorCategory::Aborted && !m_seek_entries.contains(CUES_ID))
++        return {};
++    auto position = TRY(move(position_or_error));
+     if (!position.has_value())
+         return {};
+     TRY(streamer.seek_to_position(position.release_value()));
+diff --git a/Libraries/LibMedia/IncrementallyPopulatedStream.cpp b/Libraries/LibMedia/IncrementallyPopulatedStream.cpp
+index 66633d452b..12b50f1227 100644
+--- a/Libraries/LibMedia/IncrementallyPopulatedStream.cpp
++++ b/Libraries/LibMedia/IncrementallyPopulatedStream.cpp
+@@ -180,6 +180,13 @@ void IncrementallyPopulatedStream::notify_available_ranges_changed_while_locked(
+ u64 IncrementallyPopulatedStream::size()
+ {
+     MutexLocker locker { m_mutex };
++#ifdef AK_OS_EMSCRIPTEN
++    // One thread: nothing can set the size while this waits. Until it is known, the stream is as large as what has arrived.
++    if (!m_expected_size.has_value()) {
++        auto* last = m_chunks.find_largest_not_above(NumericLimits<u64>::max());
++        return last ? last->end() : 0;
++    }
++#endif
+     while (!m_expected_size.has_value())
+         m_state_changed.wait();
+     return m_expected_size.value();
+@@ -334,6 +341,12 @@ DecoderErrorOr<size_t> IncrementallyPopulatedStream::read_at(Cursor& cursor, siz
+ {
+     MutexLocker locker { m_mutex };
+ 
++#ifdef AK_OS_EMSCRIPTEN
++    // One thread: nothing can append while a read waits. A read of data that has not arrived asks for it (the request
++    // below) and answers at once, as an aborted read does; the embedder reads again when the data has come.
++    if (!cursor.m_aborted && cursor.m_is_blocking && !check_if_data_is_available_or_begin_request_while_locked(cursor, position, bytes.size()))
++        return DecoderError::with_description(DecoderErrorCategory::Aborted, "The data has not arrived yet"sv);
++#endif
+     bool notified_blocked = false;
+     while (!cursor.m_aborted && cursor.m_is_blocking) {
+         if (check_if_data_is_available_or_begin_request_while_locked(cursor, position, bytes.size()))
+-- 
+2.50.1 (Apple Git-155)
+

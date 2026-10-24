@@ -1,0 +1,30 @@
+From 3c994fb8ce7e56a7470c779aea44b89e92b71b1a Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 07:22:09 -0500
+Subject: [PATCH 31/34] AK: on Emscripten the one thread has a valid ThreadID,
+ so code that checks it runs on its owner's thread (an IPC connection) finds
+ that it does
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ AK/ThreadID.cpp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/AK/ThreadID.cpp b/AK/ThreadID.cpp
+index 505594cd9b..06f20a5908 100644
+--- a/AK/ThreadID.cpp
++++ b/AK/ThreadID.cpp
+@@ -30,6 +30,10 @@ static u64 query_current_thread_id()
+     return thread_id;
+ #elif defined(AK_OS_FREEBSD)
+     return static_cast<u64>(pthread_getthreadid_np());
++#elif defined(AK_OS_EMSCRIPTEN)
++    // A wasm module without threads has the one: a valid ID, so that code that checks it is on its owner's
++    // thread (an IPC connection) finds that it is.
++    return 1;
+ #else
+     return 0;
+ #endif
+-- 
+2.50.1 (Apple Git-155)
+

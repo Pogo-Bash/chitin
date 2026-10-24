@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 13:58:17 -0500
+Subject: [PATCH 08/23] LibJS: PropertyKey and HostClassBuilder layout checks
+ for 32-bit targets
+
+A number key holds its index in the word above the two flag bits, so on a 32-bit target indices above
+2^30 - 1 become string keys and PropertyKey stays one word, as JSPropertyKey is. The HostObjectABI.h
+struct checks take the target's pointer size.
+---
+ Libraries/LibJS/HostClassBuilder.h    | 11 ++++++-----
+ Libraries/LibJS/Runtime/PropertyKey.h | 15 +++++++++------
+ 2 files changed, 15 insertions(+), 11 deletions(-)
+
+diff --git a/Libraries/LibJS/HostClassBuilder.h b/Libraries/LibJS/HostClassBuilder.h
+index 1f36f0af64..0bcc8d121c 100644
+--- a/Libraries/LibJS/HostClassBuilder.h
++++ b/Libraries/LibJS/HostClassBuilder.h
+@@ -37,14 +37,15 @@
+ 
+ namespace JS::HostABI {
+ 
++// The C structs of HostObjectABI.h, as the runtime lays them out for the target's pointer size.
+ static_assert(sizeof(JSCompletion) == 16);
+-static_assert(offsetof(JSPropertyDescriptor, property_offset) == 24);
+-static_assert(offsetof(JSPropertyDescriptor, flags) == 28);
+-static_assert(sizeof(JSPropertyDescriptor) == 32);
++static_assert(offsetof(JSPropertyDescriptor, property_offset) == (sizeof(void*) == 8 ? 24 : 16));
++static_assert(offsetof(JSPropertyDescriptor, flags) == (sizeof(void*) == 8 ? 28 : 20));
++static_assert(sizeof(JSPropertyDescriptor) == (sizeof(void*) == 8 ? 32 : 24));
+ static_assert(offsetof(JSHostClass, flags) == 4);
+ static_assert(offsetof(JSHostClass, name) == 8);
+-static_assert(offsetof(JSHostClass, user_data) == 40);
+-static_assert(sizeof(JSHostClass) == 48);
++static_assert(offsetof(JSHostClass, user_data) == (sizeof(void*) == 8 ? 40 : 24));
++static_assert(sizeof(JSHostClass) == (sizeof(void*) == 8 ? 48 : 28));
+ 
+ static_assert(sizeof(JSValue) == sizeof(Value));
+ static_assert(sizeof(JSPropertyKey) == sizeof(PropertyKey));
+diff --git a/Libraries/LibJS/Runtime/PropertyKey.h b/Libraries/LibJS/Runtime/PropertyKey.h
+index c6f044b68f..d90e982f0f 100644
+--- a/Libraries/LibJS/Runtime/PropertyKey.h
++++ b/Libraries/LibJS/Runtime/PropertyKey.h
+@@ -42,6 +42,9 @@ public:
+     static constexpr uintptr_t SHORT_STRING_FLAG = 1;
+     static constexpr uintptr_t SYMBOL_FLAG = 2;
+     static constexpr uintptr_t NUMBER_FLAG = 3;
++    // The largest index a number key holds in the word above the two flag bits: every array index on 64-bit targets,
++    // and 2^30 - 1 on 32-bit ones, where larger indices are string keys.
++    static constexpr u64 MAX_NUMBER_KEY_INDEX = sizeof(uintptr_t) >= 8 ? static_cast<u64>(NumericLimits<u32>::max()) - 1 : (static_cast<u64>(1) << 30) - 1;
+ 
+     bool is_string() const { return (m_bits & 3) == NORMAL_STRING_FLAG || (m_bits & 3) == SHORT_STRING_FLAG; }
+     bool is_number() const { return (m_bits & 3) == NUMBER_FLAG; }
+@@ -71,13 +74,13 @@ public:
+         // FIXME: Replace this with requires(IsUnsigned<T>)?
+         //        Needs changes in various places using `int` (but not actually being in the negative range)
+         VERIFY(index >= 0);
+-        if constexpr (NumericLimits<T>::max() >= NumericLimits<u32>::max()) {
+-            if (index >= NumericLimits<u32>::max()) {
++        if constexpr (static_cast<u64>(NumericLimits<T>::max()) > MAX_NUMBER_KEY_INDEX) {
++            if (static_cast<u64>(index) > MAX_NUMBER_KEY_INDEX) {
+                 new (&m_string) Utf16FlyString { Utf16String::number(index) };
+                 return;
+             }
+         }
+-        m_number = static_cast<u64>(index) << 2 | NUMBER_FLAG;
++        m_number = static_cast<uintptr_t>(index) << 2 | NUMBER_FLAG;
+     }
+ 
+     PropertyKey(Utf16FlyString string, StringMayBeNumber string_may_be_number = StringMayBeNumber::Yes)
+@@ -86,8 +89,8 @@ public:
+             auto first_code_unit = string.code_unit_at(0);
+             if (is_ascii_digit(first_code_unit) && !(first_code_unit == '0' && string.length_in_code_units() > 1)) {
+                 auto property_index = string.to_number<u32>(TrimWhitespace::No);
+-                if (property_index.has_value() && property_index.value() < NumericLimits<u32>::max()) {
+-                    m_number = static_cast<u64>(property_index.release_value()) << 2 | NUMBER_FLAG;
++                if (property_index.has_value() && property_index.value() <= MAX_NUMBER_KEY_INDEX) {
++                    m_number = static_cast<uintptr_t>(property_index.release_value()) << 2 | NUMBER_FLAG;
+                     return;
+                 }
+             }
+@@ -202,7 +205,7 @@ private:
+ 
+     union {
+         Utf16FlyString m_string;
+-        u64 m_number;
++        uintptr_t m_number;
+         Symbol const* m_symbol;
+         uintptr_t m_bits;
+     };

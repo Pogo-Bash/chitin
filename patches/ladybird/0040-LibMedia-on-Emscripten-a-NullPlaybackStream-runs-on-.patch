@@ -1,0 +1,254 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 16:57:32 -0500
+Subject: [PATCH] LibMedia: on Emscripten a NullPlaybackStream runs on the
+ event loop instead of a thread
+
+One thread cannot block in the null output's pull loop, and creating its
+thread trapped in Threading::Thread::start: every new AudioContext()
+stopped the engine (chess.com, fiverr). Each step now does what one turn
+of the loop did; where the thread would wait for a played frame a timer
+is armed, and where it would wait for a state change the next signal
+schedules a step.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../LibMedia/Audio/NullPlaybackStream.cpp     | 173 ++++++++++++++++++
+ 1 file changed, 173 insertions(+)
+
+diff --git a/Libraries/LibMedia/Audio/NullPlaybackStream.cpp b/Libraries/LibMedia/Audio/NullPlaybackStream.cpp
+index 68aa214fdb..774d849c4c 100644
+--- a/Libraries/LibMedia/Audio/NullPlaybackStream.cpp
++++ b/Libraries/LibMedia/Audio/NullPlaybackStream.cpp
+@@ -12,6 +12,11 @@
+ #include <LibMedia/Audio/NullPlaybackStream.h>
+ #include <LibThreading/Thread.h>
+ 
++#ifdef AK_OS_EMSCRIPTEN
++#    include <LibCore/EventLoop.h>
++#    include <LibCore/Timer.h>
++#endif
++
+ namespace Audio {
+ 
+ static constexpr u32 NULL_OUTPUT_SAMPLE_RATE = 44100;
+@@ -32,9 +37,62 @@ public:
+ 
+     ~State()
+     {
++#ifdef AK_OS_EMSCRIPTEN
++        // NB: A scheduled step holds a reference, so nothing is pending here; only the timer is left to cancel.
++        if (m_wake_timer)
++            m_wake_timer->stop();
++#else
+         stop();
++#endif
+     }
+ 
++#ifdef AK_OS_EMSCRIPTEN
++    // One thread cannot block in a pull loop, so the loop runs on the creating thread's event loop: each step does
++    // what one turn of thread_main() would and then, where the thread would wait, arms a timer (a wait for a played
++    // frame) or returns until the next signal schedules a step (a wait for a state change).
++    void start()
++    {
++        m_event_loop = &Core::EventLoop::current();
++        schedule_step();
++    }
++
++    void schedule_step()
++    {
++        if (m_step_scheduled || !m_event_loop)
++            return;
++        m_step_scheduled = true;
++        m_event_loop->deferred_invoke([self = NonnullRefPtr(*this)] {
++            self->m_step_scheduled = false;
++            self->run_steps();
++        });
++    }
++
++    void run_steps()
++    {
++        if (m_wake_timer)
++            m_wake_timer->stop();
++        for (int i = 0; i < 64; ++i) {
++            Optional<AK::Duration> wait_for;
++            switch (step(wait_for)) {
++            case Step::Again:
++                continue;
++            case Step::Stopped:
++            case Step::WaitForSignal:
++                return;
++            case Step::WaitFor: {
++                auto ms = max<i64>(1, (wait_for->to_nanoseconds() + 999'999) / 1'000'000);
++                if (!m_wake_timer)
++                    m_wake_timer = Core::Timer::create_single_shot(static_cast<int>(ms), [this] { schedule_step(); });
++                else
++                    m_wake_timer->set_interval(static_cast<int>(ms));
++                m_wake_timer->restart();
++                return;
++            }
++            }
++        }
++        schedule_step();
++    }
++#else
+     void start()
+     {
+         auto thread = MUST(Threading::Thread::try_create("Null Audio Output"sv, [self = NonnullRefPtr(*this)] {
+@@ -43,6 +101,7 @@ public:
+         thread->start();
+         thread->detach();
+     }
++#endif
+ 
+     SampleSpecification sample_specification() const
+     {
+@@ -143,6 +202,9 @@ public:
+             complete_pending_drains_while_locked();
+             m_signal_count++;
+             m_wake_condition.broadcast();
++#ifdef AK_OS_EMSCRIPTEN
++            schedule_step();
++#endif
+         }
+     }
+ 
+@@ -166,6 +228,9 @@ private:
+     {
+         m_signal_count++;
+         m_wake_condition.signal();
++#ifdef AK_OS_EMSCRIPTEN
++        schedule_step();
++#endif
+     }
+ 
+     bool is_advancing_while_locked() const
+@@ -210,6 +275,106 @@ private:
+         m_state = state;
+     }
+ 
++#ifdef AK_OS_EMSCRIPTEN
++    enum class Step {
++        Again,
++        WaitFor,
++        WaitForSignal,
++        Stopped,
++    };
++
++    // One turn of thread_main(), the waits returned instead of taken.
++    Step step(Optional<AK::Duration>& wait_for)
++    {
++        auto const channel_count = sample_specification().channel_count();
++        {
++            Optional<i64> frames_to_request;
++            Optional<i64> wake_at_played_frame;
++            Vector<Function<void()>> ready_completions;
++            bool stopped = false;
++            u64 signal_count_at_decision;
++
++            {
++                MutexLocker locker(m_mutex);
++                signal_count_at_decision = m_signal_count;
++
++                auto now = MonotonicTime::now();
++                auto frames_played = frames_played_while_locked(now);
++                switch (m_state) {
++                case StreamState::Stopped:
++                    complete_pending_drains_while_locked();
++                    stopped = true;
++                    break;
++                case StreamState::Playing:
++                    if (m_awaiting_data) {
++                        // Like a device underrun, stop requesting data until more is available, but keep playing
++                        // out what was already written.
++                        if (frames_played >= m_frames_written)
++                            set_state_while_locked(StreamState::Underrun);
++                        else
++                            wake_at_played_frame = m_frames_written;
++                    } else if (m_frames_written - frames_played <= m_target_lookahead_frames - PERIOD_FRAMES) {
++                        frames_to_request = m_target_lookahead_frames - (m_frames_written - frames_played);
++                        m_data_notified = false;
++                    } else {
++                        wake_at_played_frame = m_frames_written - m_target_lookahead_frames + PERIOD_FRAMES;
++                    }
++                    break;
++                case StreamState::Draining:
++                    if (frames_played >= m_frames_written) {
++                        set_state_while_locked(StreamState::Suspended);
++                        complete_pending_drains_while_locked();
++                    } else {
++                        wake_at_played_frame = m_frames_written;
++                    }
++                    break;
++                case StreamState::Suspended:
++                case StreamState::Underrun:
++                    break;
++                }
++                ready_completions = move(m_ready_completions);
++            }
++
++            for (auto& completion : ready_completions)
++                completion();
++
++            if (stopped)
++                return Step::Stopped;
++
++            if (frames_to_request.has_value()) {
++                auto requested_frames = static_cast<size_t>(frames_to_request.value());
++                m_request_buffer.resize(requested_frames * channel_count);
++                auto written_samples = m_data_request_callback(m_request_buffer.span());
++                auto written_frames = min(requested_frames, written_samples.size() / channel_count);
++
++                MutexLocker locker(m_mutex);
++                if (is_advancing_while_locked()) {
++                    reanchor_while_locked(MonotonicTime::now());
++                    m_frames_written += static_cast<i64>(written_frames);
++                    // A notification that arrived during the request means that more data may already be available.
++                    if (m_state == StreamState::Playing && written_frames < requested_frames && !m_data_notified)
++                        m_awaiting_data = true;
++                }
++                return Step::Again;
++            }
++
++            MutexLocker locker(m_mutex);
++            if (m_signal_count != signal_count_at_decision)
++                return Step::Again;
++            if (wake_at_played_frame.has_value()) {
++                auto frames_until_wake = *wake_at_played_frame - frames_played_while_locked(MonotonicTime::now());
++                if (frames_until_wake <= 0)
++                    return Step::Again;
++                wait_for = AK::Duration::from_time_units(frames_until_wake, 1, NULL_OUTPUT_SAMPLE_RATE);
++                return Step::WaitFor;
++            }
++            if (m_state == StreamState::Suspended || m_state == StreamState::Underrun)
++                return Step::WaitForSignal;
++            return Step::Again;
++        }
++    }
++
++#else
+     intptr_t thread_main()
+     {
+         auto const channel_count = sample_specification().channel_count();
+@@ -299,6 +464,8 @@ private:
+         }
+     }
+ 
++#endif
++
+     AudioDataRequestCallback m_data_request_callback;
+     i64 m_target_lookahead_frames { 0 };
+ 
+@@ -317,6 +484,12 @@ private:
+     u64 m_signal_count { 0 };
+ 
+     Vector<float> m_request_buffer;
++
++#ifdef AK_OS_EMSCRIPTEN
++    Core::EventLoop* m_event_loop { nullptr };
++    RefPtr<Core::Timer> m_wake_timer;
++    bool m_step_scheduled { false };
++#endif
+ };
+ 
+ NonnullRefPtr<PlaybackStream> NullPlaybackStream::create(OutputState initial_output_state, u32 target_latency_ms, AudioDataRequestCallback data_request_callback)

@@ -1,0 +1,118 @@
+<!doctype html>
+<!--
+  SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+  Copyright (c) 2026 [OWNER NAME]
+  Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
+-->
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chitin carapace</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/carapace/carapace.css">
+<header>
+  <div class="bar">
+  <strong>Chitin</strong>
+  <form id="go" style="display:contents"><input id="address" value="https://static.example/" aria-label="address" spellcheck="false" autocomplete="off"></form>
+  <label>size <select id="size" aria-label="viewport size">
+    <option value="1280x720">1280 × 720</option>
+    <option value="1366x768">1366 × 768</option>
+    <option value="1440x900">1440 × 900</option>
+    <option value="1920x1080">1920 × 1080</option>
+    <option value="1024x768">1024 × 768</option>
+    <option value="800x600">800 × 600</option>
+    <option value="390x844">390 × 844 (phone)</option>
+    <option value="fit">fit the window</option>
+  </select></label>
+  <button id="real-browser" title="Open the page shown in your own browser">open in your browser</button>
+  <button id="copy">copy results</button>
+  <button id="opts-toggle" aria-expanded="false" title="Engine, frames and relay options">options</button>
+  </div>
+  <div class="opts" id="opts" hidden>
+  <label>engine <select id="engine">
+    <option value="ganglion">Ganglion (LibWeb, wasm)</option>
+    <option value="toy">phase 0 toy</option>
+  </select></label>
+  <label>site <select id="site">
+    <option value="static.example">static.example</option>
+    <option value="article.example">article.example</option>
+    <option value="grid.example">grid.example</option>
+    <option value="images.example">images.example</option>
+    <option value="table.example">table.example</option>
+    <option value="forms.example">forms.example</option>
+    <option value="script.example">script.example (page JS)</option>
+    <option value="todomvc.example">todomvc.example (page JS)</option>
+    <option value="demo.example">demo.example (phase 0 toy)</option>
+  </select></label>
+  <label>page JS <select id="scripting">
+    <option value="on">on (V8 in the segment)</option>
+    <option value="off">off</option>
+  </select></label>
+  <label>frames <select id="mode">
+    <option value="bitmap">ImageBitmap transfer</option>
+    <option value="canvas">canvas transferred to the segment</option>
+    <option value="direct">segment draws in its own frame (comparison)</option>
+  </select></label>
+  <label>iframe <select id="frame">
+    <option value="under">under the canvas, full size</option>
+    <option value="tiny">1×1 px</option>
+    <option value="hidden">display:none</option>
+  </select></label>
+  <label>classic scripts <select id="classic">
+    <option value="eval">eval + //# sourceURL</option>
+    <option value="importScripts">importScripts via service worker</option>
+  </select></label>
+  <label>relay <input id="relay" value="" placeholder="ws://127.0.0.1:8101/" aria-label="relay URL" style="flex:0 1 200px"></label>
+  <label>token <input id="token" value="" placeholder="(none)" aria-label="relay token" style="flex:0 1 120px"></label>
+  </div>
+</header>
+<main>
+  <div id="tab">
+    <canvas id="view" tabindex="0" aria-label="page"></canvas>
+  </div>
+</main>
+<aside id="devtools">
+  <div class="grip" id="devtools-grip" title="Drag to resize"></div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-pane="console">Console <span class="badge" id="console-badge" hidden></span></button>
+    <button role="tab" data-pane="network">Network</button>
+    <button role="tab" data-pane="segment" aria-selected="true">Segment</button>
+    <button role="tab" data-pane="frames">Frames</button>
+    <button role="tab" data-pane="cookies">Cookies</button>
+    <span class="fill"></span>
+    <button id="reset-site" class="danger" title="Clear everything Chitin keeps for this site (cookies, storage, IndexedDB, OPFS, caches, service workers) and load it again">reset site</button>
+    <button id="devtools-toggle" title="Hide or show the panel">hide</button>
+  </nav>
+  <section class="pane console" data-pane="console" hidden>
+    <div class="toolbar">
+      <span class="chips" id="console-filter">
+        <button data-f="all" aria-pressed="true">All</button><button data-f="chitin">Chitin bugs</button><button data-f="page">Page</button><button data-f="host">Host Chrome</button><button data-f="info">Info</button>
+      </span>
+      <span class="fill"></span>
+      <button id="console-clear">clear</button>
+    </div>
+    <ol class="log" id="console-log"></ol>
+    <form class="prompt" id="console-form"><span>›</span><input id="console-input" spellcheck="false" autocomplete="off" placeholder="JavaScript in the page's realm (Enter to run, ↑↓ history)" aria-label="console input"></form>
+  </section>
+  <section class="pane network" data-pane="network" hidden>
+    <div class="toolbar">
+      <input id="net-filter" placeholder="Filter URLs" spellcheck="false" aria-label="filter">
+      <span class="chips" id="net-types">
+        <button data-t="all" aria-pressed="true">All</button><button data-t="document">Doc</button><button data-t="script">JS</button><button data-t="css">CSS</button><button data-t="img">Img</button><button data-t="fetch">Fetch/XHR</button><button data-t="media">Media</button><button data-t="other">Other</button>
+      </span>
+      <span class="fill"></span>
+      <span class="muted" id="net-summary"></span>
+    </div>
+    <div class="split">
+      <div class="tablewrap"><table id="net-table"><thead><tr><th>Name</th><th>Status</th><th>Type</th><th>Protocol</th><th class="num">Size</th><th class="num">Time</th><th class="wf">Waterfall</th></tr></thead><tbody></tbody></table></div>
+      <div class="detail" id="net-detail" hidden></div>
+    </div>
+  </section>
+  <section class="pane" data-pane="frames" hidden><dl id="metrics"></dl></section>
+  <section class="pane" data-pane="segment"><dl id="status"></dl></section>
+  <section class="pane" data-pane="cookies" hidden><dl id="cookies"></dl></section>
+</aside>
+<script src="/carapace/layout.js"></script>
+<script type="module" src="/carapace/devtools.js"></script>
+<script type="module" src="/carapace/carapace.js"></script>
+</html>

@@ -1,0 +1,6 @@
+<!doctype html>
+<title>sw</title>
+<script>
+navigator.serviceWorker.addEventListener('message', (e) => { document.title = 'done:' + e.data; });
+navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then((reg) => reg.active.postMessage('where'), (e) => { document.title = 'error:' + e; });
+</script>

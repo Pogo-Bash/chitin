@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+     Copyright (c) 2026 [OWNER NAME]
+     Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
+     Text in many scripts, for the engine's system font fallback (docs/fonts.md). ascii-only.woff2 is Noto Serif cut to
+     U+0020-007E and renamed (SIL Open Font License 1.1, OFL.txt): its ellipsis must come from a fallback face. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>scripts</title>
+<style>
+@font-face { font-family: AsciiOnly; src: url(ascii-only.woff2) format("woff2"); }
+body { font: 20px sans-serif; margin: 8px; }
+span { white-space: nowrap; }
+div { margin: 2px 0; }
+#ellipsis { font-family: AsciiOnly; }
+</style>
+</head>
+<body>
+<div><span id="latin">Latin text</span></div>
+<div><span id="ellipsis">Tab title&#x2026;</span></div>
+<div><span id="zh" lang="zh-Hans">汉字测试中文</span></div>
+<div><span id="ja" lang="ja">日本語のテキスト</span></div>
+<div><span id="ko" lang="ko">한국어 텍스트</span></div>
+<div dir="rtl"><span id="ar" lang="ar">النص العربي</span></div>
+<div dir="rtl"><span id="he" lang="he">טקסט עברי</span></div>
+<div><span id="hi" lang="hi">हिन्दी पाठ</span></div>
+<div><span id="bn" lang="bn">বাংলা লেখা</span></div>
+<div><span id="ta" lang="ta">தமிழ் உரை</span></div>
+<div><span id="th" lang="th">ภาษาไทย</span></div>
+<div><span id="ka" lang="ka">ქართული</span></div>
+<div><span id="hy" lang="hy">Հայերեն</span></div>
+<div><span id="am" lang="am">አማርኛ</span></div>
+<div><span id="symbols">★☂♞⚙</span></div>
+<div><span id="math">∮∑𝔄𝕏</span></div>
+<div><span id="emoji">😀👍🏽🇯🇵</span></div>
+</body>
+</html>

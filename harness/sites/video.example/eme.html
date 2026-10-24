@@ -1,0 +1,116 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<title>video eme</title>
+<style>body { margin: 0 } video { display: block; width: 640px; height: 360px; background: #000 } #over { position: absolute; left: 400px; top: 20px; width: 60px; height: 40px; background: #0ff }</style>
+<video id="v" muted playsinline></video>
+<script>
+// Clear Key playback (docs/eme.md): vp9-opus-6s-cenc.webm (tools/make-eme-media.mjs) through MediaSource, the license
+// fetched by the page from clearkey-license.json. ?keys=before sets the MediaKeys before the media is attached, ?keys=onencrypted
+// (default) in the encrypted handler, as most players do. ?over=1 puts a box over the video (stacking). The page records
+// everything a test compares with Chrome: the element's, session's and buffer's events, key statuses, errors of bad calls.
+window.seen = [];
+window.times = [];
+window.errors = {};
+const q = new URLSearchParams(location.search);
+const mode = q.get('keys') || 'onencrypted';
+if (q.get('over')) document.body.insertAdjacentHTML('beforeend', '<div id="over"></div>');
+const v = document.getElementById('v');
+const hex = (b) => b ? Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, '0')).join('') : 'null';
+const errorOf = (e) => (e && e.name ? e.name + ': ' + e.message : String(e));
+const probe = async (name, fn) => { try { const r = await fn(); errors[name] = 'ok ' + (r === undefined ? '' : JSON.stringify(r)); } catch (e) { errors[name] = errorOf(e); } };
+for (const name of ['loadstart', 'durationchange', 'loadedmetadata', 'loadeddata', 'canplay', 'play', 'playing', 'pause', 'waiting', 'waitingforkey', 'ended', 'error'])
+    v.addEventListener(name, () => seen.push(name + ':' + v.readyState));
+v.addEventListener('timeupdate', () => times.push(Math.round(v.currentTime * 100) / 100));
+const config = [{ initDataTypes: ['webm'], videoCapabilities: [{ contentType: 'video/webm; codecs="vp9"' }], audioCapabilities: [{ contentType: 'audio/webm; codecs="opus"' }] }];
+(async () => {
+    // What the API looks like, and how it refuses bad input (each compared with Chrome's).
+    window.shape = {
+        rmksa: typeof navigator.requestMediaKeySystemAccess, rmksaLength: navigator.requestMediaKeySystemAccess.length,
+        classes: ['MediaKeys', 'MediaKeySession', 'MediaKeySystemAccess', 'MediaKeyStatusMap', 'MediaKeyMessageEvent', 'MediaEncryptedEvent'].map((n) => n + ':' + typeof window[n] + ':' + (window[n] && window[n].length)),
+        sessionProto: Object.getOwnPropertyNames(MediaKeySession.prototype).sort(),
+        keysProto: Object.getOwnPropertyNames(MediaKeys.prototype).sort(),
+        mediaKeys: v.mediaKeys, onencrypted: v.onencrypted, setMediaKeysLength: v.setMediaKeys.length,
+        sessionIsEventTarget: MediaKeySession.prototype instanceof EventTarget,
+        ctorCall: (() => { try { MediaKeys(); return 'no throw'; } catch (e) { return errorOf(e); } })(),
+        ctorNew: (() => { try { new MediaKeys(); return 'no throw'; } catch (e) { return errorOf(e); } })(),
+        messageEvent: (() => { const e = new MediaKeyMessageEvent('message', { messageType: 'license-request', message: new ArrayBuffer(3) }); return [e.type, e.messageType, e.message.byteLength, e.isTrusted, e instanceof Event]; })(),
+        encryptedEvent: (() => { const e = new MediaEncryptedEvent('encrypted'); return [e.type, e.initDataType, e.initData]; })(),
+    };
+    await probe('empty key system', () => navigator.requestMediaKeySystemAccess('', config));
+    await probe('unknown key system', () => navigator.requestMediaKeySystemAccess('com.example.none', config));
+    await probe('no configurations', () => navigator.requestMediaKeySystemAccess('org.w3.clearkey', []));
+    await probe('one argument', () => navigator.requestMediaKeySystemAccess('org.w3.clearkey'));
+    await probe('unsupported codec', () => navigator.requestMediaKeySystemAccess('org.w3.clearkey', [{ initDataTypes: ['webm'], videoCapabilities: [{ contentType: 'video/x-none' }] }]));
+    await probe('message event without message', () => new MediaKeyMessageEvent('message', { messageType: 'license-request' }));
+    await probe('setMediaKeys not MediaKeys', () => v.setMediaKeys({}));
+    const access = await navigator.requestMediaKeySystemAccess('org.w3.clearkey', config);
+    const conf = access.getConfiguration();
+    seen.push('access ' + access.keySystem + ' ' + conf.initDataTypes.join(',') + ' ' + conf.videoCapabilities.map((c) => c.contentType).join(',') + ' ' + conf.sessionTypes.join(','));
+    const keys = await access.createMediaKeys();
+    await probe('createSession bogus type', () => keys.createSession('bogus'));
+    await probe('createSession persistent', () => keys.createSession('persistent-license'));
+    await probe('setServerCertificate', () => keys.setServerCertificate(new Uint8Array([1, 2, 3])));
+    const spare = keys.createSession();
+    await probe('update before generateRequest', () => spare.update(new Uint8Array([1])));
+    await probe('generateRequest empty', () => spare.generateRequest('webm', new Uint8Array(0)));
+    await probe('generateRequest bad type', () => spare.generateRequest('bogus', new Uint8Array(16)));
+    await probe('close unused', () => spare.close());
+    {
+        const other = document.createElement('video');
+        const k2 = await access.createMediaKeys();
+        const k3 = await access.createMediaKeys();
+        const both = [other.setMediaKeys(keys), other.setMediaKeys(k2), other.setMediaKeys(k3), other.setMediaKeys(null)].map((p) => p.then(() => 'ok', errorOf));
+        errors['setMediaKeys twice at once'] = (await Promise.all(both)).join(' / ');
+        await probe('MediaKeys on a second element', () => document.createElement('video').setMediaKeys(keys));
+        await other.setMediaKeys(null);
+    }
+    if (mode === 'before')
+        await v.setMediaKeys(keys);
+    seen.push('mediaKeys ' + (v.mediaKeys === keys));
+    v.addEventListener('encrypted', async (e) => {
+        seen.push('encrypted ' + e.initDataType + ' ' + hex(e.initData) + ' ' + (e instanceof MediaEncryptedEvent) + ' ' + e.isTrusted);
+        if (window.sessionStarted)
+            return;
+        window.sessionStarted = true;
+        if (!v.mediaKeys)
+            await v.setMediaKeys(keys);
+        const session = keys.createSession();
+        session.addEventListener('message', async (m) => {
+            const request = JSON.parse(new TextDecoder().decode(m.message));
+            seen.push('message ' + m.messageType + ' ' + request.kids.join(',') + ' ' + request.type + ' ' + (m instanceof MediaKeyMessageEvent) + ' ' + m.isTrusted);
+            const license = await (await fetch('clearkey-license.json')).arrayBuffer();
+            await probe('update invalid', () => session.update(new TextEncoder().encode('{"keys":5}')));
+            await session.update(license);
+            seen.push('updated ' + session.keyStatuses.size);
+        });
+        session.addEventListener('keystatuseschange', () => {
+            const list = [];
+            session.keyStatuses.forEach((status, kid) => list.push(hex(kid) + '=' + status));
+            seen.push('keystatuses ' + list.join(',') + ' has:' + session.keyStatuses.has(new Uint8Array(e.initData)) + ' get:' + session.keyStatuses.get(e.initData));
+        });
+        await session.generateRequest(e.initDataType, e.initData);
+        seen.push('generated ' + (session.sessionId.length > 0) + ' ' + session.expiration);
+        window.session = session;
+    });
+    const ms = new MediaSource();
+    ms.addEventListener('sourceopen', async () => {
+        seen.push('sourceopen');
+        const sb = ms.addSourceBuffer('video/webm; codecs="vp9,opus"');
+        const bytes = await (await fetch('vp9-opus-6s-cenc.webm')).arrayBuffer();
+        sb.addEventListener('updateend', () => {
+            seen.push('updateend ' + (sb.buffered.length ? sb.buffered.start(0).toFixed(1) + '-' + sb.buffered.end(0).toFixed(1) : 'empty') + ' ' + sb.updating);
+            if (ms.readyState === 'open') {
+                ms.endOfStream();
+                seen.push('endOfStream ' + ms.readyState + ' ' + ms.duration.toFixed(1));
+            }
+        }, { once: true });
+        sb.appendBuffer(bytes);
+        seen.push('appending ' + sb.updating);
+    }, { once: true });
+    ms.addEventListener('sourceended', () => seen.push('sourceended'));
+    v.src = URL.createObjectURL(ms);
+    v.play().then(() => seen.push('play resolved'), (e) => seen.push('play rejected ' + e.name));
+})().catch((e) => seen.push('failed ' + errorOf(e)));
+</script>

@@ -1,0 +1,9 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<title>frame</title>
+<script type="importmap">{"imports":{"#entry":"/frame-entry.mjs"}}</script>
+<script type="module">
+import e from '#entry';
+const d = await import('#entry');
+parent.ran.push('frame: ' + e + ' ' + d.default + ' ' + new URL(import.meta.resolve('#entry')).pathname);
+</script>

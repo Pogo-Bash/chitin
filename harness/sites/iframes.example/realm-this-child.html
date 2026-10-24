@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><title>realm this child</title>
+<script>
+// DuckDuckGo's util.js shape: a sloppy function called without a receiver uses `this` as the window.
+var locale_data = { existing: true };
+(function () {
+    this.locale_data && this.locale_data.duckduckgo || (this.locale_data.duckduckgo = { '': '' });
+    this.fromSloppy = 'set through this';
+})();
+var thisInfo = {
+    duckduckgo: typeof locale_data.duckduckgo,
+    fromSloppy: typeof fromSloppy === 'string' ? fromSloppy : 'missing',
+    hasCheck: (function () { return 'locale_data' in this; })(),
+};
+parent.results.fromChild.push('this script');
+</script>
+</head><body><p>realm this child</p></body></html>

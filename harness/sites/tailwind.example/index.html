@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chitin Tailwind</title>
+<link rel="stylesheet" href="/assets/tailwind.css">
+</head>
+<body class="bg-stone-50 text-stone-900 antialiased font-display">
+<header class="flex items-center gap-4 bg-brand px-6 py-3 text-white shadow-md">
+  <h1 id="title" class="text-xl font-bold tracking-tight">Tailwind v4</h1>
+  <nav class="ml-auto flex gap-2 text-sm">
+    <a href="#features" class="rounded-md px-3 py-1 hover:bg-white/20 focus:outline-2">Features</a>
+    <a href="#pricing" class="rounded-md px-3 py-1 hover:bg-white/20">Pricing</a>
+    <a href="#faq" class="rounded-md px-3 py-1 hover:bg-white/20">FAQ</a>
+  </nav>
+</header>
+
+<main class="mx-auto max-w-5xl p-6">
+  <section id="hero" class="grid gap-6 md:grid-cols-2 items-center py-10">
+    <div>
+      <p class="text-sm font-medium uppercase tracking-widest text-brand">Utility first</p>
+      <h2 class="mt-2 text-4xl font-extrabold leading-tight sm:text-5xl">Build interfaces without leaving your markup</h2>
+      <p class="mt-4 max-w-prose text-lg text-stone-600">A page made of utility classes: flexbox, grid, spacing, typography, colours in oklch, shadows and rings.</p>
+      <div class="mt-6 flex flex-wrap gap-3">
+        <button id="cta" class="rounded-lg bg-brand px-5 py-2.5 font-semibold text-white shadow-lg ring-1 ring-black/10 transition hover:bg-brand/90 active:scale-95">Get started</button>
+        <button class="rounded-lg border border-stone-300 bg-white px-5 py-2.5 font-semibold text-stone-800 hover:bg-stone-100">Documentation</button>
+      </div>
+    </div>
+    <div class="rounded-2xl bg-gradient-to-br from-brand to-sky-500 p-1 shadow-xl">
+      <div class="rounded-xl bg-white p-6">
+        <div class="gauge" id="gauge"></div>
+        <p class="mt-4 font-mono text-sm text-stone-500">--gauge: registered with @property</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="features" class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <article class="@container rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+      <h3 class="card-title">Container queries</h3>
+      <div id="cq" class="mt-3 flex flex-col gap-2 @md:flex-row @md:items-center">
+        <span class="rounded bg-sky-100 px-2 py-1 text-sky-800">one</span>
+        <span class="rounded bg-sky-100 px-2 py-1 text-sky-800">two</span>
+      </div>
+    </article>
+    <article class="rounded-xl border border-stone-200 bg-white p-5 shadow-sm has-[input:checked]:border-brand has-[input:checked]:bg-brand/10" id="hascard">
+      <h3 class="card-title">The :has() selector</h3>
+      <label class="mt-3 flex items-center gap-2"><input id="hasbox" type="checkbox" class="size-4 accent-brand"> Pick me</label>
+    </article>
+    <article class="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+      <h3 class="card-title">Colour mixing</h3>
+      <div class="mt-3 grid grid-cols-4 gap-1 text-center text-xs text-white">
+        <div class="bg-red-500 py-3">red</div><div class="bg-amber-500 py-3">amber</div><div class="bg-emerald-500 py-3">emerald</div><div class="bg-violet-500 py-3">violet</div>
+        <div class="bg-red-500/50 py-3">50%</div><div class="bg-amber-500/50 py-3">50%</div><div class="bg-emerald-500/50 py-3">50%</div><div class="bg-violet-500/50 py-3">50%</div>
+      </div>
+    </article>
+  </section>
+
+  <section id="pricing" class="mt-10 grid gap-4 md:grid-cols-3">
+    <div class="rounded-2xl border border-stone-200 bg-white p-6 text-center shadow-sm"><h3 class="text-lg font-semibold">Free</h3><p class="mt-2 text-4xl font-bold">$0</p><ul class="mt-4 space-y-1 text-sm text-stone-600"><li>One project</li><li>Community help</li></ul></div>
+    <div class="rounded-2xl border-2 border-brand bg-white p-6 text-center shadow-lg"><h3 class="text-lg font-semibold text-brand">Team</h3><p class="mt-2 text-4xl font-bold">$12</p><ul class="mt-4 space-y-1 text-sm text-stone-600"><li>Ten projects</li><li>Support</li></ul></div>
+    <div class="rounded-2xl border border-stone-200 bg-white p-6 text-center shadow-sm"><h3 class="text-lg font-semibold">Org</h3><p class="mt-2 text-4xl font-bold">$40</p><ul class="mt-4 space-y-1 text-sm text-stone-600"><li>Unlimited</li><li>SLA</li></ul></div>
+  </section>
+
+  <section id="faq" class="mt-10 divide-y divide-stone-200 rounded-xl border border-stone-200 bg-white">
+    <details class="group p-4" open><summary class="cursor-pointer list-none font-medium">Why utilities?</summary><p class="mt-2 text-stone-600">Because the stylesheet stops growing.</p></details>
+    <details class="group p-4"><summary class="cursor-pointer list-none font-medium">How big is the CSS?</summary><p class="mt-2 text-stone-600">Only the classes that are used are generated.</p></details>
+  </section>
+
+  <div id="dark" class="mt-10 rounded-lg bg-white p-4 text-stone-900 dark:bg-stone-900 dark:text-white">dark: variant (prefers-color-scheme)</div>
+  <div id="tabular" class="mt-4 grid grid-cols-[1fr_2fr_1fr] gap-2 text-center"><div class="bg-stone-200">1fr</div><div class="bg-stone-300">2fr</div><div class="bg-stone-200">1fr</div></div>
+</main>
+<footer class="mt-10 bg-stone-900 px-6 py-8 text-center text-sm text-stone-400">Chitin test page</footer>
+<script>document.getElementById('cta').addEventListener('click', function () { this.textContent = 'Started'; });</script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 15:28:27 -0500
+Subject: [PATCH] LibMediaClient: an in-process media server answers the frame
+ on show
+
+---
+ Libraries/LibMediaClient/RemotePlaybackManager.cpp | 8 ++++++++
+ Libraries/LibMediaClient/RemotePlaybackManager.h   | 3 +++
+ 2 files changed, 11 insertions(+)
+
+diff --git a/Libraries/LibMediaClient/RemotePlaybackManager.cpp b/Libraries/LibMediaClient/RemotePlaybackManager.cpp
+index b118498204..2b80694d8e 100644
+--- a/Libraries/LibMediaClient/RemotePlaybackManager.cpp
++++ b/Libraries/LibMediaClient/RemotePlaybackManager.cpp
+@@ -127,9 +127,17 @@ void RemotePlaybackManager::set_video_resize_handler(Media::VideoSinkHandle hand
+         sink->on_resize = move(handler);
+ }
+ 
++Function<RefPtr<Media::VideoFrame>(Media::VideoSinkHandle)>& RemotePlaybackManager::in_process_presented_frame()
++{
++    static Function<RefPtr<Media::VideoFrame>(Media::VideoSinkHandle)> lookup;
++    return lookup;
++}
++
+ RefPtr<Media::VideoFrame> RemotePlaybackManager::current_presented_frame(Media::VideoSinkHandle handle)
+ {
+     auto sink = m_video_sinks.get(handle);
++    if ((!sink.has_value() || !sink->presented_frame_page.has_value()) && in_process_presented_frame())
++        return in_process_presented_frame()(handle);
+     if (!sink.has_value() || !sink->presented_frame_page.has_value())
+         return nullptr;
+     auto frame_handle = sink->presented_frame_page->read();
+diff --git a/Libraries/LibMediaClient/RemotePlaybackManager.h b/Libraries/LibMediaClient/RemotePlaybackManager.h
+index ceb2a02000..db3fa5d919 100644
+--- a/Libraries/LibMediaClient/RemotePlaybackManager.h
++++ b/Libraries/LibMediaClient/RemotePlaybackManager.h
+@@ -70,6 +70,9 @@ public:
+     void set_video_sink_ticking(Media::VideoSinkHandle, bool);
+     void set_video_resize_handler(Media::VideoSinkHandle, Function<void(Gfx::Size<u32>)>);
+     RefPtr<Media::VideoFrame> current_presented_frame(Media::VideoSinkHandle);
++    // An embedder whose media server runs in the same process and shares no presented-frame page (Chitin) answers
++    // the frame on show for a sink here; consulted when the sink has no page.
++    static Function<RefPtr<Media::VideoFrame>(Media::VideoSinkHandle)>& in_process_presented_frame();
+ 
+     void enable_an_audio_track(Media::Track const&);
+     void disable_an_audio_track(Media::Track const&);

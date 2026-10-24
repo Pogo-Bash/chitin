@@ -1,0 +1,5 @@
+<!doctype html><meta charset="utf-8"><title>stage frame</title>
+<script>
+window.ran = 0;
+window.burst = (n) => { const b = window.ran; for (let i = 0; i < n; i++) { const s = document.createElement('script'); s.textContent = 'window.ran++;'; document.body.appendChild(s); } return window.ran - b; };
+</script><body>frame

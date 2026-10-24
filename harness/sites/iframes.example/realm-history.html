@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><title>frame history</title></head>
+<body>
+<script>
+var results = { events: [] };
+window.addEventListener('load', function () { results.events.push('window load'); });
+</script>
+<iframe id="f" src="child.html" onload="results.events.push('frame load ' + this.contentDocument.URL)"></iframe>
+</body></html>

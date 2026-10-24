@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Handlers</title>
+<link rel="stylesheet" href="s.css" media="print" onload="this.media='all'; window.cssLoaded = this.media">
+<body onload="window.bodyLoaded = typeof event + ':' + event.type">
+<button id="b" onclick="window.log.push('click:' + this.id + ':' + event.type)">go</button>
+<a id="a" href="#never" onclick="window.log.push('a'); return false">link</a>
+<button id="bad" onclick="this is not javascript">bad</button>
+<script>window.log = [];</script>

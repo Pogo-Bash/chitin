@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>tfs</title></head>
+<body>
+<div id="out">start</div>
+<script>
+// DayDream's file layer ("TFS", docs/daydream.md) over OPFS, reduced: remove the root recursively, create `.TFS_STORE`, write
+// it, and read it back, from two instances at once (the page and its worker each hold one). tests/opfs.test.mjs and the
+// chrome-test OPFS group run `window.tfs()`; the answers are what Chrome gives.
+const kind = (e) => (e instanceof DOMException ? 'DOMException:' : e instanceof TypeError ? 'TypeError:' : 'other:') + (e && e.name);
+const attempt = async (fn) => { try { return await fn(); } catch (e) { return kind(e); } };
+window.tfs = async function tfs() {
+    const out = {};
+    const root = await navigator.storage.getDirectory();
+    // A file and a directory first, so the root is not empty.
+    const pre = await root.getFileHandle('pre.txt', { create: true });
+    let w = await pre.createWritable(); await w.write('pre'); await w.close();
+    await (await root.getDirectoryHandle('sub', { create: true })).getFileHandle('x', { create: true });
+    out.removeRoot = await attempt(async () => { await root.remove({ recursive: true }); return 'ok'; });
+    out.afterRemove = await attempt(async () => (await Array.fromAsync(root.keys())).sort());
+    out.rootStill = await attempt(async () => (await navigator.storage.getDirectory()).kind);
+    out.preGone = await attempt(async () => { await root.getFileHandle('pre.txt'); return 'present'; });
+    const root2 = await navigator.storage.getDirectory();
+    const mk = async (r) => {
+        const r1 = {};
+        r1.create = await attempt(async () => { const h = await r.getFileHandle('.TFS_STORE', { create: true }); r1.h = h; return 'ok'; });
+        return r1;
+    };
+    // Instance A creates and writes; instance B opens (create) and reads in between.
+    const a = await mk(root2);
+    out.create = a.create;
+    const b = await attempt(async () => (await root2.getFileHandle('.TFS_STORE', { create: true })).kind);
+    out.createB = b;
+    out.emptyRead = await attempt(async () => (await (await root2.getFileHandle('.TFS_STORE')).getFile()).text());
+    const wa = await a.h.createWritable();
+    out.midRead = await attempt(async () => (await (await root2.getFileHandle('.TFS_STORE')).getFile()).text());
+    await wa.write('{"a":1}');
+    out.midRead2 = await attempt(async () => (await (await root2.getFileHandle('.TFS_STORE')).getFile()).text());
+    await wa.close();
+    out.afterClose = await attempt(async () => (await (await root2.getFileHandle('.TFS_STORE')).getFile()).text());
+    out.parsed = await attempt(async () => JSON.stringify(JSON.parse(await (await (await root2.getFileHandle('.TFS_STORE')).getFile()).text())));
+    // Concurrent: writer rewrites while readers read repeatedly; no read may be "".
+    const reads = [];
+    const writer = (async () => {
+        for (let i = 0; i < 20; i++) {
+            const wr = await a.h.createWritable();
+            await wr.write(JSON.stringify({ i }));
+            await wr.close();
+        }
+    })();
+    const reader = (async () => {
+        for (let i = 0; i < 40; i++)
+            reads.push(await attempt(async () => (await (await root2.getFileHandle('.TFS_STORE')).getFile()).text()));
+    })();
+    await Promise.all([writer, reader]);
+    // Remove the root again while the file exists, then recreate.
+    out.removeAgain = await attempt(async () => { await root2.remove({ recursive: true }); return 'ok'; });
+    out.recreate = await attempt(async () => { const h = await root2.getFileHandle('.TFS_STORE', { create: true }); const w2 = await h.createWritable(); await w2.write('[]'); await w2.close(); return await (await h.getFile()).text(); });
+    out.staleHandle = await attempt(async () => (await a.h.getFile()).text());
+    out.final = await attempt(async () => (await Array.fromAsync((await navigator.storage.getDirectory()).keys())).sort());
+    await attempt(async () => (await navigator.storage.getDirectory()).removeEntry('.TFS_STORE'));
+    return out;
+};
+document.getElementById('out').textContent = 'ready';
+</script>
+</body></html>

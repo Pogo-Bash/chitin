@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><title>event handlers</title></head>
+<body onload="window.bodyLoaded = (window.bodyLoaded || 0) + 1; log.push('body onload')">
+<div id="plain" onclick="log.push('plain:' + this.id + ':' + event.type + ':' + (event.currentTarget === this))">plain</div>
+<div id="scoped" title="the title" onclick="log.push('scoped:' + title + ':' + getAttribute('id') + ':' + (typeof getElementById))">scoped</div>
+<form id="f" action="/x" onsubmit="return false">
+  <input id="field" name="who" value="ada" onclick="log.push('form-owner:' + who.value + ':' + (typeof elements) + ':' + (typeof submit))">
+</form>
+<div id="cancel" onclick="return false">cancel</div>
+<div id="bad" onclick="this is not javascript">bad</div>
+<script>
+// Event handler content attributes (tests/event-handlers.test.mjs): compiled by the engine through the host's JS engine.
+var log = [];
+window.addEventListener('load', function () { log.push('window load'); });
+</script>
+</body></html>

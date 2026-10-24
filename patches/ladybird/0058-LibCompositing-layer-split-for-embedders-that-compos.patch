@@ -1,0 +1,668 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 20:31:07 -0500
+Subject: [PATCH] LibCompositing: layer split for embedders that composite
+ layers themselves (replay a command range, run/command/node introspection,
+ simple filter functions, optional skip of backdrop filters)
+
+---
+ .../DisplayList/DisplayList.cpp               |   7 +
+ .../LibCompositing/DisplayList/DisplayList.h  |   2 +
+ .../Rust/src/display_list/replay.rs           |  79 ++++-
+ Libraries/LibCompositing/Rust/src/ffi.rs      | 329 ++++++++++++++++++
+ .../LibCompositing/Rust/src/filter_bytes.rs   |  69 ++++
+ Services/Compositor/DisplayListPlayer.cpp     |  25 +-
+ Services/Compositor/DisplayListPlayer.h       |  16 +
+ 7 files changed, 524 insertions(+), 3 deletions(-)
+
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayList.cpp b/Libraries/LibCompositing/DisplayList/DisplayList.cpp
+index 97009bd7aa..cdd3db6f7a 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayList.cpp
++++ b/Libraries/LibCompositing/DisplayList/DisplayList.cpp
+@@ -126,6 +126,13 @@ void DisplayList::replay(AccumulatedVisualContextTree const& visual_context_tree
+     RustFFI::display_list_replay(visual_context_tree.rust_handle(), m_storage, scroll_offsets.data(), scroll_offsets.size(), &callbacks);
+ }
+ 
++void DisplayList::replay_range(AccumulatedVisualContextTree const& visual_context_tree, ScrollStateSnapshot const& scroll_state, RustFFI::FfiDisplayListReplayCallbacks const& callbacks, u32 begin_run, u32 begin_command, u32 end_run, u32 end_command) const
++{
++    VERIFY(m_compatible_visual_context_tree_structural_epoch == visual_context_tree.structural_epoch());
++    auto scroll_offsets = scroll_state.device_offsets();
++    RustFFI::display_list_replay_range(visual_context_tree.rust_handle(), m_storage, scroll_offsets.data(), scroll_offsets.size(), &callbacks, begin_run, begin_command, end_run, end_command);
++}
++
+ void DisplayList::replay_records(ReadonlyBytes records, ScrollStateSnapshot const& scroll_state, RustFFI::FfiDisplayListReplayCallbacks const& callbacks)
+ {
+     auto scroll_offsets = scroll_state.device_offsets();
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayList.h b/Libraries/LibCompositing/DisplayList/DisplayList.h
+index 2e2fa8dd04..4b3de88709 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayList.h
++++ b/Libraries/LibCompositing/DisplayList/DisplayList.h
+@@ -108,6 +108,8 @@ public:
+ 
+     // Replays the list through a player's callbacks, against the visual context tree it was made for.
+     void replay(AccumulatedVisualContextTree const&, ScrollStateSnapshot const&, RustFFI::FfiDisplayListReplayCallbacks const&) const;
++    // Replays the commands from (begin_run, begin_command) up to, not including, (end_run, end_command).
++    void replay_range(AccumulatedVisualContextTree const&, ScrollStateSnapshot const&, RustFFI::FfiDisplayListReplayCallbacks const&, u32 begin_run, u32 begin_command, u32 end_run, u32 end_command) const;
+     // Replays a stream of records that a command of a list being replayed nests.
+     static void replay_records(ReadonlyBytes records, ScrollStateSnapshot const&, RustFFI::FfiDisplayListReplayCallbacks const&);
+ 
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/replay.rs b/Libraries/LibCompositing/Rust/src/display_list/replay.rs
+index ef18b55de6..3f2d395794 100644
+--- a/Libraries/LibCompositing/Rust/src/display_list/replay.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/replay.rs
+@@ -169,7 +169,41 @@ enum SwitchResult {
+     CulledByEffect,
+ }
+ 
++/// A contiguous range of commands, as (run, command in run): from `begin` up to, not including, `end`.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct ReplayRange {
++    pub begin: (u32, u32),
++    pub end: (u32, u32),
++}
++
++// The byte range of commands [first, last) of a run's records (`last` past the end means to the end).
++fn records_of_commands(records: &[u8], first: u32, last: u32) -> &[u8] {
++    let mut index = 0u32;
++    let mut start = records.len();
++    let mut end = records.len();
++    let mut found_start = first == 0;
++    if found_start {
++        start = 0;
++    }
++    for_each_command(records, |header, offset, _| {
++        if index == first && !found_start {
++            start = offset;
++            found_start = true;
++        }
++        if index == last {
++            end = offset;
++        }
++        let _ = header;
++        index += 1;
++    });
++    if start > end {
++        return &records[0..0];
++    }
++    &records[start..end]
++}
++
+ struct ReplayDriver<'a, Painter: ReplayPainter> {
++    range: Option<ReplayRange>,
+     tree: &'a VisualContextTree,
+     tape: &'a [u8],
+     command_runs: &'a [DisplayListCommandRun],
+@@ -525,6 +559,12 @@ impl<Painter: ReplayPainter> ReplayDriver<'_, Painter> {
+     // A run enters its context once, and offers its ink bounds to the layer cull. Skipping a run
+     // with nothing to draw before entering its context spares the pushes.
+     fn execute_run(&mut self, run_index: usize) {
++        if let Some(range) = self.range {
++            let index = run_index as u32;
++            if index < range.begin.0 || index > range.end.0 || (index == range.end.0 && range.end.1 == 0) {
++                return;
++            }
++        }
+         let run = self.command_runs[run_index];
+         if self.palette.backface_culled[run.context.spatial.0 as usize] {
+             return;
+@@ -542,7 +582,18 @@ impl<Painter: ReplayPainter> ReplayDriver<'_, Painter> {
+         if self.painter.would_be_fully_clipped_by_painter(run.ink_bounds) {
+             return;
+         }
+-        let records = &self.tape[run.offset as usize..(run.offset + run.size) as usize];
++        let mut records = &self.tape[run.offset as usize..(run.offset + run.size) as usize];
++        if let Some(range) = self.range {
++            let index = run_index as u32;
++            let first = if index == range.begin.0 { range.begin.1 } else { 0 };
++            let last = if index == range.end.0 { range.end.1 } else { u32::MAX };
++            if first != 0 || last != u32::MAX {
++                records = records_of_commands(records, first, last);
++                if records.is_empty() {
++                    return;
++                }
++            }
++        }
+         self.painter.execute_run(run_index, records, self.scroll_offsets);
+     }
+ 
+@@ -625,11 +676,37 @@ pub fn replay_display_list(
+     effect_clips: &EffectClipPlan,
+     scroll_offsets: &[FloatPoint],
+     painter: &mut impl ReplayPainter,
++) {
++    replay_display_list_impl(tree, tape, command_runs, effect_clips, scroll_offsets, painter, None);
++}
++
++/// Replays only the commands in `range` (an embedder's layer), each run in its context as a whole replay would.
++pub fn replay_display_list_range(
++    tree: &VisualContextTree,
++    tape: &[u8],
++    command_runs: &[DisplayListCommandRun],
++    effect_clips: &EffectClipPlan,
++    scroll_offsets: &[FloatPoint],
++    painter: &mut impl ReplayPainter,
++    range: ReplayRange,
++) {
++    replay_display_list_impl(tree, tape, command_runs, effect_clips, scroll_offsets, painter, Some(range));
++}
++
++fn replay_display_list_impl(
++    tree: &VisualContextTree,
++    tape: &[u8],
++    command_runs: &[DisplayListCommandRun],
++    effect_clips: &EffectClipPlan,
++    scroll_offsets: &[FloatPoint],
++    painter: &mut impl ReplayPainter,
++    range: Option<ReplayRange>,
+ ) {
+     let replay_base_matrix = painter.canvas_matrix();
+     let mut scratch = take_replay_scratch_storage();
+     tree.fill_culling_scratch(&mut scratch.culling);
+     let mut driver = ReplayDriver {
++        range,
+         tree,
+         tape,
+         command_runs,
+diff --git a/Libraries/LibCompositing/Rust/src/ffi.rs b/Libraries/LibCompositing/Rust/src/ffi.rs
+index 61823e819b..15684850fa 100644
+--- a/Libraries/LibCompositing/Rust/src/ffi.rs
++++ b/Libraries/LibCompositing/Rust/src/ffi.rs
+@@ -874,3 +874,332 @@ pub unsafe extern "C" fn visual_context_tree_test_builder_destroy(builder: *mut
+     // SAFETY: The caller hands over the boxed tree the create call returned.
+     drop(unsafe { Box::from_raw(builder.cast::<crate::visual_context::VisualContextTree>()) });
+ }
++
++// --- Layer split for embedders that composite layers themselves (Chitin) -------------------------------------
++// A host that splits one display list into layers needs to know the runs (their contexts, ink bounds and commands),
++// the nodes of the tree (kinds, parents, clip rects, effects), and to replay a contiguous range of commands.
++
++/// One run of a recorded list: its context, the union of its draw commands' bounds in its spatial node's space,
++/// its command count, and the scroll node of a scroll bar it paints (0 when it paints none).
++#[derive(Clone, Copy)]
++#[repr(C)]
++pub struct FfiLayerRunInfo {
++    pub context: ContextRef,
++    pub ink_bounds: libgfx_rust::IntRect,
++    pub command_count: u32,
++    pub scroll_bar_node: u32,
++    pub records: *const u8,
++    pub records_size: usize,
++}
++
++/// # Safety
++///
++/// `storage` must be a live storage handle and `out` writable. Returns false when `run` is out of range.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn display_list_layer_run_info(storage: *const c_void, run: usize, out: *mut FfiLayerRunInfo) -> bool {
++    let storage = unsafe { storage_from_handle(storage) };
++    let runs = storage.command_runs();
++    let Some(info) = runs.get(run) else {
++        return false;
++    };
++    let records = &storage.bytes()[info.offset as usize..(info.offset + info.size) as usize];
++    let mut command_count = 0u32;
++    let mut scroll_bar_node = 0u32;
++    crate::display_list::builder::for_each_command(records, |header, _, payload| {
++        command_count += 1;
++        if header.command_type == crate::display_list::commands::DisplayListCommandType::PaintScrollBar {
++            let command = crate::display_list::builder::read_command::<crate::display_list::commands::PaintScrollBar>(payload);
++            scroll_bar_node = command.scroll_node_index.0;
++        }
++    });
++    // SAFETY: The caller guarantees `out` is writable.
++    unsafe {
++        *out = FfiLayerRunInfo {
++            context: info.context,
++            ink_bounds: info.ink_bounds,
++            command_count,
++            scroll_bar_node,
++            records: records.as_ptr(),
++            records_size: records.len(),
++        };
++    }
++    true
++}
++
++/// Calls `visit` with each top-level command of the list: its run, its index in the run, its type, its bounding
++/// rect (in the run's spatial node space), and its byte offset in the run's records.
++///
++/// # Safety
++///
++/// `storage` must be a live storage handle. `visit` runs synchronously.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn display_list_layer_for_each_command(
++    storage: *const c_void,
++    context: *mut c_void,
++    visit: unsafe extern "C" fn(*mut c_void, u32, u32, crate::display_list::commands::DisplayListCommandType, libgfx_rust::IntRect, u32),
++) {
++    let storage = unsafe { storage_from_handle(storage) };
++    for (run_index, run) in storage.command_runs().iter().enumerate() {
++        let records = &storage.bytes()[run.offset as usize..(run.offset + run.size) as usize];
++        let mut index = 0u32;
++        crate::display_list::builder::for_each_command(records, |header, offset, _| {
++            // SAFETY: `visit` runs synchronously.
++            unsafe { visit(context, run_index as u32, index, header.command_type, header.bounding_rect, offset as u32) };
++            index += 1;
++        });
++    }
++}
++
++/// Replays the commands from (`begin_run`, `begin_command`) up to, not including, (`end_run`, `end_command`), in
++/// tape order, with every run's context entered as a whole replay enters it. A tree with 3D sorting contexts replays
++/// whole (a host splits such a list only at its ends).
++///
++/// # Safety
++///
++/// As `display_list_replay`.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn display_list_replay_range(
++    tree: *const c_void,
++    storage: *const c_void,
++    scroll_offsets: *const libgfx_rust::FloatPoint,
++    scroll_offsets_len: usize,
++    callbacks: *const crate::host::FfiDisplayListReplayCallbacks,
++    begin_run: u32,
++    begin_command: u32,
++    end_run: u32,
++    end_command: u32,
++) {
++    // SAFETY: The caller guarantees live handles and a valid slice for the duration of the call.
++    let (tree, storage, scroll_offsets) = unsafe {
++        (
++            tree_from_handle(tree),
++            storage_from_handle(storage),
++            ffi_slice(scroll_offsets, scroll_offsets_len),
++        )
++    };
++    // SAFETY: The caller guarantees `callbacks` is live for the call.
++    let mut painter = unsafe { *callbacks };
++    crate::display_list::replay::replay_display_list_range(
++        tree,
++        storage.bytes(),
++        storage.command_runs(),
++        storage.effect_clip_plan(tree),
++        scroll_offsets,
++        &mut painter,
++        crate::display_list::replay::ReplayRange {
++            begin: (begin_run, begin_command),
++            end: (end_run, end_command),
++        },
++    );
++}
++
++/// What a spatial node is. `kind`: 0 dead, 1 scroll, 2 sticky, 3 transform, 4 perspective, 5 backface visibility,
++/// 6 anchor scroll shift. For a sticky node, its scroller, its insets (NaN when auto) and geometry (device pixels).
++#[derive(Clone, Copy)]
++#[repr(C)]
++pub struct FfiLayerSpatialNodeInfo {
++    pub kind: u8,
++    pub parent: u32,
++    pub sticky_scroller: u32,
++    pub sticky_parent: u32,
++    pub sticky_position_relative_to_scroller: libgfx_rust::FloatPoint,
++    pub sticky_border_box_size: libgfx_rust::FloatSize,
++    pub sticky_scrollport_size: libgfx_rust::FloatSize,
++    pub sticky_containing_block_region: libgfx_rust::FloatRect,
++    pub sticky_insets: [f32; 4],
++    pub sticky_needs_parent_offset_adjustment: bool,
++    pub transform_sorting: bool,
++}
++
++/// # Safety
++///
++/// `tree` must be a live retained tree handle and `out` writable.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn visual_context_tree_layer_spatial_node_info(tree: *const c_void, index: u32, out: *mut FfiLayerSpatialNodeInfo) -> bool {
++    use crate::visual_context::SpatialData;
++    let tree = unsafe { tree_from_handle(tree) };
++    let Some(node) = tree.spatial_nodes.get(index as usize) else {
++        return false;
++    };
++    let mut info = FfiLayerSpatialNodeInfo {
++        kind: 0,
++        parent: node.parent.0,
++        sticky_scroller: 0,
++        sticky_parent: 0,
++        sticky_position_relative_to_scroller: libgfx_rust::FloatPoint::default(),
++        sticky_border_box_size: libgfx_rust::FloatSize::default(),
++        sticky_scrollport_size: libgfx_rust::FloatSize::default(),
++        sticky_containing_block_region: libgfx_rust::FloatRect::default(),
++        sticky_insets: [f32::NAN; 4],
++        sticky_needs_parent_offset_adjustment: false,
++        transform_sorting: false,
++    };
++    match &node.data {
++        SpatialData::Dead => {}
++        SpatialData::Scroll(_) => info.kind = 1,
++        SpatialData::Sticky(sticky) => {
++            info.kind = 2;
++            info.sticky_scroller = sticky.scroller.0;
++            info.sticky_parent = sticky.parent_sticky.map_or(0, |p| p.0);
++            info.sticky_position_relative_to_scroller = sticky.position_relative_to_scroller;
++            info.sticky_border_box_size = sticky.border_box_size;
++            info.sticky_scrollport_size = sticky.scrollport_size;
++            info.sticky_containing_block_region = sticky.containing_block_region;
++            info.sticky_insets = [
++                sticky.inset_top.unwrap_or(f32::NAN),
++                sticky.inset_right.unwrap_or(f32::NAN),
++                sticky.inset_bottom.unwrap_or(f32::NAN),
++                sticky.inset_left.unwrap_or(f32::NAN),
++            ];
++            info.sticky_needs_parent_offset_adjustment = sticky.needs_parent_offset_adjustment;
++        }
++        SpatialData::Transform(transform) => {
++            info.kind = 3;
++            info.transform_sorting = transform.sorting_context_root_index.is_some() || transform.establishes_sorting_context;
++        }
++        SpatialData::Perspective(_) => info.kind = 4,
++        SpatialData::BackfaceVisibility(_) => info.kind = 5,
++        SpatialData::AnchorScrollShift(_) => info.kind = 6,
++    }
++    // SAFETY: The caller guarantees `out` is writable.
++    unsafe { *out = info };
++    true
++}
++
++/// What a clip node is. `kind`: 0 dead, 1 rect (maybe rounded), 2 path. `rect` is in the node's spatial space (a
++/// path's device bounds for a path).
++#[derive(Clone, Copy)]
++#[repr(C)]
++pub struct FfiLayerClipNodeInfo {
++    pub kind: u8,
++    pub parent: u32,
++    pub spatial: u32,
++    pub rect: libgfx_rust::FloatRect,
++    pub corner_radii: libgfx_rust::CornerRadii,
++    pub difference: bool,
++}
++
++/// # Safety
++///
++/// `tree` must be a live retained tree handle and `out` writable.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn visual_context_tree_layer_clip_node_info(tree: *const c_void, index: u32, out: *mut FfiLayerClipNodeInfo) -> bool {
++    use crate::visual_context::ClipNodeData;
++    let tree = unsafe { tree_from_handle(tree) };
++    let Some(node) = tree.clip_nodes.get(index as usize) else {
++        return false;
++    };
++    let mut info = FfiLayerClipNodeInfo {
++        kind: 0,
++        parent: node.parent.0,
++        spatial: node.spatial.0,
++        rect: libgfx_rust::FloatRect::default(),
++        corner_radii: libgfx_rust::CornerRadii::default(),
++        difference: false,
++    };
++    match &node.data {
++        ClipNodeData::Dead => {}
++        ClipNodeData::Rect(clip) => {
++            info.kind = 1;
++            info.rect = clip.rect;
++            info.corner_radii = clip.corner_radii;
++            info.difference = clip.mode != crate::display_list::commands::ClipMode::Intersect;
++        }
++        ClipNodeData::Path(path) => {
++            info.kind = 2;
++            let r = path.bounding_rect;
++            info.rect = libgfx_rust::FloatRect { x: r.x as f32, y: r.y as f32, width: r.width as f32, height: r.height as f32 };
++        }
++    }
++    // SAFETY: The caller guarantees `out` is writable.
++    unsafe { *out = info };
++    true
++}
++
++/// What an effect node is. `kind`: 0 dead, 1 effects (opacity, blend, filter, backdrop filter), 2 mask, 3 a
++/// background color animation marker. `pushes_layer`: whether replay pushes a layer for it.
++#[derive(Clone, Copy)]
++#[repr(C)]
++pub struct FfiLayerEffectNodeInfo {
++    pub kind: u8,
++    pub parent: u32,
++    pub spatial: u32,
++    pub local_clip: u32,
++    pub pushes_layer: bool,
++    pub opacity: f32,
++    pub blend_normal: bool,
++    pub filter: *const u8,
++    pub filter_size: usize,
++    pub backdrop_filter: *const u8,
++    pub backdrop_filter_size: usize,
++    pub backdrop_region: libgfx_rust::IntRect,
++    pub backdrop_corner_radii: libgfx_rust::CornerRadii,
++}
++
++/// # Safety
++///
++/// `tree` must be a live retained tree handle and `out` writable. The filter pointers live as long as the tree.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn visual_context_tree_layer_effect_node_info(tree: *const c_void, index: u32, out: *mut FfiLayerEffectNodeInfo) -> bool {
++    use crate::visual_context::EffectNodeData;
++    let tree = unsafe { tree_from_handle(tree) };
++    let Some(node) = tree.effect_nodes.get(index as usize) else {
++        return false;
++    };
++    let mut info = FfiLayerEffectNodeInfo {
++        kind: 0,
++        parent: node.parent.0,
++        spatial: node.spatial.0,
++        local_clip: node.local_clip.0,
++        pushes_layer: tree.effect_pushes_layer_at_replay(EffectNodeIndex(index)),
++        opacity: 1.0,
++        blend_normal: true,
++        filter: std::ptr::null(),
++        filter_size: 0,
++        backdrop_filter: std::ptr::null(),
++        backdrop_filter_size: 0,
++        backdrop_region: libgfx_rust::IntRect::default(),
++        backdrop_corner_radii: libgfx_rust::CornerRadii::default(),
++    };
++    match &node.data {
++        EffectNodeData::Dead => info.pushes_layer = false,
++        EffectNodeData::Effects(effects) => {
++            info.kind = 1;
++            info.opacity = effects.opacity;
++            info.blend_normal = effects.blend_mode == libgfx_rust::CompositingAndBlendingOperator::Normal;
++            if let Some(filter) = &effects.filter {
++                info.filter = filter.as_ptr();
++                info.filter_size = filter.len();
++            }
++            if let Some(backdrop) = &effects.backdrop_filter {
++                info.backdrop_filter = backdrop.filter.as_ptr();
++                info.backdrop_filter_size = backdrop.filter.len();
++                info.backdrop_region = backdrop.region;
++                info.backdrop_corner_radii = backdrop.corner_radii;
++            }
++        }
++        EffectNodeData::Mask(_) => info.kind = 2,
++        EffectNodeData::BackgroundColorAnimation => info.kind = 3,
++    }
++    // SAFETY: The caller guarantees `out` is writable.
++    unsafe { *out = info };
++    true
++}
++
++/// # Safety
++///
++/// `tree` must be a live retained tree handle.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn visual_context_tree_layer_node_counts(tree: *const c_void, out_counts: *mut u32) {
++    let tree = unsafe { tree_from_handle(tree) };
++    let has_sorting = tree.spatial_nodes.iter().any(|node| {
++        matches!(&node.data, crate::visual_context::SpatialData::Transform(transform) if transform.sorting_context_root_index.is_some())
++    });
++    // SAFETY: The caller guarantees `out_counts` addresses four writable values.
++    unsafe {
++        *out_counts = tree.spatial_nodes.len() as u32;
++        *out_counts.add(1) = tree.clip_nodes.len() as u32;
++        *out_counts.add(2) = tree.effect_nodes.len() as u32;
++        *out_counts.add(3) = u32::from(has_sorting);
++    }
++}
+diff --git a/Libraries/LibCompositing/Rust/src/filter_bytes.rs b/Libraries/LibCompositing/Rust/src/filter_bytes.rs
+index c23b217f52..1b116d0c62 100644
+--- a/Libraries/LibCompositing/Rust/src/filter_bytes.rs
++++ b/Libraries/LibCompositing/Rust/src/filter_bytes.rs
+@@ -107,3 +107,72 @@ mod tests {
+         assert!(!may_affect_output_bounds(&Filter::hue_rotate(90.0, None).serialize()));
+     }
+ }
++
++/// A serialized filter as a list of simple functions, innermost first: blurs with one radius and color operations
++/// (saturate, and the ColorFilter kinds), for an embedder that draws such a filter itself (Chitin's compositor runs
++/// backdrop blurs on the host GPU). Returns how many were written, or 0 when the filter has anything else.
++///
++/// # Safety
++///
++/// `bytes` must address `size` readable bytes and `out` `capacity` writable functions.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn filter_bytes_simple_functions(bytes: *const u8, size: usize, out: *mut FfiFilterFunction, capacity: usize) -> usize {
++    if bytes.is_null() || size == 0 {
++        return 0;
++    }
++    // SAFETY: The caller guarantees `bytes` addresses `size` bytes.
++    let bytes = unsafe { std::slice::from_raw_parts(bytes, size) };
++    let Some(filter) = Filter::deserialize(bytes) else {
++        return 0;
++    };
++    let mut list = Vec::new();
++    fn walk(filter: &Filter, list: &mut Vec<FfiFilterFunction>) -> bool {
++        let simple = |kind, amount, color_operation| FfiFilterFunction {
++            kind,
++            amount,
++            offset_x: 0.0,
++            offset_y: 0.0,
++            color: libgfx_rust::Color::TRANSPARENT,
++            color_operation,
++        };
++        match filter {
++            Filter::Compose { outer, inner } => walk(inner, list) && walk(outer, list),
++            Filter::Blur { radius_x, radius_y, input } if radius_x == radius_y => {
++                if let Some(input) = input
++                    && !walk(input, list)
++                {
++                    return false;
++                }
++                list.push(simple(FfiFilterFunctionKind::Blur, *radius_x, libgfx_rust::ColorFilterType::Brightness));
++                true
++            }
++            Filter::Saturate { value, input } => {
++                if let Some(input) = input
++                    && !walk(input, list)
++                {
++                    return false;
++                }
++                list.push(simple(FfiFilterFunctionKind::Color, *value, libgfx_rust::ColorFilterType::Saturate));
++                true
++            }
++            Filter::ColorFilter { kind, amount, input } => {
++                if let Some(input) = input
++                    && !walk(input, list)
++                {
++                    return false;
++                }
++                list.push(simple(FfiFilterFunctionKind::Color, *amount, *kind));
++                true
++            }
++            _ => false,
++        }
++    }
++    if !walk(&filter, &mut list) || list.len() > capacity {
++        return 0;
++    }
++    for (i, function) in list.iter().enumerate() {
++        // SAFETY: The caller guarantees `out` addresses `capacity` functions.
++        unsafe { *out.add(i) = *function };
++    }
++    list.len()
++}
+diff --git a/Services/Compositor/DisplayListPlayer.cpp b/Services/Compositor/DisplayListPlayer.cpp
+index 66e3771d40..fe75c83122 100644
+--- a/Services/Compositor/DisplayListPlayer.cpp
++++ b/Services/Compositor/DisplayListPlayer.cpp
+@@ -28,7 +28,10 @@ void DisplayListPlayer::execute(
+     m_active_visual_context_tree = &visual_context_tree;
+     m_resource_storage = &resource_storage;
+     m_canvas_surface_registry = canvas_surface_registry;
+-    execute_impl(display_list, scroll_state_snapshot);
++    if (auto range = exchange(m_replay_range, {}); range.has_value())
++        execute_range_impl(display_list, scroll_state_snapshot, *range);
++    else
++        execute_impl(display_list, scroll_state_snapshot);
+     m_canvas_surface_registry = nullptr;
+     m_resource_storage = nullptr;
+     m_active_visual_context_tree = nullptr;
+@@ -79,7 +82,16 @@ struct DisplayListPlayer::ReplayCallbacks {
+             },
+             .push_clip = [](void* context, ReplayClip const* clip) { static_cast<DisplayListPlayer*>(context)->push_clip(*clip); },
+             .push_clip_path = [](void* context, void const* path, Gfx::WindingRule winding_rule) { static_cast<DisplayListPlayer*>(context)->push_clip_path(*static_cast<Gfx::Path const*>(path), winding_rule); },
+-            .push_layer = [](void* context, ReplayLayer const* layer) { static_cast<DisplayListPlayer*>(context)->push_layer(*layer); },
++            .push_layer = [](void* context, ReplayLayer const* layer) {
++                auto* player = static_cast<DisplayListPlayer*>(context);
++                if (player->m_skip_backdrop_filters && layer->backdrop_filter_bytes_size) {
++                    auto without_backdrop = *layer;
++                    without_backdrop.backdrop_filter_bytes = nullptr;
++                    without_backdrop.backdrop_filter_bytes_size = 0;
++                    player->push_layer(without_backdrop);
++                    return;
++                }
++                player->push_layer(*layer); },
+             .push_mask = [](void* context, ReplayMask const* mask) { static_cast<DisplayListPlayer*>(context)->push_mask(*mask); },
+             .pop_mask = [](void* context, ReplayMask const* mask, EffectNodeIndex effect) { static_cast<DisplayListPlayer*>(context)->pop_mask(*mask, effect); },
+             .pop = [](void* context) { static_cast<DisplayListPlayer*>(context)->pop(); },
+@@ -137,4 +149,13 @@ void DisplayListPlayer::execute_impl(DisplayList const& display_list, ScrollStat
+     display_list.replay(visual_context_tree, scroll_state, callbacks);
+ }
+ 
++void DisplayListPlayer::execute_range_impl(DisplayList const& display_list, ScrollStateSnapshot const& scroll_state, ReplayRange range)
++{
++    TemporaryChange active_scroll_state_change { m_active_scroll_state, &scroll_state };
++    TemporaryChange declared_mask_contents_change { m_declared_mask_contents, HashMap<u32, ReadonlyBytes> {} };
++    VERIFY(m_surface);
++    auto callbacks = ReplayCallbacks::for_player(*this);
++    display_list.replay_range(active_visual_context_tree(), scroll_state, callbacks, range.begin_run, range.begin_command, range.end_run, range.end_command);
++}
++
+ }
+diff --git a/Services/Compositor/DisplayListPlayer.h b/Services/Compositor/DisplayListPlayer.h
+index b34998395c..56d49e0269 100644
+--- a/Services/Compositor/DisplayListPlayer.h
++++ b/Services/Compositor/DisplayListPlayer.h
+@@ -27,6 +27,19 @@ public:
+     void execute(Compositing::DisplayList const&, Compositing::AccumulatedVisualContextTree const&, Compositing::DisplayListResourceStorage const&, Compositing::ScrollStateSnapshot const&, RefPtr<Gfx::PaintingSurface>, Compositing::CanvasSurfaceRegistry const* = nullptr);
+     virtual void flush(Gfx::PaintingSurface&) = 0;
+ 
++    // For an embedder that composites layers itself: the next execute() replays only the commands from
++    // (begin_run, begin_command) up to, not including, (end_run, end_command) of the top-level list; and backdrop
++    // filters can be left out (the embedder applies them over the layers below).
++    struct ReplayRange {
++        u32 begin_run { 0 };
++        u32 begin_command { 0 };
++        u32 end_run { 0 };
++        u32 end_command { 0 };
++    };
++    void set_replay_range(Optional<ReplayRange> range) { m_replay_range = range; }
++    void set_skip_backdrop_filters(bool skip) { m_skip_backdrop_filters = skip; }
++    bool skips_backdrop_filters() const { return m_skip_backdrop_filters; }
++
+ protected:
+     Gfx::PaintingSurface& surface() const { return *m_surface; }
+     Compositing::DisplayList const& active_display_list() const { return *m_active_display_list; }
+@@ -48,6 +61,7 @@ protected:
+         return { reinterpret_cast<T const*>(bytes.data()), bytes.size() / sizeof(T) };
+     }
+     void execute_impl(Compositing::DisplayList const&, Compositing::ScrollStateSnapshot const& scroll_state);
++    void execute_range_impl(Compositing::DisplayList const&, Compositing::ScrollStateSnapshot const& scroll_state, ReplayRange);
+     void execute_command_bytes(ReadonlyBytes, Compositing::ScrollStateSnapshot const& scroll_state);
+     Compositing::ScrollStateSnapshot const& active_scroll_state() const { return *m_active_scroll_state; }
+     void execute_display_list_into_surface(Compositing::DisplayList const&, Compositing::AccumulatedVisualContextTree const&, Gfx::PaintingSurface&);
+@@ -85,6 +99,8 @@ private:
+     ReadonlyBytes m_current_command_payload;
+     Compositing::ScrollStateSnapshot const* m_active_scroll_state { nullptr };
+     HashMap<u32, ReadonlyBytes> m_declared_mask_contents;
++    Optional<ReplayRange> m_replay_range;
++    bool m_skip_backdrop_filters { false };
+ };
+ 
+ }

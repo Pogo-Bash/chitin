@@ -1,0 +1,8 @@
+<!doctype html><html><head><meta charset="utf-8"><title>canvas</title></head>
+<body style="margin:0;background:#fff">
+<script src="ops.js"></script>
+<script>
+var probe = canvasProbe(document), results = probe.results;
+// Drawn after the first frame: the canvas must show it without anything else changing.
+setTimeout(function () { probe.ctx.fillStyle = '#ffff00'; probe.ctx.fillRect(160, 90, 30, 20); results.later = true; }, 50);
+</script></body></html>

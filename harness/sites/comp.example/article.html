@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>a long article</title>
+<style>
+body { margin: 0 auto; max-width: 720px; padding: 24px; font: 17px/1.55 serif; color: #222; background: #fdfcf8; }
+h1 { font: bold 30px sans-serif; } p { margin: 0 0 14px; }
+.box { height: 60px; margin: 10px 0; background: linear-gradient(90deg, #2a9d8f, #e9c46a); border-radius: 8px; }
+</style>
+<script src="lorem.js"></script>
+<h1>A long article</h1>
+<main id="m"></main>
+<script>
+const m = document.getElementById('m');
+for (let s = 0; s < 20; s++) { const h = document.createElement('h2'); h.textContent = 'Section ' + (s + 1); m.appendChild(h); fill(m, 8); const b = document.createElement('div'); b.className = 'box'; m.appendChild(b); }
+</script>

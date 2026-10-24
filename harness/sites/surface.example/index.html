@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8"><title>surface</title>
+<!-- The surface-diff page (tools/surface-diff, docs/surface.md): the same bytes are served to Chrome's top-level window and to a Chitin
+     segment; walker.js enumerates the page global and leaves a JSON string in window.__surface. -->
+<script>
+window.__early = {};
+(function () {
+    var e = window.__early;
+    e.inline = { src: String(document.currentScript && document.currentScript.src), tag: document.currentScript && document.currentScript.tagName };
+    document.write('<b id="w"></b>');
+    e.docWriteSync = !!document.getElementById('w');
+    e.stackInline = new Error('x').stack;
+    e.thisIsGlobal = this === window;
+    e.readyState = document.readyState;
+})();
+</script>
+<script id="ext" src="early.js"></script>
+<script type="module">
+window.__early.module = { url: import.meta.url, cs: String(document.currentScript), stack: new Error('x').stack };
+</script>
+<script src="walker.js"></script>

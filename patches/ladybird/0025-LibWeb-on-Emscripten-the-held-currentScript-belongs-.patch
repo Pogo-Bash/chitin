@@ -1,0 +1,106 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 00:24:47 -0500
+Subject: [PATCH 25/25] LibWeb: on Emscripten the held currentScript belongs to
+ its document, and a module script never traps on a non-null one
+
+The hold for the embedder's microtasks was one global flag, but released on the active document: a classic script of an iframe left its own document's currentScript set when another document's script (or the release) cleared the flag, and a later module script in it hit VERIFY(current_script == nullptr). The hold now names its document (a weak handle), any script releases the held one, and the module branch runs with currentScript null whatever was left, restoring it after.
+---
+ Libraries/LibWeb/HTML/HTMLScriptElement.cpp | 41 +++++++++++++--------
+ Libraries/LibWeb/HTML/HTMLScriptElement.h   |  1 +
+ 2 files changed, 27 insertions(+), 15 deletions(-)
+
+diff --git a/Libraries/LibWeb/HTML/HTMLScriptElement.cpp b/Libraries/LibWeb/HTML/HTMLScriptElement.cpp
+index fbe92afde5..ef1225d9f9 100644
+--- a/Libraries/LibWeb/HTML/HTMLScriptElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLScriptElement.cpp
+@@ -35,15 +35,21 @@ extern "C" void ganglion_host_microtask_turn_end_request(void);
+ namespace Web::HTML {
+ 
+ #ifdef AK_OS_EMSCRIPTEN
+-static bool s_current_script_held_for_microtasks = false;
++// The document whose currentScript is held for the embedder's microtasks. The hold is per document: a script of another
++// document (an iframe) must neither release it nor be released in its place.
++static GC::Weak<DOM::Document> s_current_script_held_document;
++
++void HTMLScriptElement::release_held_current_script()
++{
++    if (auto held = s_current_script_held_document.ptr())
++        held->set_current_script({}, nullptr);
++    s_current_script_held_document = nullptr;
++}
+ 
+ // The embedder's microtasks following the last outermost script have run: currentScript is null again.
+-void HTMLScriptElement::release_current_script_after_microtasks(DOM::Document& document)
++void HTMLScriptElement::release_current_script_after_microtasks(DOM::Document&)
+ {
+-    if (!s_current_script_held_for_microtasks)
+-        return;
+-    s_current_script_held_for_microtasks = false;
+-    document.set_current_script({}, nullptr);
++    release_held_current_script();
+ }
+ #endif
+ 
+@@ -176,10 +182,7 @@ void HTMLScriptElement::execute_script()
+ #ifdef AK_OS_EMSCRIPTEN
+         // A previous outermost script left itself as currentScript for the microtasks the embedder's engine runs after it
+         // (see below): that is not a script running now.
+-        if (s_current_script_held_for_microtasks) {
+-            s_current_script_held_for_microtasks = false;
+-            document->set_current_script({}, nullptr);
+-        }
++        release_held_current_script();
+ #endif
+         // 1. Let oldCurrentScript be the value to which document's currentScript object was most recently set.
+         auto old_current_script = document->current_script();
+@@ -205,7 +208,7 @@ void HTMLScriptElement::execute_script()
+         // chunk that registered it). An outermost script therefore stays currentScript until the embedder says its microtasks
+         // have run (release_current_script_after_microtasks).
+         if (!old_current_script) {
+-            s_current_script_held_for_microtasks = true;
++            s_current_script_held_document = *document;
+             ganglion_host_microtask_turn_end_request();
+         } else
+             document->set_current_script({}, old_current_script);
+@@ -216,16 +219,24 @@ void HTMLScriptElement::execute_script()
+     // -> "module"
+     else if (m_script_type == ScriptType::Module) {
+ #ifdef AK_OS_EMSCRIPTEN
+-        if (s_current_script_held_for_microtasks) {
+-            s_current_script_held_for_microtasks = false;
+-            document->set_current_script({}, nullptr);
+-        }
++        release_held_current_script();
+ #endif
+         // 1. Assert: document's currentScript attribute is null.
++#ifdef AK_OS_EMSCRIPTEN
++        // A module script runs with currentScript null whatever the embedder's bookkeeping left (never trap the engine on it);
++        // what was there is put back after, as for a classic script.
++        auto old_current_script_for_module = document->current_script();
++        if (old_current_script_for_module)
++            document->set_current_script({}, nullptr);
++#endif
+         VERIFY(document->current_script() == nullptr);
+ 
+         // 2. Run the module script given by el's result.
+         (void)as<ModuleScript>(*m_result.get<GC::Ref<Script>>()).run();
++#ifdef AK_OS_EMSCRIPTEN
++        if (old_current_script_for_module)
++            document->set_current_script({}, old_current_script_for_module);
++#endif
+     }
+     // -> "importmap"
+     else if (m_script_type == ScriptType::ImportMap) {
+diff --git a/Libraries/LibWeb/HTML/HTMLScriptElement.h b/Libraries/LibWeb/HTML/HTMLScriptElement.h
+index c54e9dc79c..f50085bbee 100644
+--- a/Libraries/LibWeb/HTML/HTMLScriptElement.h
++++ b/Libraries/LibWeb/HTML/HTMLScriptElement.h
+@@ -42,6 +42,7 @@ public:
+ 
+     // Emscripten: see execute_script. Called by the embedder from a task after the page's microtasks have run.
+     static void release_current_script_after_microtasks(DOM::Document&);
++    static void release_held_current_script();
+     void stop_delaying_document_load_event(Badge<DOM::Document>) { m_document_load_event_delayer.clear(); }
+ 
+     bool is_parser_inserted() const { return !!m_parser_document; }

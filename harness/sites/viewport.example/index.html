@@ -1,0 +1,19 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>viewport</title>
+<style>html, body { margin: 0; } #vw { position: absolute; width: 100vw; height: 100vh; left: 0; top: 0; visibility: hidden; }</style>
+<div id="vw"></div>
+<script>
+// What a page that sizes itself to its window reads (anura sizes its desktop from these), and how many resize events it got.
+window.resizes = 0;
+addEventListener('resize', () => { window.resizes++; });
+window.viewport = () => {
+    const b = document.getElementById('vw').getBoundingClientRect();
+    return {
+        inner: [innerWidth, innerHeight], client: [document.documentElement.clientWidth, document.documentElement.clientHeight],
+        vv: window.visualViewport ? [visualViewport.width, visualViewport.height, visualViewport.scale] : null,
+        vwvh: [b.width, b.height], dpr: devicePixelRatio, mq: matchMedia(`(width: ${innerWidth}px) and (height: ${innerHeight}px)`).matches,
+        outer: [outerWidth > 0, outerHeight > 0], resizes: window.resizes,
+    };
+};
+</script>

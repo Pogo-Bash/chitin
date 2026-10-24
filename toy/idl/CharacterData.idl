@@ -1,0 +1,11 @@
+// Chitin phase-0 subset of Ladybird's Libraries/LibWeb/DOM/CharacterData.idl (BSD-2-Clause, the Ladybird developers).
+// Members kept as written upstream; members the toy does not implement are left out.
+// https://dom.spec.whatwg.org/#characterdata
+[Exposed=Window]
+interface CharacterData : Node {
+    [LegacyNullToEmptyString] attribute DOMString data;
+    [ImplementedAs=length_in_utf16_code_units] readonly attribute unsigned long length;
+    undefined appendData(DOMString data);
+};
+
+CharacterData includes ChildNode;

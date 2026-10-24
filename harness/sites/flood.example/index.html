@@ -1,0 +1,6 @@
+<!doctype html><meta charset="utf-8"><title>flood</title>
+<script>
+// A page that reports far faster than the carapace's guard allows (40 status lines a second, 12 strikes): the segment must keep
+// its lines under the limit by itself and still deliver the newest value of each key.
+window.flood = (n) => { for (let i = 0; i < n; i++) { __chitinReport('flood', String(i)); __chitinReport('flood b', String(i)); } };
+</script>

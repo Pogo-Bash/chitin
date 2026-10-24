@@ -1,0 +1,61 @@
+From 805a7274e8522f20bbf23f290ff2078146ff7b44 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 02:58:21 -0500
+Subject: [PATCH] LibWeb: an embedder without a compositor host gives 2D canvas
+ contexts a transport of its own (RemoteCanvas2DTransport::local_factory);
+ without one a 2D context had no backing storage
+
+---
+ Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp   | 8 +++++---
+ Libraries/LibWeb/HTML/Canvas/RemoteCanvas2DTransport.h | 9 +++++++++
+ 2 files changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
+index ae77a939e0..81965b81fa 100644
+--- a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
++++ b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
+@@ -314,9 +314,11 @@ bool Canvas2DContextBase::ensure_remote_canvas_context()
+         return true;
+ 
+     auto& page = canvas_host().canvas_page();
+-    if (!page.has_compositor_host())
+-        return false;
+-    auto transport = page.compositor_host().create_canvas_2d_transport();
++    RefPtr<RemoteCanvas2DTransport> transport;
++    if (page.has_compositor_host())
++        transport = page.compositor_host().create_canvas_2d_transport();
++    else if (auto& local_factory = RemoteCanvas2DTransport::local_factory())
++        transport = local_factory();
+     if (!transport)
+         return false;
+ 
+diff --git a/Libraries/LibWeb/HTML/Canvas/RemoteCanvas2DTransport.h b/Libraries/LibWeb/HTML/Canvas/RemoteCanvas2DTransport.h
+index bdd468a6c4..fc8f90fac2 100644
+--- a/Libraries/LibWeb/HTML/Canvas/RemoteCanvas2DTransport.h
++++ b/Libraries/LibWeb/HTML/Canvas/RemoteCanvas2DTransport.h
+@@ -6,6 +6,7 @@
+ 
+ #pragma once
+ 
++#include <AK/Function.h>
+ #include <AK/Optional.h>
+ #include <AK/RefCounted.h>
+ #include <AK/RefPtr.h>
+@@ -20,6 +21,14 @@ class WEB_API RemoteCanvas2DTransport : public RefCounted<RemoteCanvas2DTranspor
+ public:
+     virtual ~RemoteCanvas2DTransport() = default;
+ 
++    // An embedder without a compositor process draws canvases itself: when the page has no compositor host,
++    // a 2D context asks this factory for its transport (nothing set, no backing storage, as before).
++    static Function<RefPtr<RemoteCanvas2DTransport>()>& local_factory()
++    {
++        static Function<RefPtr<RemoteCanvas2DTransport>()> factory;
++        return factory;
++    }
++
+     virtual bool create_context(Gfx::IntSize, bool alpha) = 0;
+     virtual Optional<Compositing::CanvasId> canvas_id() const = 0;
+     virtual void destroy_context() = 0;
+-- 
+2.50.1 (Apple Git-155)
+

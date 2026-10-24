@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>An article with web fonts</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <p class="kicker">Chitin test sites · article.example</p>
+  <h1>The shell around every site</h1>
+  <p class="byline">Set in a web font loaded with <code>@font-face</code> from another origin, with the body in the engine's default sans.</p>
+</header>
+<main>
+  <p class="lede">Chitin is a web browser that runs inside a web page. Each site gets its own hard shell: a separate browser process with its own origin, its own copy of a real engine and its own storage.</p>
+  <h2>Why a shell and not a mask</h2>
+  <p>An interception proxy rewrites the sites it shows. It strips security headers, puts every site on one origin and edits scripts on the way through. Chitin does none of that: the site's bytes reach a real engine unmodified, and the engine's own network stack carries them. The name is the point. Chitin is what an insect's exoskeleton is made of: a shell around every site, rather than a mask over it.</p>
+  <blockquote>“Sites Ganglion cannot render yet open in the user's own browser, never through a proxy.”</blockquote>
+  <h2>What this page exercises</h2>
+  <ul>
+    <li>a web font in the headings, fetched cross-origin and decoded by the engine (<code>font/ttf</code>);</li>
+    <li>italic and bold faces of the default family, <em>like this</em> and <strong>like this</strong>;</li>
+    <li>a float with text wrapping around it, a block quote with a border, and a list;</li>
+    <li>inline code, <a href="https://static.example/">a link to another site</a>, and a superscript<sup>1</sup>.</li>
+  </ul>
+  <aside class="pull">A pull quote floats to the right, and the paragraph text wraps around it as it should.</aside>
+  <p>Layout here is LibWeb's: block and inline formatting, floats, margins collapsing between paragraphs, line boxes broken by the shaper with the fonts the host handed the engine. Painting is Skia's CPU rasterizer inside the same wasm module, which hands finished frames to the carapace as ImageBitmaps. Nothing on this page runs JavaScript, and nothing needs to.</p>
+  <p class="mono">monospace: 0123456789 abcdef — the engine's default fixed-width face.</p>
+</main>
+<footer><p>¹ Phase 1: static pages only.</p></footer>
+</body>
+</html>

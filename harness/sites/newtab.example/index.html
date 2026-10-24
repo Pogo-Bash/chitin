@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>newtab shell</title></head>
+<body>
+<!-- DayDream's shape (docs/daydream.md): an app shell whose new-tab page is a same-site iframe at /app/internal/newtab; both
+     import the same module chunks; the frame defines a global slot on `self` from a classic script and builds its shortcut
+     tiles from a module (chunks/vendor.js). M6 test site (docs/architecture.md "Frame realms"). -->
+<div id="tabs">tab: New Tab</div>
+<script type="module" src="chunks/app.js"></script>
+<iframe id="tab" src="/app/internal/newtab/" style="width: 380px; height: 220px; border: 0"></iframe>
+</body></html>

@@ -1,0 +1,12 @@
+<!doctype html>
+<title>fetch</title>
+<script>
+const run = async () => {
+    const out = [];
+    for (const t of ['throw', 'reject', 'notresponse', 'none'])
+        out.push(t + '=' + await fetch('data.txt?t=' + t).then((r) => r.text().then((x) => r.status + ':' + x.trim()), (e) => e.name + ':' + e.message));
+    document.title = 'done:' + out.join('|');
+};
+navigator.serviceWorker.addEventListener('controllerchange', run);
+navigator.serviceWorker.register('fetch-sw.js').catch((e) => { document.title = 'error:' + e; });
+</script>

@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 19:47:15 -0500
+Subject: [PATCH 54/56] LibWeb: IdleDeadline.timeRemaining() puts the deadline
+ on the global's clock
+
+computeDeadline answers on the shared clock and now is relative to the time origin, so timeRemaining() was the time origin plus up to 50 ms.
+---
+ Libraries/LibWeb/RequestIdleCallback/IdleDeadline.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/Libraries/LibWeb/RequestIdleCallback/IdleDeadline.cpp b/Libraries/LibWeb/RequestIdleCallback/IdleDeadline.cpp
+index de4614a29f..f6f37f9664 100644
+--- a/Libraries/LibWeb/RequestIdleCallback/IdleDeadline.cpp
++++ b/Libraries/LibWeb/RequestIdleCallback/IdleDeadline.cpp
+@@ -38,7 +38,10 @@ double IdleDeadline::time_remaining() const
+     // 1. Let now be a DOMHighResTimeStamp representing current high resolution time in milliseconds.
+     auto now = HighResolutionTime::current_high_resolution_time(HTML::current_global_object());
+     // 2. Let deadline be the result of calling IdleDeadline's get deadline time algorithm.
+-    auto deadline = event_loop.compute_deadline();
++    // NB: computeDeadline answers on the shared clock (the last idle period's start is the unsafe shared current time) and now is
++    //     relative to the global's time origin: put the deadline on now's clock, or timeRemaining() is the time origin plus up
++    //     to 50 ms (Chrome never answers more than 50).
++    auto deadline = HighResolutionTime::relative_high_resolution_time(event_loop.compute_deadline(), HTML::current_global_object());
+     // 3. Let timeRemaining be deadline - now.
+     auto time_remaining = deadline - now;
+     // 4. If timeRemaining is negative, set it to 0.
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,5 @@
+<!doctype html><meta charset="utf-8"><title>currentScript, frames and modules</title>
+<script id="first" src="m.js"></script>
+<iframe src="child.html"></iframe>
+<script type="module">window.seen.push('module:' + document.currentScript);</script>
+<script type="module" src="m2.js"></script>

@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 13:27:13 -0500
+Subject: [PATCH 04/23] AK: f16 as a storage class on WebAssembly; CSPRNG
+ through getentropy on Emscripten
+
+---
+ AK/NumericLimits.h | 14 ++++++++++++++
+ AK/Random.cpp      | 16 ++++++++++++++++
+ AK/Types.h         | 20 ++++++++++++++++++++
+ 3 files changed, 50 insertions(+)
+
+diff --git a/AK/NumericLimits.h b/AK/NumericLimits.h
+index c36f05e1e8..680403645e 100644
+--- a/AK/NumericLimits.h
++++ b/AK/NumericLimits.h
+@@ -143,6 +143,19 @@ struct NumericLimits<long double> {
+     static constexpr size_t digits() { return __LDBL_MANT_DIG__; }
+ };
+ 
++#ifdef AK_F16_IS_STORAGE_ONLY
++// The binary16 limits, spelled out where the compiler does not predefine __FLT16_*.
++template<>
++struct NumericLimits<f16> {
++    static constexpr f16 lowest() { return -65504.0f; }
++    static constexpr f16 min_normal() { return 0x1p-14f; }
++    static constexpr f16 min_denormal() { return 0x1p-24f; }
++    static constexpr f16 max() { return 65504.0f; }
++    static constexpr f16 epsilon() { return 0x1p-10f; }
++    static constexpr bool is_signed() { return true; }
++    static constexpr size_t digits() { return 11; }
++};
++#else
+ template<>
+ struct NumericLimits<f16> {
+     static constexpr f16 lowest() { return -__FLT16_MAX__; }
+@@ -153,6 +166,7 @@ struct NumericLimits<f16> {
+     static constexpr bool is_signed() { return true; }
+     static constexpr size_t digits() { return __FLT16_MANT_DIG__; }
+ };
++#endif
+ 
+ }
+ 
+diff --git a/AK/Random.cpp b/AK/Random.cpp
+index 1a9c352be2..19ec6f3815 100644
+--- a/AK/Random.cpp
++++ b/AK/Random.cpp
+@@ -20,6 +20,11 @@
+ #    include <AK/Windows.h>
+ #endif
+ 
++#if defined(AK_OS_EMSCRIPTEN)
++#    include <errno.h>
++#    include <unistd.h>
++#endif
++
+ static inline ErrorOr<void> csprng(void* const buf, size_t size)
+ {
+     // We shouldn't use OpenSSL's RAND_bytes function here, because we want to avoid adding dependencies to AK.
+@@ -42,6 +47,17 @@ static inline ErrorOr<void> csprng(void* const buf, size_t size)
+             out += ret;
+         }
+     }
++#elif defined(AK_OS_EMSCRIPTEN)
++    // Emscripten's getentropy() reads crypto.getRandomValues through the embedder's import, at most
++    // 256 bytes per call.
++    unsigned char* out = (unsigned char*)buf;
++    while (size > 0u) {
++        size_t chunk = size < 256u ? size : 256u;
++        if (getentropy(out, chunk) != 0) [[unlikely]]
++            return Error::from_errno(errno);
++        size -= chunk;
++        out += chunk;
++    }
+ #elif defined(AK_OS_WINDOWS)
+     // Documented to always return TRUE
+     g_system.ProcessPrng((PBYTE)buf, size);
+diff --git a/AK/Types.h b/AK/Types.h
+index 104679f17e..e02a4214ce 100644
+--- a/AK/Types.h
++++ b/AK/Types.h
+@@ -17,8 +17,28 @@ using i32 = __INT32_TYPE__;
+ using i16 = __INT16_TYPE__;
+ using i8 = __INT8_TYPE__;
+ 
++#if defined(__wasm__)
++// clang has no _Float16 for WebAssembly. __fp16 is the same IEEE binary16 format, but only as a
++// storage type: no parameters or return values of that type. f16 is therefore a small class that
++// stores an __fp16 and converts through float, as _Float16 arithmetic would.
++struct f16 {
++    __fp16 m_value;
++    constexpr f16() = default;
++    template<typename T>
++    requires(__is_arithmetic(T))
++    constexpr f16(T value)
++        : m_value(static_cast<float>(value))
++    {
++    }
++    constexpr operator float() const { return m_value; }
++    constexpr f16 operator-() const { return f16(-static_cast<float>(m_value)); }
++};
++static_assert(sizeof(f16) == 2);
++#    define AK_F16_IS_STORAGE_ONLY 1
++#else
+ using f16 = _Float16;
+ static_assert(__FLT16_MANT_DIG__ == 11 && __FLT16_MAX_EXP__ == 16);
++#endif
+ 
+ using f32 = float;
+ static_assert(__FLT_MANT_DIG__ == 24 && __FLT_MAX_EXP__ == 128);

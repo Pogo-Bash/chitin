@@ -1,0 +1,1 @@
+{ "classic": ["app/classic.js"], "modules": ["app/main.mjs"] }

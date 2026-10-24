@@ -1,0 +1,179 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo@example.invalid>
+Date: Wed, 21 Oct 2026 23:00:16 -0500
+Subject: [PATCH 24/24] LibWeb: on Emscripten an IndexedDB transaction stays
+ active until the embedder's microtasks have run
+
+The embedder's engine drains the page's promise jobs when its call stack unwinds, after the engine's task. An awaited request's continuation (await store.get(k); store.put(v)) therefore ran after the success event's dispatch had made the transaction inactive: TransactionInactiveError on every chained request. Step 8 of fire a success/error event and the microtask checkpoint's cleanup wait for the embedder (ganglion_host_microtask_turn_end_request, run_deferred_after_embedder_microtasks).
+---
+ .../LibWeb/IndexedDB/Internal/Algorithms.cpp  | 82 ++++++++++++++++++-
+ .../LibWeb/IndexedDB/Internal/Algorithms.h    |  4 +
+ 2 files changed, 82 insertions(+), 4 deletions(-)
+
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp b/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
+index 7fb596242f..6f5415d3eb 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
++++ b/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
+@@ -50,6 +50,47 @@
+ #include <LibWeb/WebIDL/Buffers.h>
+ #include <LibWebCommon/Infra/Strings.h>
+ 
++#ifdef AK_OS_EMSCRIPTEN
++extern "C" void ganglion_host_microtask_turn_end_request(void);
++#endif
++
++namespace Web::IndexedDB {
++
++#ifdef AK_OS_EMSCRIPTEN
++// The page's promise jobs run in the embedder's JavaScript engine, which drains them when its call stack unwinds, after the
++// engine's task. A transaction must stay active for the continuation of an awaited request (`await store.get(k); store.put(v)`
++// issues its next request from a promise job that runs after the success event's dispatch returned), so what the spec does
++// right after an event dispatch or at the microtask checkpoint's cleanup waits until the embedder says its microtasks have
++// run (run_deferred_after_embedder_microtasks, from ganglion_microtask_turn_end).
++static Vector<GC::Root<GC::Function<void()>>>& deferred_steps()
++{
++    static Vector<GC::Root<GC::Function<void()>>> steps;
++    return steps;
++}
++
++void run_deferred_after_embedder_microtasks()
++{
++    auto steps = move(deferred_steps());
++    for (auto& step : steps)
++        step->function()();
++}
++#endif
++
++static void run_when_the_embedders_microtasks_have_run(GC::Heap& heap, Function<void()> steps)
++{
++#ifdef AK_OS_EMSCRIPTEN
++    bool first = deferred_steps().is_empty();
++    deferred_steps().append(GC::make_root(GC::create_function(heap, move(steps))));
++    if (first)
++        ganglion_host_microtask_turn_end_request();
++#else
++    (void)heap;
++    steps();
++#endif
++}
++
++}
++
+ namespace Web::IndexedDB {
+ 
+ static auto current_high_resolution_time(HTML::WindowOrWorkerGlobalScopeMixin& global_scope)
+@@ -1224,6 +1265,7 @@ void fire_an_error_event(JS::Realm& realm, GC::Ref<IDBRequest> request)
+     DOM::EventDispatcher::dispatch(request, *event, false, legacy_output_did_listeners_throw_flag);
+ 
+     // 8. If transaction’s state is active, then:
++    auto finish = [realm = GC::Ref { realm }, request, transaction, event, legacy_output_did_listeners_throw_flag]() {
+     if (transaction->state() == IDBTransaction::TransactionState::Active) {
+         // 1. Set transaction’s state to inactive.
+         transaction->set_state(IDBTransaction::TransactionState::Inactive);
+@@ -1243,8 +1285,10 @@ void fire_an_error_event(JS::Realm& realm, GC::Ref<IDBRequest> request)
+ 
+         // 4. If transaction’s request list is empty, then run commit a transaction with transaction.
+         if (transaction->request_list().is_empty())
+-            commit_a_transaction(realm, *transaction);
++            commit_a_transaction(*realm, *transaction);
+     }
++    };
++    run_when_the_embedders_microtasks_have_run(realm.heap(), move(finish));
+ }
+ 
+ // https://w3c.github.io/IndexedDB/#fire-a-success-event
+@@ -1272,6 +1316,7 @@ void fire_a_success_event(JS::Realm& realm, GC::Ref<IDBRequest> request)
+     DOM::EventDispatcher::dispatch(request, *event, false, legacy_output_did_listeners_throw_flag);
+ 
+     // 8. If transaction’s state is active, then:
++    auto finish = [realm = GC::Ref { realm }, transaction, legacy_output_did_listeners_throw_flag]() {
+     if (transaction->state() == IDBTransaction::TransactionState::Active) {
+         // 1. Set transaction’s state to inactive.
+         transaction->set_state(IDBTransaction::TransactionState::Inactive);
+@@ -1284,8 +1329,10 @@ void fire_a_success_event(JS::Realm& realm, GC::Ref<IDBRequest> request)
+ 
+         // 3. If transaction’s request list is empty, then run commit a transaction with transaction.
+         if (transaction->request_list().is_empty())
+-            commit_a_transaction(realm, *transaction);
++            commit_a_transaction(*realm, *transaction);
+     }
++    };
++    run_when_the_embedders_microtasks_have_run(realm.heap(), move(finish));
+ }
+ 
+ // https://w3c.github.io/IndexedDB/#asynchronously-execute-a-request
+@@ -2275,7 +2322,7 @@ void queue_a_database_task(GC::Ref<GC::Function<void()>> steps)
+ }
+ 
+ // https://w3c.github.io/IndexedDB/#cleanup-indexed-database-transactions
+-bool cleanup_indexed_database_transactions(GC::Ref<HTML::EventLoop> event_loop)
++static bool cleanup_indexed_database_transactions_now(GC::Ref<HTML::EventLoop> event_loop)
+ {
+     bool has_matching_event_loop = false;
+ 
+@@ -2287,7 +2334,13 @@ bool cleanup_indexed_database_transactions(GC::Ref<HTML::EventLoop> event_loop)
+                     has_matching_event_loop = true;
+ 
+                     // 1. Set transaction’s state to inactive.
++#ifdef AK_OS_EMSCRIPTEN
++                    // Run late (see run_when_the_embedders_microtasks_have_run): an event's own cleanup may have made it inactive already.
++                    bool was_active = transaction->state() == IDBTransaction::TransactionState::Active;
++#else
++                    constexpr bool was_active = true;
+                     VERIFY(transaction->state() == IDBTransaction::TransactionState::Active);
++#endif
+                     transaction->set_state(IDBTransaction::TransactionState::Inactive);
+ 
+                     // https://w3c.github.io/IndexedDB/#transaction-commit
+@@ -2298,7 +2351,7 @@ bool cleanup_indexed_database_transactions(GC::Ref<HTML::EventLoop> event_loop)
+                     // FIXME: We skip committing if the transaction is waiting for prior writes.
+                     //        Update the steps here text if this becomes explicit in the spec:
+                     //         https://github.com/w3c/IndexedDB/issues/489#issuecomment-3994928473
+-                    if (!transaction->request_list().execution_is_blocked() && transaction->request_list().is_empty())
++                    if (was_active && !transaction->request_list().execution_is_blocked() && transaction->request_list().is_empty())
+                         commit_a_transaction(HTML::relevant_realm(transaction->relevant_global_object()), transaction);
+ 
+                     // 2. Clear transaction’s cleanup event loop.
+@@ -2313,6 +2366,27 @@ bool cleanup_indexed_database_transactions(GC::Ref<HTML::EventLoop> event_loop)
+     return has_matching_event_loop;
+ }
+ 
++bool cleanup_indexed_database_transactions(GC::Ref<HTML::EventLoop> event_loop)
++{
++#ifdef AK_OS_EMSCRIPTEN
++    // The transactions stay active for the embedder's microtasks that follow this checkpoint.
++    bool any = false;
++    Database::for_each_database([&any, event_loop](Database& database) {
++        for (auto const& connection : database.associated_connections_as_root_vector()) {
++            for (auto const& transaction : connection->transactions()) {
++                if (transaction->cleanup_event_loop() == event_loop)
++                    any = true;
++            }
++        }
++    });
++    if (any)
++        run_when_the_embedders_microtasks_have_run(event_loop->heap(), [event_loop] { cleanup_indexed_database_transactions_now(event_loop); });
++    return any;
++#else
++    return cleanup_indexed_database_transactions_now(event_loop);
++#endif
++}
++
+ // https://pr-preview.s3.amazonaws.com/w3c/IndexedDB/pull/461.html#potentially-valid-key-range
+ bool is_a_potentially_valid_key_range(JS::Realm& realm, JS::Value value)
+ {
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Algorithms.h b/Libraries/LibWeb/IndexedDB/Internal/Algorithms.h
+index 8351b6ae6f..23b1aef26b 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/Algorithms.h
++++ b/Libraries/LibWeb/IndexedDB/Internal/Algorithms.h
+@@ -72,6 +72,10 @@ WebIDL::ExceptionOr<GC::Ref<JS::Array>> retrieve_multiple_referenced_values_from
+ GC::Ref<JS::Array> retrieve_multiple_values_from_an_index(JS::Realm&, GC::Ref<Index>, GC::Ref<IDBKeyRange>, Optional<WebIDL::UnsignedLong>);
+ void queue_a_database_task(GC::Ref<GC::Function<void()>>);
+ bool cleanup_indexed_database_transactions(GC::Ref<HTML::EventLoop>);
++#ifdef AK_OS_EMSCRIPTEN
++// Emscripten: the embedder's microtasks have run; do what was held back for them (see Algorithms.cpp).
++void run_deferred_after_embedder_microtasks();
++#endif
+ bool is_a_potentially_valid_key_range(JS::Realm&, JS::Value);
+ WebIDL::ExceptionOr<GC::Ref<JS::Array>> retrieve_multiple_items_from_an_object_store(JS::Realm&, GC::Ref<ObjectStore>, GC::Ref<IDBKeyRange>, RecordKind, CursorDirection, Optional<WebIDL::UnsignedLong>);
+ WebIDL::ExceptionOr<GC::Ref<JS::Array>> retrieve_multiple_items_from_an_index(JS::Realm&, GC::Ref<Index>, GC::Ref<IDBKeyRange>, RecordKind, CursorDirection, Optional<WebIDL::UnsignedLong>);

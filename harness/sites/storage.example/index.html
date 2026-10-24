@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>storage</title></head>
+<body>
+<script>
+var results = {};
+results.seen = localStorage.getItem('restored');
+results.length = localStorage.length;
+results.n = (+localStorage.getItem('n') || 0) + 1;
+localStorage.setItem('n', String(results.n));
+localStorage.setItem('k', 'v');
+localStorage.removeItem('k');
+sessionStorage.setItem('session', 'not persisted');
+</script>
+</body>
+</html>

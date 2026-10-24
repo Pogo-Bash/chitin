@@ -1,0 +1,10 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<title>rel</title>
+<script>window.ran = [];</script>
+<script type="importmap">{ "imports": { "../entry.mjs?x=A": "../new.mjs?x=B" } }</script>
+<script>
+import('../entry.mjs?x=A').then((m) => { ran.push('rel: ' + m.default); document.title = 'done'; }, (e) => { ran.push('rel threw ' + e.message); document.title = 'done'; });
+</script>

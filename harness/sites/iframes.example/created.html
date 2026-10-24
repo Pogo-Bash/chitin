@@ -1,0 +1,12 @@
+<!doctype html>
+<html><head><title>iframe created by script</title></head>
+<body>
+<script>
+var results = { events: [] };
+window.addEventListener('load', function () { results.events.push('window load'); });
+var f = document.createElement('iframe');
+f.id = 'f';
+f.addEventListener('load', function () { results.events.push('frame load'); });
+document.body.appendChild(f);
+</script>
+</body></html>

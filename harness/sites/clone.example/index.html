@@ -1,0 +1,39 @@
+<!doctype html>
+<title>structured clone</title>
+<script>
+// structuredClone and postMessage over the HTML-serializable types (tests/structuredclone.test.mjs; chrome-test group clone).
+window.seen = [];
+const put = (k, v) => seen.push(k + '=' + JSON.stringify(v));
+const tag = (v) => Object.prototype.toString.call(v).slice(8, -1);
+const cases = () => {
+    const b = new ArrayBuffer(8);
+    const o = { self: null };
+    o.self = o;
+    const s = new Set([1]);
+    return {
+        map: new Map([[1, { a: [1, { b: { c: { d: 2 } } }] }], ['k', new Set([1, 2])]]),
+        re: /a+b/gi, bools: [new Boolean(false), new Number(3), new String('s'), Object(5n), 7n],
+        err: new RangeError('bad'), custom: Object.assign(new Error('x'), { name: 'Custom' }), plain: new Error(),
+        views: { d: new DataView(b, 2, 3), u: new Uint8Array(b, 4, 2), f: new Float64Array([1.5]) },
+        cyc: o, shared: { a: s, x: [1, 2], b: s }, holes: [, 1, , 2], date: new Date(5),
+    };
+};
+const describe = (c) => ({
+    map: [tag(c.map), c.map.size, JSON.stringify(c.map.get(1)), tag(c.map.get('k')), [...c.map.get('k')]],
+    re: [tag(c.re), c.re.source, c.re.flags],
+    bools: c.bools.map((v) => typeof v + ':' + tag(v) + ':' + String(v.valueOf())),
+    err: [c.err instanceof RangeError, c.err.name, c.err.message, typeof c.err.stack],
+    custom: [c.custom.name, c.custom.message], plain: [c.plain.name, Object.hasOwn(c.plain, 'message')],
+    views: [tag(c.views.d), c.views.d.byteOffset, c.views.d.byteLength, c.views.u.byteOffset, c.views.u.length, c.views.d.buffer === c.views.u.buffer, c.views.d.buffer.byteLength, c.views.f[0]],
+    cyc: c.cyc.self === c.cyc, shared: c.shared.a === c.shared.b, holes: [c.holes.length, 0 in c.holes, 1 in c.holes], date: c.date.getTime(),
+});
+try { put('clone', describe(structuredClone(cases()))); } catch (e) { put('clone', 'threw ' + e.name + ': ' + e.message); }
+for (const [name, bad] of [['fn', () => ({ f() {} })], ['weak', () => new WeakMap()], ['sym', () => Symbol('x')], ['node', () => document.body]]) {
+    try { structuredClone(bad()); put('refuse-' + name, 'cloned'); } catch (e) { put('refuse-' + name, e.name); }
+}
+history.replaceState({ a: { b: { c: { d: new Map([[1, 2]]) } } } }, '');
+put('state', [history.state === history.state, history.state.a.b.c.d.get(1)]);
+const ch = new MessageChannel();
+ch.port2.onmessage = (e) => { put('message', [e.data === e.data, describe(e.data)]); put('done', 1); };
+try { ch.port1.postMessage(cases()); } catch (e) { put('message', 'threw ' + e.name + ': ' + e.message); put('done', 1); }
+</script>

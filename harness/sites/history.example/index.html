@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>History</title>
+<p id="out">ready</p>
+<script>
+// Records what the page sees: popstate (with its state) and hashchange, in order.
+window.events = [];
+addEventListener('popstate', (e) => events.push('popstate:' + location.pathname + location.search + location.hash + ':' + JSON.stringify(e.state)));
+addEventListener('hashchange', () => events.push('hashchange:' + location.hash));
+</script>

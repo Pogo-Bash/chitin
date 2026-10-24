@@ -1,0 +1,31 @@
+<!doctype html><!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+<meta charset=utf-8><title>coi spawn</title>
+<p id=s>running</p>
+<script>
+// Worker start-up: 24 Workers made one after another (each once the last said it is up), then 24 at once; the time from
+// `new Worker` to its first message, and to the answer to a first message sent right away.
+const one = () => new Promise((resolve) => {
+    const t0 = performance.now();
+    const w = new Worker('spawn-worker.js');
+    let up = 0;
+    w.onmessage = (e) => {
+        if (e.data.up) { up = performance.now() - t0; return; }
+        resolve({ up, echo: performance.now() - t0 });
+        w.terminate();
+    };
+    w.postMessage({ n: 1 });
+});
+(async () => {
+    const seq = [];
+    for (let i = 0; i < 24; i++)
+        seq.push(await one());
+    const t0 = performance.now();
+    const par = await Promise.all(Array.from({ length: 24 }, one));
+    const all = performance.now() - t0;
+    const med = (a) => { const s = a.slice().sort((x, y) => x - y); return Math.round(s[s.length >> 1]); };
+    console.log('spawn sequential up ' + med(seq.map((x) => x.up)) + ' ms, echo ' + med(seq.map((x) => x.echo)) + ' ms; 24 at once ' + Math.round(all) + ' ms');
+    window.timing = { seqUp: med(seq.map((x) => x.up)), seqEcho: med(seq.map((x) => x.echo)), parallel: Math.round(all) };
+    window.result = { sequential: seq.length, parallel: par.length, ordered: seq.every((x) => x.up > 0 && x.up <= x.echo) };
+    document.getElementById('s').textContent = 'done';
+})();
+</script>

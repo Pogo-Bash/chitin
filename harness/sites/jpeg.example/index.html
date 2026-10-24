@@ -1,0 +1,11 @@
+<!doctype html><meta charset="utf-8"><title>jpeg</title>
+<!-- Image formats decoded as Chrome decodes them (YouTube's thumbnails are JPEG; a failed load there shows its grey placeholder). -->
+<img id="j" src="thumb.jpg"><img id="p">
+<script>
+window.log = [];
+const note = (img, what) => window.log.push(img.id + ':' + what + ':' + img.naturalWidth);
+for (const img of document.images) { img.onload = () => note(img, 'load'); img.onerror = () => note(img, 'error'); }
+// The same JPEG as a progressive one and from a data: URL, to see whether the type or the transport matters.
+fetch('thumb.jpg').then((r) => r.blob()).then((b) => new Promise((res) => { const f = new FileReader(); f.onload = () => res(f.result); f.readAsDataURL(b); })).then((u) => { document.getElementById('p').src = u; });
+setTimeout(() => { document.title = 'jpeg done'; }, 2000);
+</script>

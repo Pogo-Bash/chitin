@@ -1,0 +1,25 @@
+<!doctype html>
+<title>bc</title>
+<script>
+const log = [];
+const done = () => { if (log.length >= 4) document.title = 'done:' + log.sort().join('|'); };
+const bc = new BroadcastChannel('anura');
+bc.onmessage = (e) => { log.push('page got ' + e.data.from + ' ' + e.data.got + ' ' + (e.data.origin === location.origin)); done(); };
+const w = new Worker('bc-worker.js');
+w.onmessage = (e) => {
+    if (e.data === 'worker-ready') {
+        navigator.serviceWorker.addEventListener('message', (m) => {
+            log.push(m.data);
+            bc.postMessage({ from: 'page', n: 7 });
+            const closed = new BroadcastChannel('anura');
+            closed.close();
+            try { closed.postMessage(1); } catch (err) { log.push('closed ' + err.name); }
+            done();
+        });
+        navigator.serviceWorker.register('bc-sw.js').then(() => navigator.serviceWorker.ready).then((reg) => reg.active.postMessage('hi'));
+    } else {
+        log.push(e.data);
+        done();
+    }
+};
+</script>

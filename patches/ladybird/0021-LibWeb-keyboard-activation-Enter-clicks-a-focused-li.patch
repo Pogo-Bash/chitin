@@ -1,0 +1,108 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Swap <swap@localhost>
+Date: Wed, 21 Oct 2026 14:49:37 -0500
+Subject: [PATCH 21/23] LibWeb: keyboard activation: Enter clicks a focused
+ link, button, summary or button-like input; Space clicks buttons, summaries,
+ checkboxes and radios on key release (nothing activated from the keyboard
+ before, only swallowed the key: the FIXME in handle_keydown)
+
+---
+ Libraries/LibWeb/Page/EventHandler.cpp | 58 +++++++++++++++++++++++++-
+ Libraries/LibWeb/Page/EventHandler.h   |  1 +
+ 2 files changed, 58 insertions(+), 1 deletion(-)
+
+diff --git a/Libraries/LibWeb/Page/EventHandler.cpp b/Libraries/LibWeb/Page/EventHandler.cpp
+index 67077be6b2..cf3069922a 100644
+--- a/Libraries/LibWeb/Page/EventHandler.cpp
++++ b/Libraries/LibWeb/Page/EventHandler.cpp
+@@ -1546,6 +1546,37 @@ static bool focused_area_activates_on_space(DOM::Node const* focused_area)
+         || is<HTML::HTMLSummaryElement>(focused_area);
+ }
+ 
++// Keyboard activation (HTML "activation behavior" through the keyboard): Enter clicks a link, button, summary or
++// button-like input; Space clicks, on key release, a button, summary or any input that is not a text control. Text
++// controls and the rest keep their own handling. The click is a synthetic one, so it runs the element's activation
++// behavior and fires click/input/change like a pointer press.
++static bool focused_area_activates_on_enter(DOM::Node const* node)
++{
++    if (auto const* anchor = as_if<HTML::HTMLAnchorElement>(node))
++        return anchor->has_attribute(HTML::AttributeNames::href);
++    if (is<HTML::HTMLButtonElement>(node) || is<HTML::HTMLSummaryElement>(node))
++        return true;
++    if (auto const* input = as_if<HTML::HTMLInputElement>(node)) {
++        using State = HTML::HTMLInputElement::TypeAttributeState;
++        auto state = input->type_state();
++        return state == State::SubmitButton || state == State::ResetButton || state == State::Button || state == State::ImageButton;
++    }
++    return false;
++}
++
++static bool focused_area_activates_on_space_release(DOM::Node const* node)
++{
++    if (is<HTML::HTMLButtonElement>(node) || is<HTML::HTMLSummaryElement>(node))
++        return true;
++    if (auto const* input = as_if<HTML::HTMLInputElement>(node)) {
++        using State = HTML::HTMLInputElement::TypeAttributeState;
++        auto state = input->type_state();
++        return state == State::SubmitButton || state == State::ResetButton || state == State::Button || state == State::ImageButton
++            || state == State::Checkbox || state == State::RadioButton;
++    }
++    return false;
++}
++
+ EventHandler::KeyboardScrollSnapshot EventHandler::keyboard_scroll_snapshot() const
+ {
+     auto document = m_navigable->active_document();
+@@ -1643,6 +1674,18 @@ EventResult EventHandler::handle_keydown(UIEvents::KeyCode key, u32 modifiers, u
+ 
+     GC::Ref<DOM::Document> document = *m_navigable->active_document();
+ 
++    // Keyboard activation (see focused_area_activates_on_enter). Reached only when no keydown/keypress listener
++    // cancelled the event.
++    if (!(modifiers & ~UIEvents::KeyModifier::Mod_Keypad)) {
++        auto focused = document->focused_area();
++        if (key == UIEvents::KeyCode::Key_Return && !repeat && focused_area_activates_on_enter(focused.ptr())) {
++            as<HTML::HTMLElement>(*focused).click();
++            return EventResult::Handled;
++        }
++        if (key == UIEvents::KeyCode::Key_Space && focused_area_activates_on_space_release(focused.ptr()))
++            m_space_activation_armed = true;
++    }
++
+     if (!(modifiers & UIEvents::KeyModifier::Mod_Ctrl)) {
+         if (key == UIEvents::KeyCode::Key_Tab) {
+             return modifiers & UIEvents::KeyModifier::Mod_Shift ? focus_previous_element() : focus_next_element();
+@@ -1977,7 +2020,20 @@ EventResult EventHandler::handle_keyup(UIEvents::KeyCode key, u32 modifiers, u32
+         m_scroll_key_gesture_hold = nullptr;
+     }
+ 
+-    return fire_keyboard_event(UIEvents::EventNames::keyup, m_navigable, key, modifiers, code_point, false);
++    auto result = fire_keyboard_event(UIEvents::EventNames::keyup, m_navigable, key, modifiers, code_point, false);
++    if (key == UIEvents::KeyCode::Key_Space && m_space_activation_armed) {
++        m_space_activation_armed = false;
++        // The click follows the release unless the keyup was cancelled, and only if focus is still on an activatable.
++        if (result == EventResult::Accepted)
++            if (auto document = m_navigable->active_document()) {
++                auto focused = document->focused_area();
++                if (focused_area_activates_on_space_release(focused.ptr())) {
++                    as<HTML::HTMLElement>(*focused).click();
++                    return EventResult::Handled;
++                }
++            }
++    }
++    return result;
+ }
+ 
+ EventResult EventHandler::handle_drag_and_drop_event(DragEvent::Type type, CSSPixelPoint visual_viewport_position, CSSPixelPoint screen_position, u32 button, u32 buttons, u32 modifiers, Vector<HTML::SelectedFile> files)
+diff --git a/Libraries/LibWeb/Page/EventHandler.h b/Libraries/LibWeb/Page/EventHandler.h
+index 6dca3bac0b..517d194308 100644
+--- a/Libraries/LibWeb/Page/EventHandler.h
++++ b/Libraries/LibWeb/Page/EventHandler.h
+@@ -259,6 +259,7 @@ private:
+     OwnPtr<MiddleButtonScrollHandler> m_middle_button_scroll_handler;
+     NonnullOwnPtr<DragAndDropEventHandler> m_drag_and_drop_event_handler;
+ 
++    bool m_space_activation_armed { false }; // a Space keydown reached an activatable element: its keyup clicks
+     Optional<UIEvents::KeyCode> m_held_scroll_key;
+     OwnPtr<HTML::UserScrollGestureHold> m_scroll_key_gesture_hold;
+ 

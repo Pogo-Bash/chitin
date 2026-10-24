@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 13:25:53 -0500
+Subject: [PATCH 03/23] LibJS: let an embedder supply the runtime behind the
+ embedding ABI
+
+---
+ Libraries/LibJS/CMakeLists.txt | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/Libraries/LibJS/CMakeLists.txt b/Libraries/LibJS/CMakeLists.txt
+index 6f3ff20040..7740fbd9ef 100644
+--- a/Libraries/LibJS/CMakeLists.txt
++++ b/Libraries/LibJS/CMakeLists.txt
+@@ -2,7 +2,11 @@
+ # It links the runtime with the runtime's symbols hidden, so it exports only its own JS_API functions, and every process
+ # that links LibJS has exactly one copy of the runtime.
+ 
+-add_subdirectory(Rust)
++# An embedder may supply its own runtime behind the embedding ABI by defining a libjs_rust target (with
++# LibJS/Embedding/ABI.h and Layout.h on its include path) before LibJS is configured.
++if (NOT TARGET libjs_rust)
++    add_subdirectory(Rust)
++endif()
+ 
+ # The optimizing JIT's compiler, a pure Rust crate that only works on plain data. Its unit tests run without the rest of
+ # LibJS.

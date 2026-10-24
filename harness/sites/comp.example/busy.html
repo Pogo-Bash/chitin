@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>a long article whose script blocks the engine</title>
+<style>body { margin: 0 auto; max-width: 720px; padding: 24px; font: 17px/1.55 serif; color: #222; background: #fdfcf8; } p { margin: 0 0 14px; }</style>
+<script src="lorem.js"></script>
+<h1>Busy</h1>
+<main id="m"></main>
+<script>
+fill(document.getElementById('m'), 200);
+// A task of 120 ms every 200 ms: what a heavy site's script does to the main thread.
+setInterval(() => { const end = performance.now() + 120; while (performance.now() < end) {} }, 200);
+</script>

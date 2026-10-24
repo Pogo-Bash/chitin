@@ -1,0 +1,209 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>streams</title></head>
+<body>
+<h1>Transferable streams through a page service worker</h1>
+<div id="state">start</div>
+<script>
+// tests/pagesw-streams.test.mjs and the chrome group: every message path a page has to its worker carries streams.
+const sw = navigator.serviceWorker;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const bytes = (...n) => new Uint8Array(n);
+const pageState = { cancelled: [], written: [], aborted: [] };
+// endless: after the chunks it goes on with empty ones, so it is still open when the worker cancels it.
+function pageStream(chunks, name, endless) {
+    let i = 0;
+    return new ReadableStream({ pull(c) { if (i < chunks.length) c.enqueue(chunks[i++]); else if (endless) c.enqueue(bytes()); else c.close(); }, cancel(r) { pageState.cancelled.push(name + ':' + r); } });
+}
+async function drain(stream) {
+    const reader = stream.getReader();
+    const chunks = [];
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done)
+            return chunks;
+        chunks.push(Array.from(value));
+    }
+}
+const flat = (chunks) => chunks.flat();
+// Bytes until at least n have arrived (not waiting for more), then until the end.
+async function readAtLeast(reader, n) {
+    const got = [];
+    while (got.length < n) {
+        const { done, value } = await reader.read();
+        if (done)
+            break;
+        got.push(...value);
+    }
+    return got;
+}
+async function readToEnd(reader) {
+    const got = [];
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done)
+            return got;
+        got.push(...value);
+    }
+}
+// One request over a fresh channel: the reply comes on port1.
+function ask(message, transfer = []) {
+    const channel = new MessageChannel();
+    const reply = new Promise((resolve) => { channel.port1.onmessage = (e) => resolve(e.data); });
+    sw.controller.postMessage(message, [channel.port2, ...transfer]);
+    return reply;
+}
+// One request answered on the page's own message event (no port).
+function askClient(message, transfer = []) {
+    return new Promise((resolve) => {
+        const on = (e) => { sw.removeEventListener('message', on); resolve(e.data); };
+        sw.addEventListener('message', on);
+        sw.controller.postMessage(message, transfer);
+    });
+}
+const tests = {
+    // page -> worker, in the message to the controller, replied on a port and on the client
+    async sinkPort() { const s = pageStream([bytes(1, 2), bytes(3)]); return (await ask({ type: 'sink', stream: s }, [s])).chunks; },
+    async sinkClient() { const s = pageStream([bytes(4), bytes(5, 6)]); return (await askClient({ type: 'sink', stream: s }, [s])).chunks; },
+    async sinkLocked() { const s = pageStream([bytes(1)]); s.getReader(); try { sw.controller.postMessage({ stream: s }, [s]); return 'no error'; } catch (e) { return e.name; } },
+    async sinkNotListed() { const s = pageStream([bytes(1)]); try { sw.controller.postMessage({ stream: s }); return 'no error'; } catch (e) { return e.name; } },
+    // The original gives nothing more after the transfer (Chrome: it reads as closed; Chitin: it stays locked)
+    async sinkNeutered() { const s = pageStream([bytes(1)]); await ask({ type: 'sink', stream: s }, [s]); try { return (await s.getReader().read()).done; } catch (e) { return true; } },
+    async sinkCancel() { const s = pageStream([bytes(7), bytes(8)], 'page', true); const r = await ask({ type: 'sink-cancel', stream: s }, [s]); await sleep(100); return [r.first, pageState.cancelled]; },
+    async sinkError() {
+        let c; const s = new ReadableStream({ start(controller) { c = controller; } });
+        const p = ask({ type: 'sink-error', stream: s }, [s]);
+        await sleep(50); c.error(new Error('boom'));
+        return (await p).error;
+    },
+    // worker -> page, on the reply port, on the client, nested
+    async sourcePort() { const r = await ask({ type: 'source-transfer' }); return [r.stream instanceof ReadableStream, await drain(r.stream)]; },
+    async sourceClient() { const r = await askClient({ type: 'source-transfer' }); return [r.stream instanceof ReadableStream, await drain(r.stream)]; },
+    async sourceNested() { const r = await ask({ type: 'source-nested' }); return [r.n, await drain(r.deep.list[0].stream)]; },
+    async sourceCancel() {
+        const r = await ask({ type: 'source-cancel' });
+        const reader = r.stream.getReader();
+        const first = await reader.read();
+        await reader.cancel('stop-from-page');
+        await sleep(100);
+        return [Array.from(first.value), (await ask({ type: 'state' })).cancelled.filter((x) => x.startsWith('cancel:'))];
+    },
+    async echo() { const s = pageStream([bytes(9), bytes(8, 7)]); const r = await ask({ type: 'echo', stream: s }, [s]); return await drain(r.stream); },
+    async writable() {
+        const got = [];
+        let closed = false;
+        const w = new WritableStream({ write(c) { got.push(Array.from(c)); }, close() { closed = true; } });
+        await ask({ type: 'writable', writable: w }, [w]);
+        await sleep(100);
+        return [got, closed];
+    },
+    async writableAbort() {
+        let reason = null;
+        const w = new WritableStream({ abort(r) { reason = String(r); } });
+        await ask({ type: 'writable-abort', writable: w }, [w]);
+        await sleep(100);
+        return reason;
+    },
+    async transform() {
+        const t = new TransformStream({ transform(c, controller) { controller.enqueue(bytes(c[0] * 10)); } });
+        return (await ask({ type: 'transform', transform: t }, [t])).chunks;
+    },
+    // the page's own structured clone: structuredClone, a MessageChannel and window.postMessage move streams without any worker
+    async cloneStream() { const s = pageStream([bytes(1), bytes(2)]); const t = structuredClone(s, { transfer: [s] }); return [t instanceof ReadableStream, t !== s, await drain(t)]; },
+    async cloneNested() { const s = pageStream([bytes(3)]); const t = structuredClone({ a: [{ s }], n: 1 }, { transfer: [s] }); return [t.n, await drain(t.a[0].s)]; },
+    async cloneNotListed() { const s = pageStream([bytes(1)]); try { structuredClone({ s }); return 'no error'; } catch (e) { return e.name; } },
+    async cloneLocked() { const s = pageStream([bytes(1)]); s.getReader(); try { structuredClone(s, { transfer: [s] }); return 'no error'; } catch (e) { return e.name; } },
+    async clonePlainStillWorks() { return structuredClone({ a: [1, { b: new Uint8Array([4]) }] }).a[1].b[0]; },
+    async channelStream() {
+        const s = pageStream([bytes(5), bytes(6, 7)]);
+        const ch = new MessageChannel();
+        const got = new Promise((resolve) => { ch.port1.onmessage = (e) => resolve(e.data); });
+        ch.port2.postMessage({ s, tag: 'x' }, [s]);
+        const m = await got;
+        return [m.tag, await drain(m.s)];
+    },
+    async channelCancel() {
+        const s = pageStream([bytes(1)], 'chan', true);
+        const ch = new MessageChannel();
+        const got = new Promise((resolve) => { ch.port1.onmessage = (e) => resolve(e.data); });
+        ch.port2.postMessage(s, [s]);
+        const t = await got;
+        const reader = t.getReader();
+        await reader.read();
+        await reader.cancel('chan-stop');
+        await sleep(100);
+        return pageState.cancelled.filter((x) => x.startsWith('chan:'));
+    },
+    async selfPost() {
+        const s = pageStream([bytes(8)]);
+        const got = new Promise((resolve) => { const on = (e) => { if (e.data && e.data.selfStream) { removeEventListener('message', on); resolve(e.data); } }; addEventListener('message', on); });
+        postMessage({ selfStream: s }, '*', [s]);
+        return await drain((await got).selfStream);
+    },
+    async cloneWritable() {
+        const got = [];
+        const w = new WritableStream({ write(c) { got.push(c); } });
+        const t = structuredClone(w, { transfer: [w] });
+        const writer = t.getWriter();
+        await writer.write('a'); await writer.write('b'); await writer.close();
+        await sleep(50);
+        return [t instanceof WritableStream, got];
+    },
+    async cloneTransform() {
+        const ts = new TransformStream({ transform(c, controller) { controller.enqueue(c + '!'); } });
+        const t = structuredClone(ts, { transfer: [ts] });
+        const writer = t.writable.getWriter(); const reader = t.readable.getReader();
+        writer.write('x'); writer.write('y'); writer.close();
+        const out = [];
+        for (;;) { const { done, value } = await reader.read(); if (done) break; out.push(value); }
+        return [t instanceof TransformStream, out];
+    },
+    // a streamed fetch response: the page reads the first bytes before the worker has produced the last. Chunk boundaries are
+    // the network layer's (Chrome joins chunks that are ready together), so the bytes are compared, not the chunks.
+    async fetchStreamed() { const r = await fetch('streamed'); return [r.headers.get('x-streamed'), r.status, flat(await drain(r.body))]; },
+    async fetchGated() {
+        const r = await fetch('gated');
+        const reader = r.body.getReader();
+        const got = await readAtLeast(reader, 4);       // the first two chunks come before the gate
+        await ask({ type: 'release' });
+        const rest = await readToEnd(reader);
+        return [got, rest];
+    },
+    async fetchGatedText() {
+        const r = await fetch('gated-text');
+        const reader = r.body.getReader();
+        const dec = new TextDecoder();
+        const first = dec.decode(new Uint8Array(await readAtLeast(reader, 6)));
+        await ask({ type: 'release' });
+        return [first, dec.decode(new Uint8Array(await readToEnd(reader)))];
+    },
+    // not answered by the worker: the network (the test site's data.json), asked for once, and a worker that lets it through
+    async fetchFallback() {
+        const r = await fetch('data.json');
+        const j = await r.json();
+        return [r.status, j.name, (await ask({ type: 'state' })).seen.filter((u) => u.endsWith('/data.json')).length === 1 ? 'nothing' : 'asked twice'];
+    },
+    async fetchCancel() {
+        const r = await fetch('endless');
+        const reader = r.body.getReader();
+        await reader.read();
+        await reader.cancel('stop-fetch');
+        await sleep(150);
+        return (await ask({ type: 'state' })).cancelled.filter((x) => x === 'fetch');
+    },
+};
+window.runTest = async (name) => { try { return { ok: await tests[name]() }; } catch (e) { return { error: String(e && e.stack || e) }; } };
+window.testNames = Object.keys(tests);
+(async () => {
+    try {
+        await sw.register('sw.js', { scope: './' });
+        await sw.ready;
+        if (!sw.controller)
+            await new Promise((resolve) => sw.addEventListener('controllerchange', resolve, { once: true }));
+        document.getElementById('state').textContent = 'controlled';
+        document.title = 'ready';
+    } catch (e) {
+        document.title = 'error: ' + e;
+    }
+})();
+</script>
+</body></html>
