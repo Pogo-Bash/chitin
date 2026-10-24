@@ -20,7 +20,7 @@ export const COMPOSITOR_LIMITS = Object.freeze({
     maxDirty: 1024,
     maxDimension: 16384,
 });
-const KINDS = new Set(['root', 'scroll', 'sticky', 'transform', 'canvas', 'backdrop']);
+const KINDS = new Set(['root', 'scroll', 'sticky', 'transform', 'canvas', 'backdrop', 'video']);
 
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
 const int = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
@@ -34,6 +34,8 @@ export function cleanLayerTree(t) {
     const out = { w: t.w, h: t.h, fill: int(t.fill, 0, 255) ? t.fill : 255, flat: t.flat === true, layers: [], dirty: [] };
     if (Array.isArray(t.media) && t.media.length <= 64 && t.media.every((r) => Array.isArray(r) && r.length === 4 && r.every(num)))
         out.media = t.media.map((r) => r.slice()); // the trace only
+    if (Array.isArray(t.ds) && t.ds.length === 16 && t.ds.every(num))
+        out.ds = t.ds.slice(); // the trace only: why the list's damage was what it was (docs/feel.md)
     const ids = new Set();
     for (const l of t.layers) {
         if (!l || typeof l !== 'object' || !int(l.id, 1, 0x7fffffff) || ids.has(l.id) || !KINDS.has(l.kind) || !int(l.node, 0, 0x7fffffff))
@@ -50,6 +52,13 @@ export function cleanLayerTree(t) {
             layer.clip = l.clip.slice();
         }
         if (l.why !== undefined && int(l.why, 0, 255)) layer.why = l.why;
+        // A video layer (docs/youtube.md "Video on the host"): [host frame, x, y, w, h (layer space), scaling, u0, v0, uw, vh, rounded clip x, y, w, h, radius]; its
+        // frame arrives beside the tiles and is drawn there.
+        if (l.video !== undefined) {
+            if (!Array.isArray(l.video) || l.video.length !== 15 || !l.video.every(num))
+                return null;
+            layer.video = l.video.slice();
+        }
         if (l.rr !== undefined) {
             if (!num(l.rr) || l.rr < 0 || l.rr > 4096)
                 return null;
@@ -573,9 +582,23 @@ export class DomCompositor {
         tile.ctx.drawImage(bitmap, x, y);
         bitmap.close?.();
     }
-    apply(tree, bitmaps) {
+    // `videos`: [[layer id, ImageBitmap]], the new frames of video layers (docs/youtube.md "Video on the host").
+    apply(tree, bitmaps, videos) {
         this.tree.apply(tree, bitmaps);
         this.layout();
+        for (const [id, bitmap] of videos || []) {
+            const el = this.boxes.get(id);
+            if (el && el.video) {
+                if (el.video.width !== bitmap.width || el.video.height !== bitmap.height) {
+                    el.video.width = bitmap.width;
+                    el.video.height = bitmap.height;
+                }
+                const layer = this.tree.layers.get(id);
+                const uv = layer && layer.video ? layer.video.slice(6) : [0, 0, 1, 1];
+                el.video.getContext('2d').drawImage(bitmap, uv[0] * bitmap.width, uv[1] * bitmap.height, uv[2] * bitmap.width, uv[3] * bitmap.height, 0, 0, bitmap.width, bitmap.height);
+            }
+            bitmap.close?.();
+        }
     }
     // Places the boxes and planes; also called per animation frame when the carapace scrolls (threaded scroll).
     layout() {
@@ -618,6 +641,17 @@ export class DomCompositor {
             Object.assign(el.box.style, { left: clip[0] + 'px', top: clip[1] + 'px', width: clip[2] + 'px', height: clip[3] + 'px', borderRadius: layer.rr && layer.clip ? layer.rr + 'px' : '' });
             const m = this.tree.matrixOf(layer);
             el.plane.style.transform = `matrix(${m[0]},${m[1]},${m[2]},${m[3]},${m[4] - clip[0]},${m[5] - clip[1]})`;
+            if (layer.video) {
+                if (!el.video) {
+                    el.video = doc.createElement('canvas');
+                    el.video.style.position = 'absolute';
+                    el.plane.appendChild(el.video);
+                }
+                Object.assign(el.video.style, { left: layer.video[1] + 'px', top: layer.video[2] + 'px', width: layer.video[3] + 'px', height: layer.video[4] + 'px', borderRadius: layer.video[14] > 0 ? layer.video[14] + 'px' : '' });
+            } else if (el.video) {
+                el.video.remove();
+                el.video = null;
+            }
             for (const tile of layer.store.values()) {
                 if (tile.canvas.parentNode !== el.plane) {
                     tile.canvas.style.left = tile.i * layer.tw + 'px';
@@ -661,6 +695,9 @@ export class DomCompositor {
             ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
             for (const tile of layer.store.values())
                 ctx.drawImage(tile.canvas, tile.i * layer.tw, tile.j * layer.th);
+            const v = layer.video && this.boxes.get(layer.id) && this.boxes.get(layer.id).video;
+            if (v && v.width > 0)
+                ctx.drawImage(v, layer.video[1], layer.video[2], layer.video[3], layer.video[4]);
             ctx.restore();
         }
         ctx.restore();

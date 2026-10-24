@@ -22,7 +22,7 @@ function add(name, setup, parent) {
 // Script-inserted scripts: 'strict-dynamic' trusts them whatever their nonce (CSP3 section 8.2).
 add('dyn-idl-nonce', (s) => { s.nonce = 'n0nce'; s.src = 'a.js?dyn-idl-nonce'; });
 add('dyn-no-nonce', (s) => { s.src = 'a.js?dyn-no-nonce'; });
-add('dyn-sri-good', (s) => { s.integrity = 'sha384-ZDvMhjZKWIOTKssSu+VHItfPBqp1qS/UhaFI4WYSWhRXBV0hq0q5IrPF1278KCm6'; s.crossOrigin = 'anonymous'; s.src = 'a.js?dyn-sri-good'; });
+add('dyn-sri-good', (s) => { s.integrity = 'sha384-zzjiuernMNZm4+WS7WzkiWH/aUMwC0j0SADMRSETxlw17N8Bn6ddqRSkFmIfhE6B'; s.crossOrigin = 'anonymous'; s.src = 'a.js?dyn-sri-good'; });
 add('dyn-sri-bad', (s) => { s.integrity = 'sha384-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'; s.src = 'a.js?dyn-sri-bad'; });
 add('dyn-sri-unknown-alg', (s) => { s.integrity = 'md5-xxxx'; s.src = 'a.js?dyn-sri-unknown-alg'; });
 add('dyn-module-crossorigin', (s) => { s.type = 'module'; s.crossOrigin = 'anonymous'; s.nonce = 'n0nce'; s.src = 'm.js?dyn-module-crossorigin'; });
@@ -30,7 +30,7 @@ add('dyn-module-crossorigin', (s) => { s.type = 'module'; s.crossOrigin = 'anony
 <!-- Parser-inserted: only a matching nonce lets these run under 'strict-dynamic'. -->
 <script nonce="n0nce" src="a.js?parser-nonce" onload="mark('parser-nonce','load')" onerror="mark('parser-nonce','error')"></script>
 <script nonce="n0nce" type="module" crossorigin src="m.js?parser-module-nonce"></script>
-<script nonce="n0nce" type="module" crossorigin="anonymous" integrity="sha256-n5EadGFM3YE7z5VTnMfgXZnZM6Hn4R9ArI/S+o2VlbI=" src="m.js"></script>
+<script nonce="n0nce" type="module" crossorigin="anonymous" integrity="sha256-ANBiZ3rjwciTbyKxAij53LVJ7m2a9+CUSYU/BHlRifw=" src="m.js"></script>
 <script nonce="n0nce" type="module">import './m.js?inline-import'; mark('inline-module-import', 'run');</script>
 <script nonce="n0nce" nomodule>mark('nomodule', 'run');</script>
 <script nonce="n0nce">

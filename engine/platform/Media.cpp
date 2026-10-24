@@ -58,6 +58,11 @@ uint32_t ganglion_host_webaudio_open(uint32_t sample_rate, uint32_t channels);
 void ganglion_host_webaudio_write(uint32_t id, float const* interleaved, size_t frames);
 void ganglion_host_webaudio_control(uint32_t id, int playing, double volume);
 void ganglion_host_webaudio_close(uint32_t id);
+// Host frames (docs/youtube.md "Video on the host"): a decoded frame the host keeps (an ImageBitmap) and the carapace
+// composites; the engine holds a placeholder and asks for the pixels only when it draws the frame itself.
+void ganglion_host_media_frame_release(uint32_t handle);
+// The frame's pixels as three full-size planes: G, B, R (a 4:4:4 frame with the Identity matrix). 0 if gone.
+int ganglion_host_media_frame_planes(uint32_t handle, uint32_t width, uint32_t height, uint8_t* g, uint8_t* b, uint8_t* r);
 }
 
 namespace Ganglion {
@@ -167,6 +172,73 @@ HashMap<u32, HostDecoderClient*>& decoders()
 
 u32 s_next_decoder_id { 1 };
 
+// --- Host frames ------------------------------------------------------------------------------------------------
+
+// Frames whose pixels the host holds, by handle, and the handle of each. An entry lives while the frame is used here
+// (in a queue, on show): the registry's own reference is the last one when nothing else holds it, and the host
+// releases its copy then (sweep_host_frames).
+struct HostFrames {
+    HashMap<u32, NonnullRefPtr<Media::VideoFrame>> by_handle;
+    HashMap<Media::VideoFrame const*, u32> handle_of;
+};
+
+HostFrames& host_frames()
+{
+    static NeverDestroyed<HostFrames> s;
+    return *s;
+}
+
+u32 host_handle_of(Media::VideoFrame const* frame)
+{
+    if (!frame)
+        return 0;
+    return host_frames().handle_of.get(frame).value_or(0);
+}
+
+void sweep_host_frames()
+{
+    auto& hf = host_frames();
+    Vector<u32> gone;
+    for (auto& [handle, frame] : hf.by_handle)
+        if (frame->ref_count() == 1)
+            gone.append(handle);
+    for (auto handle : gone) {
+        auto frame = hf.by_handle.take(handle);
+        if (frame.has_value())
+            hf.handle_of.remove(frame->ptr());
+        ganglion_host_media_frame_release(handle);
+    }
+}
+
+// A pool slot for a frame of this layout (the decoder's pools, a new one when they are all in use).
+Optional<NonnullRefPtr<Media::PooledVideoFrameSlot>> acquire_frame_slot(Vector<NonnullRefPtr<Media::VideoFramePool>>& pools, size_t slot_size, Bytes* bytes)
+{
+    Optional<Media::VideoFramePool::AcquiredSlot> slot;
+    RefPtr<Media::VideoFramePool> pool;
+    for (auto& p : pools) {
+        slot = p->try_acquire(slot_size);
+        if (slot.has_value()) {
+            pool = p;
+            break;
+        }
+    }
+    if (!slot.has_value()) {
+        auto created = Media::VideoFramePool::create();
+        if (created.is_error())
+            return {};
+        pool = created.release_value();
+        pools.append(*pool);
+        slot = pool->try_acquire(slot_size);
+        if (!slot.has_value())
+            return {};
+    }
+    *bytes = slot->bytes;
+    auto backing = pool->try_adopt_acquired_slot(*slot);
+    if (backing.is_error())
+        return {};
+    return backing.release_value();
+}
+
 // --- Presentation ---------------------------------------------------------------------------------------------
 
 class FrameSink final : public Media::VideoSink {
@@ -177,12 +249,59 @@ public:
     virtual void set_time_reader(Media::MediaTimeReader) override { }
     virtual void set_state_change_handler(Media::PipelineStateChangeHandler) override { }
     virtual void set_resize_handler(Media::PipelineResizeHandler) override { }
-    virtual RefPtr<Media::VideoFrame> current_frame() const override { return m_frame; }
+    // What draws the frame in the engine (the rasterizer, drawImage, WebGL uploads) gets its pixels: a host frame is
+    // fetched from the host then (once per frame).
+    virtual RefPtr<Media::VideoFrame> current_frame() const override
+    {
+        auto handle = host_handle_of(m_frame.ptr());
+        if (!handle)
+            return m_frame;
+        if (m_materialized_handle != handle) {
+            static int logged = 0;
+            if (logged++ < 3)
+                log("ganglion: media: a host frame read back (the engine draws the video itself: drawImage, a WebGL upload, or a video it cannot lift out)"sv);
+            m_materialized = materialize(*m_frame, handle);
+            m_materialized_handle = handle;
+        }
+        return m_materialized;
+    }
+    // The frame on show as the media server holds it (a host frame's placeholder: no pixels).
+    RefPtr<Media::VideoFrame> frame() const { return m_frame; }
+    u32 host_handle() const { return host_handle_of(m_frame.ptr()); }
 
-    void set_frame(RefPtr<Media::VideoFrame> frame) { m_frame = move(frame); }
+    void set_frame(RefPtr<Media::VideoFrame> frame)
+    {
+        m_frame = move(frame);
+        m_materialized = nullptr;
+        m_materialized_handle = 0;
+    }
+
+    // Whether the last paint composited this sink's frames on the host (Layers.cpp): a new frame of a hosted sink
+    // damages nothing the engine rastered.
+    bool hosted { false };
 
 private:
+    RefPtr<Media::VideoFrame> materialize(Media::VideoFrame const& frame, u32 handle) const
+    {
+        auto size = Gfx::IntSize { static_cast<int>(frame.width()), static_cast<int>(frame.height()) };
+        auto layout = Media::frame_plane_layout(size, 8, Media::Subsampling::yuv444());
+        if (layout.is_error())
+            return nullptr;
+        Bytes bytes;
+        auto backing = acquire_frame_slot(m_pools, layout.value().total_byte_count, &bytes);
+        if (!backing.has_value())
+            return nullptr;
+        auto* base = bytes.data();
+        if (!ganglion_host_media_frame_planes(handle, frame.width(), frame.height(), base, base + layout.value().u_offset, base + layout.value().v_offset))
+            return nullptr;
+        Media::CodingIndependentCodePoints cicp { Media::ColorPrimaries::BT709, Media::TransferCharacteristics::SRGB, Media::MatrixCoefficients::Identity, Media::VideoFullRangeFlag::Full };
+        return adopt_ref(*new Media::VideoFrame(frame.timestamp(), frame.duration(), frame.size(), 8, Media::Subsampling::yuv444(), cicp, backing.release_value()));
+    }
+
     RefPtr<Media::VideoFrame> m_frame;
+    mutable RefPtr<Media::VideoFrame> m_materialized;
+    mutable u32 m_materialized_handle { 0 };
+    mutable Vector<NonnullRefPtr<Media::VideoFramePool>> m_pools;
 };
 
 HashMap<Media::VideoSinkHandle, NonnullRefPtr<FrameSink>>& sinks()
@@ -192,10 +311,13 @@ HashMap<Media::VideoSinkHandle, NonnullRefPtr<FrameSink>>& sinks()
 }
 
 bool s_frames_changed { false };
+bool s_rastered_frames_changed { false }; // of a sink the engine rasters (not composited on the host)
 
-void frames_changed()
+void frames_changed(FrameSink const* sink = nullptr)
 {
     s_frames_changed = true;
+    if (!sink || !sink->hosted)
+        s_rastered_frames_changed = true;
     ganglion_host_request_frame();
 }
 
@@ -751,11 +873,11 @@ bool Session::all_have_current_frame() const
     for (auto const& [handle, out] : m_video_outs) {
         if (out->seek_target.has_value())
             return false;
-        if (!out->sink->current_frame() && out->queue.is_empty() && !(out->drained || out->decoder_failed))
+        if (!out->sink->frame() && out->queue.is_empty() && !(out->drained || out->decoder_failed))
             return false;
         // A frame after the one on show, too (Chrome's HAVE_ENOUGH_DATA after a seek): the decoder may still hold the
         // next ones, and playing at once would wait for them.
-        if (out->sink->current_frame() && out->queue.is_empty() && !(out->drained || out->decoder_failed || out->demux_ended))
+        if (out->sink->frame() && out->queue.is_empty() && !(out->drained || out->decoder_failed || out->demux_ended))
             return false;
     }
     if (!audio_ready())
@@ -884,7 +1006,12 @@ void Session::restart_audio_decoder()
     out.sent_rate = -1;
 }
 
-// Hands samples to the host's audio decoder until a second ahead of the clock has been sent.
+// Hands samples to the host's audio decoder until AUDIO_LEAD ahead of the clock has been sent. The decoder, the
+// decoded audio's hand-over and the media clock all run on the segment's one thread, which the page's own script holds
+// for seconds at a time (YouTube's watch page: ~2.4 s at load); Chrome's audio renderer is on a thread of its own.
+// What was sent before such a stall is all the output has to play through it: with 1 s a 2 s stall went 1 s silent
+// (tests/media-long.test.mjs). The carapace's worklet holds up to 8 s a stream.
+static constexpr i64 AUDIO_LEAD_MS = 4000;
 void Session::pump_audio()
 {
     if (!m_audio)
@@ -893,7 +1020,7 @@ void Session::pump_audio()
     if (out.demuxer_seek.has_value() && !seek_demuxer(out.source_index, out.track, *out.demuxer_seek, out.demuxer_seek))
         return;
     auto& source = m_sources[out.source_index];
-    auto horizon = m_seek_target.value_or(media_time()) + AK::Duration::from_milliseconds(1000);
+    auto horizon = m_seek_target.value_or(media_time()) + AK::Duration::from_milliseconds(AUDIO_LEAD_MS);
     while (!out.demux_ended && !out.decoder_failed && (!out.any_sent || out.sent_until < horizon)) {
         if (source.is_source_buffer)
             source.demuxer->set_blocking_reads_aborted_for_track(out.track);
@@ -1210,7 +1337,7 @@ void Session::receive_frame(Media::VideoSinkHandle handle, NonnullRefPtr<Media::
         }
         out.seek_target.clear();
         out.sink->set_frame(frame);
-        frames_changed();
+        frames_changed(out.sink.ptr());
     }
     if (frame->size() != out.reported_size) {
         out.reported_size = frame->size();
@@ -1230,13 +1357,14 @@ void Session::present()
         if (out->seek_target.has_value())
             continue;
         RefPtr<Media::VideoFrame> chosen;
-        if (!out->sink->current_frame() && !out->queue.is_empty())
+        if (!out->sink->frame() && !out->queue.is_empty())
             chosen = out->queue.take_first();
         while (!out->queue.is_empty() && out->queue.first()->timestamp() <= now)
             chosen = out->queue.take_first();
         if (chosen) {
             out->sink->set_frame(chosen);
-            frames_changed();
+            frames_changed(out->sink.ptr());
+            sweep_host_frames();
             pump(*out);
         }
     }
@@ -1262,7 +1390,7 @@ void Session::update()
         bool out_done = (out->drained || out->decoder_failed) && out->queue.is_empty() && out->in_flight == 0;
         if (!out_done)
             finished = false;
-        auto current = out->sink->current_frame();
+        auto current = out->sink->frame();
         if (!out_done && out->queue.is_empty() && (!current || current->end() <= now))
             starved = true;
     }
@@ -1294,7 +1422,7 @@ void Session::update()
             m_state = Media::PlaybackState::Buffering;
             anchor_clock(now, false);
             log(ByteString::formatted("ganglion: media: waiting at {} ms: audio {}, decoded to {} ms; video queue {}, on show {}", now.to_milliseconds(), audio_starved() ? "starved" : "ok", m_audio ? m_audio->decoded_until.to_milliseconds() : -1, m_video_outs.is_empty() ? -1 : static_cast<i64>(m_video_outs.begin()->value->queue.size()),
-                m_video_outs.is_empty() || !m_video_outs.begin()->value->sink->current_frame() ? ByteString("none") : ByteString::formatted("{}-{} ms, {} in flight", m_video_outs.begin()->value->sink->current_frame()->timestamp().to_milliseconds(), m_video_outs.begin()->value->sink->current_frame()->end().to_milliseconds(), m_video_outs.begin()->value->in_flight)));
+                m_video_outs.is_empty() || !m_video_outs.begin()->value->sink->frame() ? ByteString("none") : ByteString::formatted("{}-{} ms, {} in flight", m_video_outs.begin()->value->sink->frame()->timestamp().to_milliseconds(), m_video_outs.begin()->value->sink->frame()->end().to_milliseconds(), m_video_outs.begin()->value->in_flight)));
         }
         break;
     case Media::PlaybackState::Buffering:
@@ -1480,9 +1608,31 @@ bool media_frames_pending()
     return s_frames_changed;
 }
 
+// Whether a frame the engine draws itself changed since the last paint (a hosted sink's new frame goes to the
+// carapace and damages nothing); and the host frames nothing holds any more are released.
 bool media_frames_changed()
 {
-    return exchange(s_frames_changed, false);
+    sweep_host_frames();
+    s_frames_changed = false;
+    return exchange(s_rastered_frames_changed, false);
+}
+
+// The host frame a sink shows now (0: none, or the engine's own pixels); and whether the last paint composited it on the
+// host (Layers.cpp sets it for each sink of a DrawVideoFrame it lifts out).
+u32 media_sink_host_frame(Media::VideoSinkHandle handle)
+{
+    auto sink = sinks().get(handle);
+    return sink.has_value() ? (*sink)->host_handle() : 0;
+}
+
+void media_sink_set_hosted(Media::VideoSinkHandle handle, bool hosted)
+{
+    auto sink = sinks().get(handle);
+    if (!sink.has_value() || (*sink)->hosted == hosted)
+        return;
+    (*sink)->hosted = hosted;
+    if (!hosted)
+        s_rastered_frames_changed = true; // the engine draws it again: its box is damage
 }
 
 // Called by LibMedia's decoder registry (MediaWithoutFFmpeg.cpp): whether the host decodes this codec.
@@ -1525,36 +1675,46 @@ GANGLION_EXPORT void ganglion_media_video_frame(uint32_t id, double timestamp_us
         return;
     }
     auto layout = layout_or_error.release_value();
-    auto slot_size = layout.total_byte_count;
-    Optional<Media::VideoFramePool::AcquiredSlot> slot;
-    RefPtr<Media::VideoFramePool> pool;
-    for (auto& p : c.pools) {
-        slot = p->try_acquire(slot_size);
-        if (slot.has_value()) {
-            pool = p;
-            break;
-        }
-    }
-    if (!slot.has_value()) {
-        auto created = Media::VideoFramePool::create();
-        if (created.is_error())
-            return;
-        pool = created.release_value();
-        c.pools.append(*pool);
-        slot = pool->try_acquire(slot_size);
-        if (!slot.has_value())
-            return;
-    }
-    memcpy(slot->bytes.data(), data, layout.y_size);
-    memcpy(slot->bytes.data() + layout.u_offset, data + layout.y_size, layout.u_size);
-    memcpy(slot->bytes.data() + layout.v_offset, data + layout.y_size + layout.u_size, layout.v_size);
-    auto backing = pool->try_adopt_acquired_slot(*slot);
-    if (backing.is_error())
+    Bytes bytes;
+    auto backing = Ganglion::acquire_frame_slot(c.pools, layout.total_byte_count, &bytes);
+    if (!backing.has_value())
         return;
+    memcpy(bytes.data(), data, layout.y_size);
+    memcpy(bytes.data() + layout.u_offset, data + layout.y_size, layout.u_size);
+    memcpy(bytes.data() + layout.v_offset, data + layout.y_size + layout.u_size, layout.v_size);
     auto frame = adopt_ref(*new Media::VideoFrame(
         AK::Duration::from_microseconds(static_cast<i64>(timestamp_us)),
         AK::Duration::from_microseconds(static_cast<i64>(duration_us > 0 ? duration_us : 33333)),
         { width, height }, static_cast<u8>(bit_depth), subsampling, c.cicp, backing.release_value()));
+    if (c.on_video_frame)
+        c.on_video_frame(move(frame));
+}
+
+// A decoded frame the host keeps (handle): the engine's frame is a placeholder of the same size whose planes are never
+// filled; the pixels are the host's (FrameSink::current_frame fetches them when the engine draws the frame itself).
+GANGLION_EXPORT void ganglion_media_video_frame_host(uint32_t id, double timestamp_us, double duration_us, uint32_t width, uint32_t height, uint32_t handle)
+{
+    auto client = Ganglion::decoders().get(id);
+    if (!client.has_value() || !handle) {
+        ganglion_host_media_frame_release(handle);
+        return;
+    }
+    auto& c = **client;
+    auto size = Gfx::IntSize { static_cast<int>(width), static_cast<int>(height) };
+    auto layout = Media::frame_plane_layout(size, 8, Media::Subsampling::yuv420());
+    Bytes bytes;
+    auto backing = layout.is_error() ? Optional<NonnullRefPtr<Media::PooledVideoFrameSlot>> {} : Ganglion::acquire_frame_slot(c.pools, layout.value().total_byte_count, &bytes);
+    if (!backing.has_value()) {
+        ganglion_host_media_frame_release(handle);
+        return;
+    }
+    auto frame = adopt_ref(*new Media::VideoFrame(
+        AK::Duration::from_microseconds(static_cast<i64>(timestamp_us)),
+        AK::Duration::from_microseconds(static_cast<i64>(duration_us > 0 ? duration_us : 33333)),
+        { width, height }, 8, Media::Subsampling::yuv420(), c.cicp, backing.release_value()));
+    auto& hf = Ganglion::host_frames();
+    hf.by_handle.set(handle, frame);
+    hf.handle_of.set(frame.ptr(), handle);
     if (c.on_video_frame)
         c.on_video_frame(move(frame));
 }

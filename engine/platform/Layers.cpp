@@ -18,6 +18,7 @@
 //      never cuts a tile), and hand them out as RGBA.
 
 #include "Layers.h"
+#include "Media.h"
 #include <AK/HashMap.h>
 #include <AK/HashTable.h>
 #include <AK/OwnPtr.h>
@@ -167,7 +168,24 @@ enum SpanFlag : u32 {
     SpanCanvas = 1u << 28,
     SpanBackdrop = 2u << 28,     // rastered with everything below it, in viewport space
     SpanHostBackdrop = 3u << 28, // its backdrop filter is the carapace's
+    SpanVideo = 4u << 28,        // a DrawVideoFrame of a host frame (HostBackdrop mode): the carapace draws the frame
 };
+
+// Why a video was not lifted out to the carapace (each reason logged the first three times: docs/youtube.md).
+static void video_reject(char const* why)
+{
+    static HashMap<ByteString, int> s_seen;
+    auto& n = s_seen.ensure(why, [] { return 0; });
+    if (n++ < 3)
+    {
+        // In the engine log the first times: a video the engine draws costs a read-back of each frame from the host.
+        auto text = ByteString::formatted("layers: video drawn in the engine: {}", why);
+        ganglion_host_log(text.characters(), text.length());
+    }
+}
+
+// Spans that are one command each (never merged with their neighbours).
+static bool is_single_command_span(u32 flag) { return (flag & 0xf0000000) == SpanCanvas || (flag & 0xf0000000) == SpanVideo; }
 
 struct Tile {
     RefPtr<Gfx::Bitmap> bitmap;
@@ -181,6 +199,7 @@ struct Span {
     u32 end_run { 0 }, end_command { 0 }; // exclusive
     Vector<u32> runs;
     i32 canvas { -1 }; // a canvas span: the DrawCanvas (index into the list's drawn canvases)
+    i32 video { -1 };  // a video span: index into the scan's videos
 };
 
 struct Layer {
@@ -216,6 +235,14 @@ struct Layer {
     float saturate { 1 };
     bool seen { false };
     double raster_ms { 0 }; // this frame's raster of this layer (paint ms per layer, the benchmarks)
+    // A video span the carapace draws: the host frame and where it goes (layer space); 0: the engine rastered it.
+    u32 video_handle { 0 };
+    bool video_was_hosted { false };
+    Gfx::FloatRect video_rect;   // layer space: the part of the frame shown (cut by its clip)
+    Gfx::FloatRect video_uv { 0, 0, 1, 1 }; // that part of the frame, in [0, 1]
+    Gfx::FloatRect video_round;               // a rounded clip around it (layer space), radius 0: none
+    float video_radius { 0 };
+    int video_scaling { 0 };
 };
 
 static HashMap<u64, NonnullOwnPtr<Layer>> s_layers;
@@ -228,6 +255,10 @@ static HashMap<u32, Gfx::FloatPoint> s_host_offsets;
 static HashMap<u32, u32> s_host_seq; // scroll node -> the last carapace scroll (its sequence number) the engine applied
 static Vector<u64> s_prev_order_ids;
 static bool s_prefetch_pending { false };
+// Why the last computed list damage was what it was (patch 0084's stats, for the scroll trace): commands damaged by the
+// command diff / chain changes / scroll bars, then each one's union rect.
+static Array<i32, 16> s_last_damage_stats {};
+static bool s_last_damage_stats_valid { false };
 struct TransformState {
     Affine local;
     u64 changed_at { 0 };
@@ -323,7 +354,23 @@ bool paint(PaintInput const& in)
         Vector<Gfx::IntRect> scroll_bar_rects; // in the run's spatial space
         Vector<CommandAt> media;               // DrawVideoFrame, DrawCompositedContext
         Vector<Gfx::IntRect> media_rects;      // in the run's spatial space
+        // DrawVideoFrame commands whose sink shows a host frame and that carry no inline clip or transform (HostBackdrop
+        // mode only): candidates to be drawn by the carapace (docs/youtube.md "Video on the host").
+        struct Video {
+            CommandAt at;
+            DrawVideoFrame command;
+            Media::VideoSinkHandle sink;
+            u32 handle;
+            Optional<Gfx::FloatRect> clip; // the command's inline rectangle clip (same space as its dst_rect)
+        };
+        Vector<Video> videos;
+        RustFFI::FfiLayerRunInfo const* runs { nullptr };
+        DisplayListResourceStorage const* resources { nullptr };
+        bool host_video { false };
     } scan;
+    scan.runs = runs.data();
+    scan.resources = &in.resources;
+    scan.host_video = s_mode == Mode::HostBackdrop;
     scan.run_first.resize(run_count + 1);
     RustFFI::display_list_layer_for_each_command(list_handle, &scan, [](void* context, u32 run, u32 command, DisplayListCommandType type, Gfx::IntRect rect, u32 offset) {
         auto& scan = *static_cast<CommandScan*>(context);
@@ -335,6 +382,51 @@ bool paint(PaintInput const& in)
         if (type == DisplayListCommandType::DrawVideoFrame || type == DisplayListCommandType::DrawCompositedContext) {
             scan.media.append({ run, command });
             scan.media_rects.append(rect);
+        }
+        if (type == DisplayListCommandType::DrawVideoFrame && scan.host_video) {
+            // The record: a 24-byte header (type, has rect, inline clip count, has inline transform, payload size, rect),
+            // then the command (LibCompositing's builder.rs / tape.rs).
+            auto const& info = scan.runs[run];
+            if (offset + 24 + sizeof(DrawVideoFrame) <= info.records_size) {
+                u8 const* record = info.records + offset;
+                // Inline clips: entries of 64 bytes at the payload's tail (DisplayListInlineClip: rect 16, corner radii 32,
+                // path span 8, winding, kind, mode, padded to 8). A plain rectangle (or one with no radii) intersected is kept.
+                u32 clip_count = record[2];
+                u32 payload_size;
+                __builtin_memcpy(&payload_size, record + 4, 4);
+                Optional<Gfx::FloatRect> clip;
+                bool clip_ok = record[3] == 0 && clip_count <= 4 && payload_size >= sizeof(DrawVideoFrame) + clip_count * 64 && offset + 24 + payload_size <= info.records_size;
+                for (u32 k = 0; clip_ok && k < clip_count; ++k) {
+                    u8 const* entry = record + 24 + payload_size - (clip_count - k) * 64;
+                    float rect[4];
+                    i32 radii[8];
+                    __builtin_memcpy(rect, entry, 16);
+                    __builtin_memcpy(radii, entry + 16, 32);
+                    u8 kind = entry[57], mode = entry[58];
+                    bool no_radii = true;
+                    for (auto v : radii)
+                        if (v != 0)
+                            no_radii = false;
+                    if (mode != 0 || !(kind == 0 || (kind == 1 && no_radii)) || !(rect[2] >= 0 && rect[3] >= 0)) {
+                        clip_ok = false;
+                        break;
+                    }
+                    Gfx::FloatRect r { rect[0], rect[1], rect[2], rect[3] };
+                    clip = clip.has_value() ? clip->intersected(r) : r;
+                }
+                if (!clip_ok)
+                    video_reject(record[3] ? "inline transform" : "inline clip not a rectangle");
+                if (clip_ok) {
+                    DrawVideoFrame frame_command;
+                    __builtin_memcpy(&frame_command, record + 24, sizeof(DrawVideoFrame));
+                    auto sink = scan.resources->video_sink_handle(frame_command.video_sink_id);
+                    u32 handle = sink.has_value() ? Ganglion::media_sink_host_frame(*sink) : 0;
+                    if (handle)
+                        scan.videos.append({ { run, command }, frame_command, *sink, handle, clip });
+                    else
+                        video_reject(sink.has_value() ? "no host frame" : "no sink");
+                }
+            }
         }
         if (type == DisplayListCommandType::PaintScrollBar) {
             scan.scroll_bars.append({ run, command });
@@ -643,7 +735,7 @@ bool paint(PaintInput const& in)
     auto open_span = [&](u32 key, u32 flag, u32 run, u32 command) {
         if (!spans.is_empty()) {
             auto& last = spans.last();
-            if (last.key == key && last.flag == flag && (last.flag & 0xf0000000) != SpanCanvas)
+            if (last.key == key && last.flag == flag && !is_single_command_span(last.flag))
                 return;
             last.end_run = run;
             last.end_command = command;
@@ -656,10 +748,13 @@ bool paint(PaintInput const& in)
         spans.append(move(span));
     };
     size_t next_canvas = 0;
+    size_t next_video = 0;
+    auto video_index = 0u;
     for (u32 r = 0; r < run_count; ++r) {
         u32 key = run_key[r];
         u32 flag = run_flag[r];
-        // Canvases are their own span when their run has no effect worth keeping together (else they stay in place).
+        // Canvases and host videos are their own span when their run has no effect worth keeping together (else they
+        // stay in place: a video then is rastered here, its pixels fetched from the host).
         bool canvas_ok = flag == 0;
         if (canvas_ok) {
             for (u32 e = runs[r].context.effect.value(), guard = 0; e < effect_count && guard < effect_count + 1; e = effects[e].parent, ++guard)
@@ -668,20 +763,36 @@ bool paint(PaintInput const& in)
         }
         while (next_canvas < canvases.size() && canvases[next_canvas].run < r)
             ++next_canvas;
+        while (next_video < scan.videos.size() && scan.videos[next_video].at.run < r)
+            ++next_video;
+        // This run's single-command spans in command order: (command, canvas index or -1, video index or -1).
+        Vector<Array<i32, 3>> singles;
+        for (size_t k = next_canvas; canvas_ok && k < canvases.size() && canvases[k].run == r; ++k)
+            singles.append({ static_cast<i32>(canvases[k].command), static_cast<i32>(k), -1 });
+        if (!canvas_ok && next_video < scan.videos.size() && scan.videos[next_video].at.run == r)
+            video_reject(flag ? "run flag" : "effect");
+        for (size_t k = next_video; canvas_ok && k < scan.videos.size() && scan.videos[k].at.run == r; ++k)
+            singles.append({ static_cast<i32>(scan.videos[k].at.command), -1, static_cast<i32>(k) });
+        quick_sort(singles, [](auto const& a, auto const& b) { return a[0] < b[0]; });
         u32 command = 0;
         open_span(key, flag, r, 0);
         spans.last().runs.append(r);
-        while (canvas_ok && next_canvas < canvases.size() && canvases[next_canvas].run == r) {
-            u32 at = canvases[next_canvas].command;
+        for (auto const& single : singles) {
+            u32 at = static_cast<u32>(single[0]);
             if (at > command)
                 open_span(key, flag, r, command); // continues the current span
-            open_span(key, SpanCanvas | (++canvas_index & 0x0fffffff), r, at);
-            spans.last().runs.append(r);
-            spans.last().canvas = static_cast<i32>(next_canvas);
+            if (single[1] >= 0) {
+                open_span(key, SpanCanvas | (++canvas_index & 0x0fffffff), r, at);
+                spans.last().runs.append(r);
+                spans.last().canvas = single[1];
+            } else {
+                open_span(key, SpanVideo | (++video_index & 0x0fffffff), r, at);
+                spans.last().runs.append(r);
+                spans.last().video = single[2];
+            }
             open_span(key, flag, r, at + 1);
             spans.last().runs.append(r);
             command = at + 1;
-            ++next_canvas;
         }
     }
     if (!spans.is_empty()) {
@@ -702,7 +813,7 @@ bool paint(PaintInput const& in)
     for (size_t i = 1; i < spans.size();) {
         auto& a = spans[i - 1];
         auto& b = spans[i];
-        if (a.key == b.key && a.flag == b.flag && (a.flag & 0xf0000000) != SpanCanvas) {
+        if (a.key == b.key && a.flag == b.flag && !is_single_command_span(a.flag)) {
             a.end_run = b.end_run;
             a.end_command = b.end_command;
             for (auto r : b.runs)
@@ -786,6 +897,8 @@ bool paint(PaintInput const& in)
 
     // The list's damage (content only: both lists at the new offsets), computed when some layer's content changed.
     Optional<Gfx::IntRect> list_damage;
+    Vector<Gfx::IntRect, 16> list_rects; // the same damage as a few rects (patch 0084: a region, not only the union)
+    Vector<Compositing::TaggedDamage> list_tagged; // each damaged command's rect with its run (patch 0084)
     bool list_damage_known = false;
     auto damage = [&]() -> Optional<Gfx::IntRect> {
         if (list_damage_known)
@@ -805,12 +918,26 @@ bool paint(PaintInput const& in)
                 if (spatial[i].kind == 1 && !promoted[i])
                     old_scroll.set_device_offset_for_index(SpatialNodeIndex { i }, in.last_scroll->device_offset_for_index(SpatialNodeIndex { i }));
         }
-        auto d = compute_display_list_damage(*in.last_list, *in.last_tree, old_scroll, list, tree, in.scroll, big);
+        auto region = Compositing::compute_display_list_damage_region(*in.last_list, *in.last_tree, old_scroll, list, tree, in.scroll, big);
+        Optional<Gfx::IntRect> d;
+        if (region.has_value()) {
+            d = region->bounds;
+            for (auto const& r : region->rects)
+                list_rects.append(r);
+            list_tagged = move(region->tagged);
+            s_last_damage_stats = region->stats;
+            s_last_damage_stats_valid = true;
+        }
         if (in.media_changed && d.has_value()) {
             Gfx::IntRect media = *d;
             for (size_t k = 0; k < scan.media.size(); ++k) {
                 auto s = runs[scan.media[k].run].context.spatial.value();
-                media = united(media, enclosing(tree.transform_rect_to_viewport(SpatialNodeIndex { s < spatial_count ? s : 0 }, scan.media_rects[k].to_type<float>(), in.scroll)));
+                auto r = enclosing(tree.transform_rect_to_viewport(SpatialNodeIndex { s < spatial_count ? s : 0 }, scan.media_rects[k].to_type<float>(), in.scroll));
+                media = united(media, r);
+                if (!r.is_empty()) {
+                    list_rects.append(r);
+                    list_tagged.append({ r, scan.media[k].run, scan.media[k].run });
+                }
             }
             d = media;
         }
@@ -990,7 +1117,14 @@ bool paint(PaintInput const& in)
         layer.region = needed;
 
         // Which parts to raster: the damage in this layer's space, or everything.
-        Optional<Gfx::IntRect> local_damage;
+        Optional<Gfx::IntRect> local_damage; // the union of local_rects
+        Vector<Gfx::IntRect, 16> local_rects; // what to raster again, in this layer's space
+        auto add_local = [&](Gfx::IntRect rect) {
+            if (rect.is_empty())
+                return;
+            local_rects.append(rect);
+            local_damage = local_damage.has_value() ? local_damage->united(rect) : rect;
+        };
         bool all = layer.fresh || in.force_full || backdrop_flat || clip_moved;
         Optional<Gfx::IntRect> resplit_damage;
         if (layer.resplit && !all) {
@@ -1017,10 +1151,18 @@ bool paint(PaintInput const& in)
             if (!d.has_value()) {
                 all = true;
             } else {
-                auto v = resplit_damage.has_value() ? united(*d, *resplit_damage) : *d;
                 layer.last_damage = { *d, resplit_damage.value_or({}) };
-                if (!v.is_empty())
-                    local_damage = enclosing(inverse.map(v.to_type<float>())).inflated(2, 2);
+                // Each rect of the list's damage on its own: a change at the top and one at the bottom of a page
+                // raster two bands, not everything between them.
+                // Only what this layer's own commands changed (their runs): a change in one layer no longer rasters
+                // the tiles of every other layer that changed under the same rect.
+                for (auto const& t : list_tagged)
+                    if (t.last_run >= span.begin_run && t.first_run <= span.end_run)
+                        add_local(enclosing(inverse.map(t.rect.to_type<float>())).inflated(2, 2));
+                if (list_tagged.is_empty() && !d->is_empty())
+                    add_local(enclosing(inverse.map(d->to_type<float>())).inflated(2, 2));
+                if (resplit_damage.has_value() && !resplit_damage->is_empty())
+                    add_local(enclosing(inverse.map(resplit_damage->to_type<float>())).inflated(2, 2));
             }
         }
         // Scroll bars this layer paints for a scroller that moved: their own rects (the thumb moves along the track).
@@ -1036,7 +1178,7 @@ bool paint(PaintInput const& in)
                     continue;
                 u32 s = runs[at.run].context.spatial.value() < spatial_count ? runs[at.run].context.spatial.value() : 0;
                 auto rect = enclosing(inverse.map(tree.transform_rect_to_viewport(SpatialNodeIndex { s }, scan.scroll_bar_rects[b].to_type<float>(), in.scroll))).inflated(2, 2);
-                local_damage = local_damage.has_value() ? local_damage->united(rect) : rect;
+                add_local(rect);
             }
         }
         if (s_debug)
@@ -1072,6 +1214,74 @@ bool paint(PaintInput const& in)
                 }
             }
         }
+
+        // A host video drawn 1:1 or scaled under a translation, with no clip of its own inside the layer: the carapace
+        // draws the frame (no tiles); else it is rastered here like any command (its pixels fetched from the host).
+        layer.video_handle = 0;
+        if (flag_kind == SpanVideo && span.video >= 0 && static_cast<size_t>(span.video) < scan.videos.size()) {
+            auto const& video = scan.videos[span.video];
+            auto const& run = runs[span.begin_run];
+            u32 s = run.context.spatial.value() < spatial_count ? run.context.spatial.value() : 0;
+            auto rel = inverse.multiplied(matrix[s].value_or(Affine {}));
+            // Clips inside the layer (the player's box, overflow hidden, maybe rounded): rectangles cut the frame here; one
+            // rounded rectangle is the carapace's (its rect and radius in layer space). Paths and difference clips: drawn here.
+            bool axis_aligned = layer.m.b == 0 && layer.m.c == 0 && layer.m.a > 0 && layer.m.d > 0;
+            char const* why_not = nullptr;
+            Optional<Gfx::FloatRect> inner;
+            Gfx::FloatRect rounded_rect;
+            float rounded_radius = 0;
+            for (u32 c = run.context.clip.value(), guard = 0; c < clip_count && guard < clip_count + 1; c = clips[c].parent, ++guard) {
+                auto const& info = clips[c];
+                if (!(span.key == 0 || in_subtree(info.spatial, span.key)))
+                    continue;
+                if (info.kind != 1 || info.difference) {
+                    why_not = "inner clip not a rectangle";
+                    break;
+                }
+                if (!axis_aligned) {
+                    why_not = "inner clip under a rotated or skewed layer";
+                    break;
+                }
+                auto local = inverse.map(tree.transform_rect_to_viewport(SpatialNodeIndex { info.spatial }, info.rect, in.scroll));
+                inner = inner.has_value() ? inner->intersected(local) : local;
+                auto const& r = info.corner_radii;
+                float most = max(max(r.top_left.horizontal_radius, r.top_right.horizontal_radius), max(r.bottom_left.horizontal_radius, r.bottom_right.horizontal_radius));
+                most = max(most, max(max(r.top_left.vertical_radius, r.top_right.vertical_radius), max(r.bottom_left.vertical_radius, r.bottom_right.vertical_radius)));
+                if (most > 0) {
+                    if (rounded_radius > 0) {
+                        why_not = "two rounded inner clips";
+                        break;
+                    }
+                    rounded_rect = local;
+                    rounded_radius = most * static_cast<float>(1 / layer.m.a);
+                }
+            }
+            bool hosted = rel.b == 0 && rel.c == 0 && rel.a > 0 && rel.d > 0 && !why_not;
+            if (!hosted)
+                video_reject(why_not ? why_not : "matrix");
+            Ganglion::media_sink_set_hosted(video.sink, hosted);
+            if (hosted) {
+                auto to_layer = [&](Gfx::FloatRect r) { return Gfx::FloatRect { static_cast<float>(rel.a * r.x() + rel.e), static_cast<float>(rel.d * r.y() + rel.f), static_cast<float>(rel.a * r.width()), static_cast<float>(rel.d * r.height()) }; };
+                auto full = to_layer(video.command.dst_rect.to_type<float>());
+                auto shown = video.clip.has_value() ? full.intersected(to_layer(*video.clip)) : full;
+                if (inner.has_value())
+                    shown = shown.intersected(*inner);
+                layer.video_handle = shown.is_empty() || full.is_empty() ? 0 : video.handle;
+                layer.video_rect = shown;
+                layer.video_uv = { (shown.x() - full.x()) / full.width(), (shown.y() - full.y()) / full.height(), shown.width() / full.width(), shown.height() / full.height() };
+                layer.video_round = rounded_rect;
+                layer.video_radius = rounded_radius;
+                layer.video_scaling = static_cast<int>(video.command.scaling_mode);
+                needed = {};
+                layer.region = {};
+            }
+        }
+        // Drawn by the carapace last paint, here now: it has no tiles to keep.
+        if (!layer.video_handle && layer.video_was_hosted) {
+            content_changed = true;
+            all = true;
+        }
+        layer.video_was_hosted = layer.video_handle != 0;
 
         // Tiles: keep those near what is needed, add the missing ones, raster what changed.
         Vector<u64> drop;
@@ -1125,7 +1335,7 @@ bool paint(PaintInput const& in)
                     // meanwhile, which the damage often does not really change (a page-wide damage when the tree's
                     // contexts do not pair up, YouTube's appends). docs/scroll.md, D3. Before, every damaged tile ahead
                     // was rastered in the same paint.
-                    if (prefetch && it != layer.tiles.end() && ((all && content_changed) || (local_damage.has_value() && tile_rect.intersects(*local_damage)))) {
+                    if (prefetch && it != layer.tiles.end() && ((all && content_changed) || any_of(local_rects, [&](auto const& r) { return tile_rect.intersects(r); }))) {
                         if (over) {
                             it->value.valid = {};
                             s_prefetch_pending = true;
@@ -1150,8 +1360,9 @@ bool paint(PaintInput const& in)
                         dirty = tile_rect;
                     } else if (all && content_changed) {
                         dirty = tile_rect;
-                    } else if (local_damage.has_value()) {
-                        dirty = tile_rect.intersected(*local_damage);
+                    } else {
+                        for (auto const& r : local_rects)
+                            dirty = united(dirty, tile_rect.intersected(r));
                     }
                     if (all && !dirty.is_empty())
                         dirty = tile_rect;
@@ -1293,8 +1504,9 @@ bool paint(PaintInput const& in)
                 }
             }
         }
-        if (content_changed && !all && local_damage.has_value() && layer.kind != Kind::Scroll)
-            viewport_damage = united(viewport_damage, enclosing(layer.m.map(local_damage->to_type<float>())).intersected(frame));
+        if (content_changed && !all && layer.kind != Kind::Scroll)
+            for (auto const& r : local_rects)
+                viewport_damage = united(viewport_damage, enclosing(layer.m.map(r.to_type<float>())).intersected(frame));
         // A moved layer changes what is behind the layers above it.
         if (!layer.fresh && !(layer.m == layer.raster_m))
             viewport_damage = united(viewport_damage, enclosing(layer.m.map(layer.region.to_type<float>())).intersected(frame));
@@ -1329,6 +1541,13 @@ bool paint(PaintInput const& in)
         }
         json.append("],"sv);
     }
+    if (s_last_damage_stats_valid) {
+        json.append("\"ds\":["sv);
+        for (size_t k = 0; k < s_last_damage_stats.size(); ++k)
+            json.appendff("{}{}", k ? "," : "", s_last_damage_stats[k]);
+        json.append("],"sv);
+        s_last_damage_stats_valid = false;
+    }
     json.append("\"layers\":["sv);
     bool first = true;
     for (auto* layer_ptr : s_order) {
@@ -1340,6 +1559,8 @@ bool paint(PaintInput const& in)
         u32 flag_kind = layer.flag & 0xf0000000;
         if (flag_kind == SpanCanvas)
             kind = layer.kind == Kind::Root ? "canvas" : kind;
+        if (flag_kind == SpanVideo && layer.video_handle)
+            kind = layer.kind == Kind::Root ? "video" : kind;
         if (flag_kind == SpanBackdrop)
             kind = "backdrop";
         auto const& m = layer.m;
@@ -1358,6 +1579,12 @@ bool paint(PaintInput const& in)
         }
         if (flag_kind == SpanCanvas)
             json.append(",\"canvas\":true"sv);
+        // The frame the carapace draws for a video span: [host frame, x, y, w, h (layer space), scaling mode, u0, v0, uw, vh,
+        // rounded clip x, y, w, h (layer space), radius (0: none)].
+        if (flag_kind == SpanVideo && layer.video_handle)
+            json.appendff(",\"video\":[{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}]", layer.video_handle, layer.video_rect.x(), layer.video_rect.y(), layer.video_rect.width(), layer.video_rect.height(), layer.video_scaling,
+                layer.video_uv.x(), layer.video_uv.y(), layer.video_uv.width(), layer.video_uv.height(),
+                layer.video_round.x(), layer.video_round.y(), layer.video_round.width(), layer.video_round.height(), layer.video_radius);
         // The scroll nodes the layer moves with (its own and every scroll ancestor), for the carapace's threaded scroll;
         // a sticky layer's constraints (device px, as LibWeb's resolve_sticky_offsets reads them).
         json.append(",\"chain\":["sv);

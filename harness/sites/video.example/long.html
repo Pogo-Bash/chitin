@@ -1,0 +1,114 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-2.0-or-later -->
+<!-- Copyright (c) 2026 [OWNER NAME] -->
+<!-- Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]) -->
+<title>video long mse</title>
+<style>body { margin: 0 } video { display: block; width: 640px; height: 360px }</style>
+<video id="v" muted playsinline></video>
+<script>
+// A long MSE playback shaped like YouTube's player: the 6 s VP9/Opus clip appended again and again at a moving
+// timestampOffset (?seconds= of media, 300 by default), kept ?ahead= seconds (30) ahead of currentTime, and what is
+// more than ?behind= seconds (10) behind it removed. ?file= the clip (6 s; with ?split=1 a video-only one: vp9-6s.webm, or vp9-1080p60-6s.webm, 1920x1080 at 60 fps,
+// ~6 Mbit/s, as YouTube's 1080p60). ?split=1 uses two SourceBuffers (video and audio) as YouTube does.
+// ?stall=ms&stallAt=s: page script busy for that long once currentTime passes stallAt (YouTube's load-time scripts
+// hold the segment's thread for seconds; the audio already sent must cover it).
+// ?speed= playbackRate (minutes of media in less time; ?rate is the stand-in server's throttle). ?draw=1: every 1.5 s the video is drawn into a canvas and its
+// top-left quadrant read (window.draws: [currentTime, 'red'|'yellow'|other]; red in even seconds, yellow in odd).
+// window.log: [wall ms, currentTime, buffered end, buffered ranges, readyState]; window.problems: errors seen.
+const q = new URLSearchParams(location.search);
+const SECONDS = Number(q.get('seconds') || 300), AHEAD = Number(q.get('ahead') || 30), BEHIND = Number(q.get('behind') || 10);
+const split = q.get('split') === '1', FILE = q.get('file') || (split ? 'vp9-6s.webm' : 'vp9-opus-6s.webm');
+window.seen = []; window.times = []; window.problems = []; window.log = []; window.appends = 0; window.removes = 0;
+const t0 = performance.now();
+const v = document.getElementById('v');
+for (const name of ['loadedmetadata', 'canplay', 'playing', 'waiting', 'stalled', 'pause', 'ended', 'error'])
+    v.addEventListener(name, () => seen.push(name + ':' + v.readyState + '@' + v.currentTime.toFixed(2)));
+v.addEventListener('timeupdate', () => times.push(Math.round(v.currentTime * 100) / 100));
+const STALL = Number(q.get('stall') || 0), STALL_AT = Number(q.get('stallAt') || 5);
+let stalled = false;
+if (STALL)
+    v.addEventListener('timeupdate', () => {
+        if (stalled || v.currentTime < STALL_AT)
+            return;
+        stalled = true;
+        seen.push('stall@' + v.currentTime.toFixed(2));
+        const end = performance.now() + STALL;
+        while (performance.now() < end) {}
+    });
+const ranges = (b) => { const r = []; for (let i = 0; i < b.length; i++) r.push(b.start(i).toFixed(1) + '-' + b.end(i).toFixed(1)); return r.join(','); };
+const ms = new MediaSource();
+ms.addEventListener('sourceopen', async () => {
+    ms.duration = SECONDS;
+    const types = split ? [['video/webm; codecs="vp9"', FILE], ['audio/webm; codecs="opus"', 'opus-6s.webm']] : [['video/webm; codecs="vp9,opus"', FILE]];
+    const bufs = [];
+    for (const [type, file] of types) {
+        const sb = ms.addSourceBuffer(type);
+        const bytes = await (await fetch(file)).arrayBuffer();
+        sb.addEventListener('error', () => problems.push('sb error'));
+        bufs.push({ sb, bytes, next: 0 });
+    }
+    const step = (b) => {
+        if (b.sb.updating || ms.readyState !== 'open')
+            return;
+        const t = v.currentTime;
+        if (b.sb.buffered.length && b.sb.buffered.start(0) < t - BEHIND - 6) {
+            removes++;
+            b.sb.remove(0, Math.floor(t - BEHIND));
+            return;
+        }
+        if (b.next >= SECONDS) {
+            if (bufs.every((x) => x.next >= SECONDS && !x.sb.updating))
+                ms.endOfStream();
+            return;
+        }
+        if (b.next > t + AHEAD)
+            return;
+        b.sb.timestampOffset = b.next;
+        try {
+            b.sb.appendBuffer(b.bytes);
+            b.next += 6;
+            appends++;
+        } catch (e) {
+            problems.push('append ' + e.name + '@' + t.toFixed(1));
+        }
+    };
+    for (const b of bufs)
+        b.sb.addEventListener('updateend', () => step(b));
+    setInterval(() => {
+        for (const b of bufs)
+            step(b);
+        log.push([Math.round(performance.now() - t0), Math.round(v.currentTime * 10) / 10, v.buffered.length ? Math.round(v.buffered.end(v.buffered.length - 1)) : 0, ranges(v.buffered), v.readyState]);
+    }, 250);
+    for (const b of bufs)
+        step(b);
+});
+const RATE = Number(q.get('speed') || 1);
+v.addEventListener('playing', () => { if (v.playbackRate !== RATE) v.playbackRate = RATE; });
+window.draws = [];
+if (q.get('draw') === '1') {
+    const c = document.createElement('canvas');
+    c.width = 320; c.height = 180;
+    const g = c.getContext('2d', { willReadFrequently: true });
+    setInterval(() => {
+        if (v.readyState < 2 || v.paused)
+            return;
+        const t = v.currentTime;
+        g.drawImage(v, 0, 0, 320, 180);
+        const [r, gg, b] = g.getImageData(40, 40, 1, 1).data;
+        draws.push([Math.round(t * 100) / 100, r > 200 && gg < 60 && b < 60 ? 'red' : r > 200 && gg > 200 && b < 80 ? 'yellow' : r + ',' + gg + ',' + b]);
+    }, 1500);
+}
+// How late a 20 ms page timer runs while playing (page script shares the thread that presents the video):
+// window.lateness() = [p50, p95, max] ms.
+const late = [];
+let due = 0;
+setInterval(() => {
+    const now = performance.now();
+    if (due && !v.paused && v.readyState >= 3)
+        late.push(Math.max(0, now - due));
+    due = now + 20;
+}, 20);
+window.lateness = () => { const a = late.slice().sort((x, y) => x - y); const at = (q) => a.length ? Math.round(a[Math.min(a.length - 1, Math.floor(q * a.length))] * 10) / 10 : 0; return [at(0.5), at(0.95), at(1)]; };
+v.src = URL.createObjectURL(ms);
+v.play().then(() => seen.push('play resolved'), (e) => seen.push('play rejected ' + e.name));
+</script>

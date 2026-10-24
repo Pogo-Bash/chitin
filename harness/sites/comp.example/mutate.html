@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>a page that changes while it scrolls</title>
+<!-- docs/feel.md: precise damage. A YouTube-shaped list: a sticky header, a growing grid, an inner shelf scroller, a
+     fixed bar; window.step(k) changes one thing at a time (top, middle, bottom, appends, the shelf, the page colour). -->
+<style>
+body { margin: 0; font: 15px/1.4 sans-serif; background: #f9f9f9; color: #222; }
+header { position: sticky; top: 0; height: 48px; background: #fff; border-bottom: 1px solid #ddd; display: flex; align-items: center; padding: 0 16px; z-index: 2; }
+#grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 12px; }
+.card { height: 140px; border-radius: 10px; background: #cfd8dc; padding: 8px; }
+.shelf { display: flex; gap: 8px; overflow-x: auto; width: 700px; height: 120px; margin: 12px; background: #eee; }
+.shelf div { flex: 0 0 160px; background: #90a4ae; }
+nav { position: fixed; left: 0; right: 0; bottom: 0; height: 36px; background: #263238; color: #fff; padding: 8px 16px; z-index: 3; }
+</style>
+<header id="h">Results</header>
+<div class="shelf" id="shelf"></div>
+<div id="grid"></div>
+<nav id="n">playing</nav>
+<script>
+const grid = document.getElementById('grid');
+const add = (n) => { for (let i = 0; i < n; i++) { const c = document.createElement('div'); c.className = 'card'; c.textContent = 'card ' + grid.children.length; c.style.background = `hsl(${(grid.children.length * 37) % 360} 40% 75%)`; grid.appendChild(c); } };
+add(30);
+const shelf = document.getElementById('shelf');
+for (let i = 0; i < 12; i++) { const d = document.createElement('div'); d.textContent = 'shelf ' + i; shelf.appendChild(d); }
+window.step = (k) => {
+    switch (k % 7) {
+    case 0: document.getElementById('h').textContent = 'Results ' + k; break; // the sticky header
+    case 1: grid.children[4].style.background = `hsl(${k * 50} 60% 60%)`; break; // a card near the top
+    case 2: add(6); break; // an append at the bottom (the list grows)
+    case 3: grid.insertBefore(Object.assign(document.createElement('div'), { className: 'card', textContent: 'inserted ' + k }), grid.children[9]); break; // an insertion in the middle
+    case 4: shelf.scrollLeft += 90; shelf.children[2].textContent = 'shelf changed ' + k; break; // the inner scroller
+    case 5: document.getElementById('n').textContent = 'playing ' + k; break; // the fixed bar
+    case 6: document.body.style.background = k % 2 ? '#fff' : '#f9f9f9'; break; // the page colour
+    }
+};
+</script>

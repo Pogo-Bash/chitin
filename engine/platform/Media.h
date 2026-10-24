@@ -22,8 +22,13 @@ void install_media();
 // The sink that holds the current frame of a video sink handle, or null.
 RefPtr<Media::VideoSink> media_video_sink(Media::VideoSinkHandle);
 
-// Whether a presented frame changed since the last call (a paint is owed), and clears it.
+// Whether a presented frame the engine draws itself changed since the last call, and clears it (a hosted sink's new
+// frame is the carapace's to show: docs/youtube.md "Video on the host").
 bool media_frames_changed();
+// The host frame a sink shows (0: none, or the engine holds the pixels), and whether the engine lifts that sink's
+// DrawVideoFrame out to the carapace this paint (Layers.cpp).
+u32 media_sink_host_frame(Media::VideoSinkHandle);
+void media_sink_set_hosted(Media::VideoSinkHandle, bool);
 bool media_frames_pending();
 
 // Whether the host's WebCodecs decodes the codec (the glue's probe, ganglion_media_set_codec_support).

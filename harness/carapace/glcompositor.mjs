@@ -163,13 +163,38 @@ export class GLCompositor {
         gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
         bitmap.close?.();
     }
-    apply(tree, bitmaps) {
+    // `videos`: [[layer id, ImageBitmap]] for the video layers whose frame changed.
+    apply(tree, bitmaps, videos) {
         if (this.canvas.width !== tree.w || this.canvas.height !== tree.h) {
             this.canvas.width = tree.w;
             this.canvas.height = tree.h;
             this.scratch = [null, null, null];
         }
         this.tree.apply(tree, bitmaps);
+        const gl = this.gl;
+        if (!this.videoTex) this.videoTex = new Map();
+        for (const [id, bitmap] of videos || []) {
+            let v = this.videoTex.get(id);
+            if (!v || v.w !== bitmap.width || v.h !== bitmap.height) {
+                if (v) gl.deleteTexture(v.tex);
+                const tex = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, bitmap.width, bitmap.height);
+                for (const [k, val] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
+                    gl.texParameteri(gl.TEXTURE_2D, k, val);
+                v = { tex, w: bitmap.width, h: bitmap.height };
+                this.videoTex.set(id, v);
+            }
+            gl.bindTexture(gl.TEXTURE_2D, v.tex);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+            bitmap.close?.();
+            this.stats.videoFrames = (this.stats.videoFrames || 0) + 1;
+        }
+        // Textures of video layers that are gone.
+        const live = new Set(this.tree.order.filter((l) => l.video).map((l) => l.id));
+        for (const [id, v] of this.videoTex)
+            if (!live.has(id)) { gl.deleteTexture(v.tex); this.videoTex.delete(id); }
         this.dirty = true;
     }
     scratchTexture(k, w, h) {
@@ -263,6 +288,28 @@ export class GLCompositor {
                 gl.bindTexture(gl.TEXTURE_2D, tile.tex);
                 gl.uniform4f(u.u_rect, tile.i * layer.tw, tile.j * layer.th, tile.w, tile.h);
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
+            // A video layer's frame, where the engine laid it out (layer space), in paint order with the tiles around it.
+            const vt = layer.video && this.videoTex && this.videoTex.get(layer.id);
+            if (vt) {
+                gl.bindTexture(gl.TEXTURE_2D, vt.tex);
+                gl.uniform4f(u.u_rect, layer.video[1], layer.video[2], layer.video[3], layer.video[4]);
+                gl.uniform2f(u.u_uv0, layer.video[6], layer.video[7]);
+                gl.uniform2f(u.u_uv, layer.video[8], layer.video[9]);
+                // A rounded clip around the video (the player's corners), in viewport pixels through the layer's matrix.
+                const vr = layer.video[14];
+                if (vr > 0) {
+                    gl.uniform1f(u.u_rr, vr * m[0]);
+                    gl.uniform4f(u.u_rclip, m[4] + m[0] * layer.video[10], m[5] + m[3] * layer.video[11], m[0] * layer.video[12], m[3] * layer.video[13]);
+                    gl.uniform2f(u.u_fb, W, H);
+                }
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                gl.uniform2f(u.u_uv0, 0, 0);
+                gl.uniform2f(u.u_uv, 1, 1);
+                if (vr > 0) {
+                    gl.uniform1f(u.u_rr, lc && layer.rr ? layer.rr : 0);
+                    if (lc && layer.rr) gl.uniform4f(u.u_rclip, lc[0], lc[1], lc[2], lc[3]);
+                }
             }
             for (const p of placed) if (p.after === layerIndex) drawExternal(p);
         }
@@ -443,6 +490,7 @@ export class GLCompositor {
     }
     destroy() {
         for (const ext of this.externals.values()) if (ext.tex) this.gl.deleteTexture(ext.tex);
+        if (this.videoTex) for (const v of this.videoTex.values()) this.gl.deleteTexture(v.tex);
         for (const layer of this.tree.order) for (const t of layer.store.values()) this.dropTile(t);
         this.canvas.remove();
     }

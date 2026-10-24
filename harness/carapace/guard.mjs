@@ -133,6 +133,21 @@ const PORT_SCHEMAS = {
             }
             out.layers = tree;
             out.tiles = m.tiles.slice();
+            // Video layers' frames (docs/youtube.md "Video on the host"): [layer id, ImageBitmap] for layers of the tree
+            // that are video layers, each bitmap within bounds.
+            if (m.videos !== undefined) {
+                if (!Array.isArray(m.videos) || m.videos.length > 64)
+                    return null;
+                const videoLayers = new Set(tree.layers.filter((l) => l.video).map((l) => l.id));
+                for (const v of m.videos) {
+                    if (!Array.isArray(v) || v.length !== 2 || !videoLayers.has(v[0]))
+                        return null;
+                    const b = v[1];
+                    if (!b || typeof b !== 'object' || !isInt(b.width, 1, LIMITS.maxBitmapDimension) || !isInt(b.height, 1, LIMITS.maxBitmapDimension))
+                        return null;
+                }
+                out.videos = m.videos.map((v) => [v[0], v[1]]);
+            }
         }
         if (m.bitmap !== undefined) {
             const b = m.bitmap;

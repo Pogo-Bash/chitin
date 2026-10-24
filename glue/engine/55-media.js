@@ -49,6 +49,30 @@ const AudioDataPrototypeClose = HostAudioData ? uncurryThis(HostAudioData.protot
 
 const mediaDecoders = { __proto__: null };
 
+// Video on the host (docs/youtube.md): with the GPU compositor a decoded frame stays here as an ImageBitmap (its
+// VideoFrame closed at once, so a hardware decoder gets its buffer back) and the engine gets a handle; the carapace
+// draws the bitmap where the engine's video layer is. The engine asks for the pixels (hostFramePlanes) only when it
+// draws the frame itself, and releases the handle when nothing holds the frame.
+const HostCreateImageBitmap = typeof createImageBitmap === 'function' ? createImageBitmap : null;
+const HostOffscreenCanvasMedia = typeof OffscreenCanvas === 'function' ? OffscreenCanvas : null;
+const hostFrames = new HostMap();
+let nextHostFrame = 1;
+let readbackCanvas = null;
+function hostFramesWanted() {
+    return !!HostCreateImageBitmap && !!HostOffscreenCanvasMedia && !callbacks.createMediaDecoder && api.compositor() === 'gpu';
+}
+// The bitmap to show for a host frame: its display copy, handed over once (transferred to the carapace); a frame shown
+// again (a new layer) gets a copy of the kept one.
+api.takeHostVideoFrame = (handle) => {
+    const f = MapPrototypeGet(hostFrames, handle);
+    if (f === undefined)
+        return null;
+    const show = f.show;
+    f.show = null;
+    return show ? [show, true] : [f.keep, false]; // [bitmap, whether it may be transferred]
+};
+api.hostVideoFrameCount = () => hostFrames.size;
+
 // The probe's codec strings, one per family the engine asks about (Media.cpp family_of).
 const MEDIA_PROBES = [
     ['vp8', 'video', { codec: 'vp8' }],
@@ -192,6 +216,20 @@ function webCodecsDecoder(config, sink) {
         output: (frame) => {
             const timestamp = VideoFrameGetTimestamp(frame);
             const duration = VideoFrameGetDuration(frame) || 0;
+            if (hostFramesWanted() && sink.hostFrame) {
+                const rect = VideoFrameGetVisibleRect(frame);
+                const width = rect.width, height = rect.height;
+                // Two bitmaps: one the engine may read back (drawImage of the video, WebGL uploads), one transferred to
+                // the carapace (a structured clone of an ImageBitmap copies its pixels on this thread: ~5 ms a 1080p frame).
+                chain = PromisePrototypeThen(chain, () => PromisePrototypeThen(HostCreateImageBitmap(frame, { resizeWidth: width, resizeHeight: height }), (keep) => {
+                    VideoFramePrototypeClose(frame);
+                    return PromisePrototypeThen(HostCreateImageBitmap(keep), (show) => sink.hostFrame(keep, show, timestamp, duration, width, height), (e) => { keep.close(); sink.error('' + e); });
+                }, (e) => {
+                    VideoFramePrototypeClose(frame);
+                    sink.error('' + e);
+                }));
+                return;
+            }
             chain = PromisePrototypeThen(chain, () => PromisePrototypeThen(planesOfVideoFrame(frame), (p) => {
                 VideoFramePrototypeClose(frame);
                 p.timestamp = timestamp;
@@ -237,6 +275,17 @@ function addMediaImports(env) {
                 } finally {
                     X.ganglion_free(ptr);
                 }
+                api.pump();
+            },
+            hostFrame: (keep, show, timestamp, duration, width, height) => {
+                if (!mediaDecoders[id]) {
+                    keep.close();
+                    show.close();
+                    return;
+                }
+                const handle = nextHostFrame++;
+                MapPrototypeSet(hostFrames, handle, { __proto__: null, keep, show });
+                X.ganglion_media_video_frame_host(id, timestamp, duration, width, height, handle);
                 api.pump();
             },
             audio: (a) => {
@@ -322,6 +371,35 @@ function addMediaImports(env) {
     env.ganglion_host_media_audio_control = (id, playing, volume, rate, syncUs) => {
         if (mediaDecoders[id] && callbacks.audio)
             callbacks.audio.control(id, { __proto__: null, playing: !!playing, volume, rate, syncUs: syncUs >= 0 ? syncUs : null });
+    };
+    env.ganglion_host_media_frame_release = (handle) => {
+        const f = MapPrototypeGet(hostFrames, handle);
+        if (f === undefined)
+            return;
+        MapPrototypeDelete(hostFrames, handle);
+        f.keep.close();
+        if (f.show)
+            f.show.close();
+    };
+    // The frame's pixels into three planes (G, B, R: a 4:4:4 frame with the Identity matrix, Media.cpp FrameSink).
+    env.ganglion_host_media_frame_planes = (handle, width, height, gPtr, bPtr, rPtr) => {
+        const f = MapPrototypeGet(hostFrames, handle);
+        const bitmap = f && f.keep;
+        if (!bitmap || !(bitmap.width > 0) || !HostOffscreenCanvasMedia)
+            return 0;
+        if (!readbackCanvas || readbackCanvas.width !== width || readbackCanvas.height !== height)
+            readbackCanvas = new HostOffscreenCanvasMedia(width, height);
+        const g = readbackCanvas.getContext('2d', { willReadFrequently: true });
+        g.drawImage(bitmap, 0, 0, width, height);
+        const rgba = g.getImageData(0, 0, width, height).data;
+        views();
+        const n = width * height;
+        for (let i = 0, j = 0; i < n; i++, j += 4) {
+            u8[gPtr + i] = rgba[j + 1];
+            u8[bPtr + i] = rgba[j + 2];
+            u8[rPtr + i] = rgba[j];
+        }
+        return 1;
     };
     env.ganglion_host_media_decode = (id, ptr, len, timestamp, duration, key) => {
         const decoder = mediaDecoders[id];

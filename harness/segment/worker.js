@@ -745,6 +745,7 @@
     let rafId = 0;
     let lastInputTs = 0;
     let lastInputSeq = 0;
+    const shownVideo = new Map(); // video layer id -> the host frame last sent for it (docs/youtube.md)
     let pendingLayers = null; // the last layered paint, until its reply goes // the carapace's number of the last input applied (its latency benchmark)
     let framesPainted = 0;
     let needsFirstPaint = true;
@@ -1156,6 +1157,27 @@
         });
         const t3 = hostNow();
         status('ganglion download / compile / instantiate', `${(t1 - t0).toFixed(0)} / ${(t2 - t1).toFixed(0)} / ${(t3 - t2).toFixed(1)} ms (${(wasmBytes.byteLength / 1048576).toFixed(1)} MiB)`);
+        // Engine memory and the Worker's event-loop lag (the worst lateness of a 1 s timer over the last 5 s): what a
+        // long page (a long video) shows first when something grows or blocks.
+        {
+            let due = hostNow() + 1000, worst = 0, ticks = 0, lastLine = '';
+            const bootAt = hostNow(), stalls = [];
+            setInterval(() => {
+                const now = hostNow();
+                worst = Math.max(worst, now - due);
+                if (now - due > 300) {
+                    stalls.push(`${((now - bootAt) / 1000).toFixed(1)} s: ${(now - due).toFixed(0)} ms`);
+                    status('event loop stalls (> 300 ms, the last 10)', stalls.slice(-10).join(', '));
+                }
+                due = now + 1000;
+                if (++ticks % 5)
+                    return;
+                const line = `${(engine.memoryBytes() / 1048576).toFixed(0)} MiB, event loop late by up to ${worst.toFixed(0)} ms`;
+                worst = 0;
+                if (line !== lastLine)
+                    status('engine memory', (lastLine = line));
+            }, 1000);
+        }
         pageSW = startPageServiceWorkers();
         const restoredStorage = await loadLocalStorage();
         if (engine.setColorScheme) engine.setColorScheme(state.colorScheme); // prefers-color-scheme, the host browser's (segment.js)
@@ -1244,6 +1266,7 @@
         // the carapace as ImageBitmaps; the flat canvas below is not used.
         const compositorMode = m.compositor === 'layers' || m.compositor === 'gpu' ? m.compositor : 'flat';
         engine.setCompositor(compositorMode);
+        shownVideo.clear();
         status('engine compositor', engine.compositor());
         paint = () => {
             const p = engine.paint();
@@ -1302,9 +1325,16 @@
             if (dirty) {
                 painted = paint();
                 // The first 4 s after a navigation: per frame [ms since it, render-blocked, painted] (docs/scroll.md "FOUC").
-                if (firstFrames && hostNow() - firstFrames.t0 < 4000 && engine.renderBlocked) {
-                    firstFrames.list.push([Math.round(hostNow() - firstFrames.t0), engine.renderBlocked(), painted ? 1 : 0]);
-                    status('first frames (ms, render-blocked, painted)', JSON.stringify(firstFrames.list.slice(-40)));
+                // Reported once, at the first painted frame or when the 4 s are up (it went out on every frame: dozens
+                // of 40-entry status messages per navigation while YouTube stayed render-blocked).
+                if (firstFrames && engine.renderBlocked) {
+                    const late = hostNow() - firstFrames.t0 >= 4000;
+                    if (!late)
+                        firstFrames.list.push([Math.round(hostNow() - firstFrames.t0), engine.renderBlocked(), painted ? 1 : 0]);
+                    if (painted || late) {
+                        status('first frames (ms, render-blocked, painted)', JSON.stringify(firstFrames.list.slice(-40)));
+                        firstFrames = null;
+                    }
                 }
                 needsFirstPaint = false;
                 if (painted && firstPaintAfterNavigation) {
@@ -1331,6 +1361,26 @@
                 }
                 reply.tiles = await hostPromiseAll(p.tiles.map((t) => hostCreateImageBitmap(t.image)));
                 transfer = reply.tiles.slice();
+                // Video layers (docs/youtube.md "Video on the host"): the frame of each whose frame changed, as the host
+                // decoded it (its display copy, transferred).
+                const videos = [];
+                for (const l of (p.layers && p.layers.layers) || []) {
+                    if (!l.video)
+                        continue;
+                    if (shownVideo.get(l.id) === l.video[0])
+                        continue;
+                    // A frame already handed over (a new layer shows it again) comes as the kept bitmap, copied by posting it.
+                    const taken = engine.takeHostVideoFrame ? engine.takeHostVideoFrame(l.video[0]) : null;
+                    if (!taken)
+                        continue;
+                    const [bitmap, transferIt] = taken;
+                    shownVideo.set(l.id, l.video[0]);
+                    videos.push([l.id, bitmap]);
+                    if (transferIt)
+                        transfer.push(bitmap);
+                }
+                if (videos.length)
+                    reply.videos = videos;
             } else if (painted && state.mode === 'bitmap') {
                 // A copy, not a transfer: the canvas keeps the frame for the next partial paint.
                 // The captured host function: with page scripting on, the global `createImageBitmap` is the engine's (LibWeb's

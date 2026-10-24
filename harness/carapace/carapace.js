@@ -389,8 +389,10 @@ import ChitinCookies from '../../build/cookies.mjs';
                     gl,
                     tree: gl.tree,
                     scrolled(ts, handled) { gl.dirty = true; shownAfter.push([ts, handled]); },
-                    apply(tree, tiles) {
-                        gl.apply(tree, tiles);
+                    apply(tree, tiles, videos) {
+                        gl.apply(tree, tiles, videos);
+                        if (videos && videos.length)
+                            metric('video frames composited (on the host)', String(gl.stats.videoFrames || 0));
                         metric('compositor layers / tiles', `${tree.layers.length} / ${tree.layers.reduce((n, l) => n + l.tiles.length, 0)}${tree.flat ? ' (flattened: over budget)' : ''}`);
                         if (gl.stats.composites % 60 === 1)
                             metric('composite ms p50 / p95 (WebGL2, CPU side)', `${pct(gl.stats.ms, 50).toFixed(2)} / ${pct(gl.stats.ms, 95).toFixed(2)}`);
@@ -426,8 +428,8 @@ import ChitinCookies from '../../build/cookies.mjs';
         return {
             tree: dom.tree,
             scrolled(ts, handled) { shownAfter.push([ts, handled]); },
-            apply(tree, tiles) {
-                dom.apply(tree, tiles);
+            apply(tree, tiles, videos) {
+                dom.apply(tree, tiles, videos);
                 const scale = tab.clientWidth / tree.w;
                 stage.style.width = tree.w + 'px';
                 stage.style.height = tree.h + 'px';
@@ -1112,7 +1114,7 @@ import ChitinCookies from '../../build/cookies.mjs';
         if (m.bitmap && bitmapCtx)
             bitmapCtx.transferFromImageBitmap(m.bitmap); // zero-copy hand-over to our canvas
         if (m.layers && seg.compositor)
-            seg.compositor.apply(m.layers, m.tiles);
+            seg.compositor.apply(m.layers, m.tiles, m.videos);
         // The new page presented its first frame: the held one goes (after the composite that shows it).
         if (held && (m.bitmap || m.layers) && seg === current)
             requestAnimationFrame(() => requestAnimationFrame(dropHold));
@@ -1124,7 +1126,7 @@ import ChitinCookies from '../../build/cookies.mjs';
                     seg.compositor.child(child.label + ':' + child.nest.frameId, undefined, childRect(child), childMoves(child));
         }
         if (trace && m.layers && trace.length <= 20000)
-            trace.push({ k: 'f', t, seq: m.seq, paint: m.paintMs, rt: t - seg.sentAt, raster: m.raster || null, dirty: m.tiles.length, media: m.layers.media || null,
+            trace.push({ k: 'f', t, seq: m.seq, paint: m.paintMs, rt: t - seg.sentAt, raster: m.raster || null, dirty: m.tiles.length, media: m.layers.media || null, ds: m.layers.ds || null,
                 nodes: m.layers.scroll.nodes.map((n) => [n[0], n[10], n[11], n[15], n[14]]),
                 layers: m.layers.layers.map((l) => [l.id, l.kind, l.node, l.m[4], l.m[5], l.clip, l.tiles.length, l.chain || null, m.layers.dirty.filter((d) => d[0] === l.id).length, l.ms, l.why || 0, l.dmg || null]) });
         if (m.inputSeq)

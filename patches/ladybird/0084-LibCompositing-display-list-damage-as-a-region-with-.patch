@@ -1,0 +1,1011 @@
+From 1cf1034796ae94f06aab5270e089ff8c3c55792e Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 20:50:41 -0500
+Subject: [PATCH] LibCompositing: display-list damage as a region with per-run
+ tags; a moved solid fill damages only what it uncovers
+
+A tiled compositor (Chitin) rasters only the tiles damage touches, but the damage was one union rect for the whole
+list: a change at the top and one at the bottom damaged everything between them, and every layer whose content
+changed got all of it, whatever its own commands did. compute_display_list_damage_region returns the damage as a few
+rects (merged when near, at most 16), each damaged command's rect tagged with the new list's run it belongs to (so a
+layer can take only its own commands' damage), and counts of why commands were damaged.
+
+A FillRect that only moved or resized under equal chains (same colour, op, effect; no inline clip or transform)
+damages the parts of its old and new rects that do not overlap. YouTube's root background fill is the viewport at the
+scroll offset when the root has no overflow rect: it moved with every scroll and damaged the whole view each frame.
+
+compute_display_list_damage (the union) is unchanged for Ladybird's own callers.
+---
+ .../DisplayList/DisplayListDamage.cpp         |  35 ++
+ .../DisplayList/DisplayListDamage.h           |  27 ++
+ .../Rust/src/display_list/damage.rs           | 428 +++++++++++++++++-
+ .../Rust/src/display_list/replay.rs           |  10 +-
+ Libraries/LibCompositing/Rust/src/ffi.rs      | 135 +++++-
+ .../LibCompositing/Rust/src/filter_bytes.rs   |  25 +-
+ 6 files changed, 623 insertions(+), 37 deletions(-)
+
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListDamage.cpp b/Libraries/LibCompositing/DisplayList/DisplayListDamage.cpp
+index 0e42c0cace..b99440b673 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListDamage.cpp
++++ b/Libraries/LibCompositing/DisplayList/DisplayListDamage.cpp
+@@ -33,6 +33,41 @@ Optional<Gfx::IntRect> compute_display_list_damage(
+     return damage_rect;
+ }
+ 
++Optional<DamageRegion> compute_display_list_damage_region(
++    DisplayList const& old_display_list,
++    AccumulatedVisualContextTree const& old_visual_context_tree,
++    ScrollStateSnapshot const& old_scroll_state,
++    DisplayList const& new_display_list,
++    AccumulatedVisualContextTree const& new_visual_context_tree,
++    ScrollStateSnapshot const& new_scroll_state,
++    Gfx::IntRect viewport_rect)
++{
++    auto old_scroll_offsets = old_scroll_state.device_offsets();
++    auto new_scroll_offsets = new_scroll_state.device_offsets();
++    DamageRegion region;
++    Array<Gfx::IntRect, 16> rects;
++    size_t count = 0;
++    static constexpr size_t max_tagged = 512;
++    Vector<Gfx::IntRect> tagged_rects;
++    Vector<u32> tagged_runs;
++    tagged_rects.resize(max_tagged);
++    tagged_runs.resize(2 * max_tagged);
++    size_t tagged_count = 0;
++    bool bounded = Compositing::RustFFI::display_list_compute_damage_region(
++        old_display_list.rust_handle(), old_visual_context_tree.rust_handle(), old_scroll_offsets.data(), old_scroll_offsets.size(),
++        new_display_list.rust_handle(), new_visual_context_tree.rust_handle(), new_scroll_offsets.data(), new_scroll_offsets.size(),
++        viewport_rect, &region.bounds, rects.data(), rects.size(), &count, region.stats.data(),
++        tagged_rects.data(), tagged_runs.data(), max_tagged, &tagged_count);
++    if (!bounded)
++        return {};
++    for (size_t i = 0; i < count; ++i)
++        region.rects.append(rects[i]);
++    region.tagged.ensure_capacity(tagged_count);
++    for (size_t i = 0; i < tagged_count; ++i)
++        region.tagged.append({ tagged_rects[i], tagged_runs[2 * i], tagged_runs[2 * i + 1] });
++    return region;
++}
++
+ AnimatedContentViewportEffect animated_content_may_affect_viewport(
+     DisplayList const& display_list,
+     AccumulatedVisualContextTree const& visual_context_tree,
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListDamage.h b/Libraries/LibCompositing/DisplayList/DisplayListDamage.h
+index 9605ce2f1b..61ffed7589 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListDamage.h
++++ b/Libraries/LibCompositing/DisplayList/DisplayListDamage.h
+@@ -6,7 +6,9 @@
+ 
+ #pragma once
+ 
++#include <AK/Array.h>
+ #include <AK/Optional.h>
++#include <AK/Vector.h>
+ #include <AK/Span.h>
+ #include <LibCompositing/Export.h>
+ #include <LibCompositing/Forward.h>
+@@ -27,6 +29,31 @@ COMPOSITING_API Optional<Gfx::IntRect> compute_display_list_damage(
+     ScrollStateSnapshot const& new_scroll_state,
+     Gfx::IntRect viewport_rect);
+ 
++// The damage as a region of a few rects (Chitin's tiled compositor rasters only tiles they touch) and why commands were
++// damaged: [0] command diff, [1] chain changes, [2] scroll bars, then each one's union (x, y, w, h) at [4], [8], [12].
++// `tagged`: each damaged command's rect with the new list's runs it belongs to (first, last), so a tiled compositor can
++// give each layer only its own commands' damage.
++struct TaggedDamage {
++    Gfx::IntRect rect;
++    u32 first_run { 0 };
++    u32 last_run { 0 };
++};
++struct DamageRegion {
++    Gfx::IntRect bounds;
++    Vector<Gfx::IntRect, 16> rects;
++    Array<i32, 16> stats {};
++    Vector<TaggedDamage> tagged;
++};
++
++COMPOSITING_API Optional<DamageRegion> compute_display_list_damage_region(
++    DisplayList const& old_display_list,
++    AccumulatedVisualContextTree const& old_visual_context_tree,
++    ScrollStateSnapshot const& old_scroll_state,
++    DisplayList const& new_display_list,
++    AccumulatedVisualContextTree const& new_visual_context_tree,
++    ScrollStateSnapshot const& new_scroll_state,
++    Gfx::IntRect viewport_rect);
++
+ struct AnimatedContentViewportEffect {
+     bool may_affect_viewport { true };
+     // The answer holds until the scene changes: no finite animation is still running, so none can stop
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/damage.rs b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
+index 8de819f865..f93ecde9d2 100644
+--- a/Libraries/LibCompositing/Rust/src/display_list/damage.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
+@@ -28,6 +28,8 @@ struct CommandReference<'a> {
+     header: DisplayListCommandHeader,
+     payload: &'a [u8],
+     context: ContextRef,
++    // The index of its run in its own list (u32::MAX: nested in a group).
++    run: u32,
+ }
+ 
+ // A tape and its run table. The runs are the only place a command's visual context is read from.
+@@ -42,13 +44,19 @@ impl<'a> Tape<'a> {
+         &self.bytes[run.offset as usize..(run.offset + run.size) as usize]
+     }
+ 
+-    fn collect_commands_of_runs(&self, runs: &[DisplayListCommandRun], commands: &mut Vec<CommandReference<'a>>) {
+-        for run in runs {
++    fn collect_commands_of_runs(
++        &self,
++        runs: &[DisplayListCommandRun],
++        first_run_index: usize,
++        commands: &mut Vec<CommandReference<'a>>,
++    ) {
++        for (k, run) in runs.iter().enumerate() {
+             for_each_command(self.run_bytes(run), |header, _, payload| {
+                 commands.push(CommandReference {
+                     header: *header,
+                     payload,
+                     context: run.context,
++                    run: (first_run_index + k) as u32,
+                 });
+             });
+         }
+@@ -63,6 +71,7 @@ fn collect_nested_command_references(bytes: &[u8], context: ContextRef) -> Vec<C
+             header: *header,
+             payload,
+             context,
++            run: u32::MAX,
+         });
+     });
+     commands
+@@ -838,9 +847,147 @@ struct DamageAccumulator {
+     damage_rect: Option<IntRect>,
+     changed_unbounded_command: bool,
+     viewport_rect: IntRect,
++    // The same damage kept as a few rects (a region), not only their union: a page with one change at the top and one
++    // at the bottom damages two small areas, not everything between them (Chitin's tiled compositor rasters only tiles
++    // a rect touches). Rects that touch or come within REGION_MERGE_DISTANCE merge; over REGION_MAX_RECTS the pair whose
++    // union adds the least area merges.
++    region: Vec<IntRect>,
++    // Why: [0] commands damaged by the command diff (inserted/removed/changed), [1] by a chain change (moved, restyled
++    // context), [2] by a scroll bar, [3] the largest one's command type | cause << 8, then each cause's union (x, y, w, h)
++    // at [4..8], [8..12], [12..16].
++    stats: [i32; 16],
++    largest_area: i64,
++    // Each damaged command's rect with the new list's run it belongs to (an old command: the run of the new list
++    // where the diff met it), so a tiled compositor can give each layer only its own commands' damage. Neighbouring
++    // rects of nearby runs merge; over TAGGED_MAX the last entry absorbs the rest.
++    tagged: Vec<TaggedDamage>,
++    new_run_hint: u32,
++}
++
++#[derive(Clone, Copy, Debug)]
++pub struct TaggedDamage {
++    pub rect: IntRect,
++    pub first_run: u32,
++    pub last_run: u32,
++}
++
++const TAGGED_MAX: usize = 512;
++
++const REGION_MAX_RECTS: usize = 16;
++const REGION_MERGE_DISTANCE: i32 = 32;
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum DamageCause {
++    Diff = 0,
++    Chain = 1,
++    Scrollbar = 2,
++}
++
++// `a` minus `b`: up to four rects (bands above and below, then left and right of the overlap).
++fn rect_difference(a: IntRect, b: IntRect) -> Vec<IntRect> {
++    let overlap = intersect_like_gfx_int_rect(a, b);
++    if overlap.is_empty() {
++        return if a.is_empty() { Vec::new() } else { vec![a] };
++    }
++    let mut out = Vec::with_capacity(4);
++    let mut push = |x: i32, y: i32, w: i32, h: i32| {
++        if w > 0 && h > 0 {
++            out.push(IntRect::new(x, y, w, h));
++        }
++    };
++    push(a.x, a.y, a.width, overlap.y - a.y);
++    push(a.x, overlap.bottom(), a.width, a.bottom() - overlap.bottom());
++    push(a.x, overlap.y, overlap.x - a.x, overlap.height);
++    push(overlap.right(), overlap.y, a.right() - overlap.right(), overlap.height);
++    out
++}
++
++fn rect_area(rect: IntRect) -> i64 {
++    rect.width.max(0) as i64 * rect.height.max(0) as i64
++}
++
++fn rects_near(a: IntRect, b: IntRect, distance: i32) -> bool {
++    a.x - distance <= b.right()
++        && b.x - distance <= a.right()
++        && a.y - distance <= b.bottom()
++        && b.y - distance <= a.bottom()
+ }
+ 
+ impl DamageAccumulator {
++    fn new(viewport_rect: IntRect) -> Self {
++        Self {
++            damage_rect: None,
++            changed_unbounded_command: false,
++            viewport_rect,
++            region: Vec::new(),
++            stats: [0; 16],
++            largest_area: 0,
++            tagged: Vec::new(),
++            new_run_hint: 0,
++        }
++    }
++
++    fn add_tagged(&mut self, rect: IntRect, run: u32) {
++        let full = self.tagged.len() >= TAGGED_MAX;
++        if let Some(last) = self.tagged.last_mut()
++            && (full
++                || (rects_near(last.rect, rect, REGION_MERGE_DISTANCE)
++                    && run + 2 >= last.first_run
++                    && run <= last.last_run + 2))
++        {
++            last.rect = last.rect.united(rect);
++            last.first_run = last.first_run.min(run);
++            last.last_run = last.last_run.max(run);
++            return;
++        }
++        self.tagged.push(TaggedDamage {
++            rect,
++            first_run: run,
++            last_run: run,
++        });
++    }
++
++    fn add_region_rect(&mut self, rect: IntRect, cause: DamageCause) {
++        let c = cause as usize;
++        self.stats[c] += 1;
++        let slot = 4 + 4 * c;
++        let previous = IntRect::new(
++            self.stats[slot],
++            self.stats[slot + 1],
++            self.stats[slot + 2],
++            self.stats[slot + 3],
++        );
++        let united = previous.united(rect);
++        self.stats[slot..slot + 4].copy_from_slice(&[united.x, united.y, united.width, united.height]);
++        let mut rect = rect;
++        // Absorb every rect this one touches (repeat: the grown rect can reach others).
++        loop {
++            let Some(index) = self
++                .region
++                .iter()
++                .position(|r| rects_near(*r, rect, REGION_MERGE_DISTANCE))
++            else {
++                break;
++            };
++            rect = rect.united(self.region.swap_remove(index));
++        }
++        self.region.push(rect);
++        while self.region.len() > REGION_MAX_RECTS {
++            let mut best = (0, 1, i64::MAX);
++            for i in 0..self.region.len() {
++                for j in i + 1..self.region.len() {
++                    let (a, b) = (self.region[i], self.region[j]);
++                    let cost = rect_area(a.united(b)) - rect_area(a) - rect_area(b);
++                    if cost < best.2 {
++                        best = (i, j, cost);
++                    }
++                }
++            }
++            let b = self.region.swap_remove(best.1);
++            self.region[best.0] = self.region[best.0].united(b);
++        }
++    }
++
+     // Once the damage covers the viewport, no further command can change the outcome.
+     fn covers_viewport(&self) -> bool {
+         self.changed_unbounded_command
+@@ -851,6 +998,8 @@ impl DamageAccumulator {
+ 
+     fn add_command_damage(
+         &mut self,
++        cause: DamageCause,
++        tag_from_command: bool,
+         command: &CommandReference<'_>,
+         visual_context_tree: &VisualContextTree,
+         scroll_offsets: &[FloatPoint],
+@@ -864,7 +1013,27 @@ impl DamageAccumulator {
+         if !command.header.has_bounding_rect {
+             return;
+         }
+-        let bounding_rect = command.header.bounding_rect;
++        self.add_local_rect_damage(
++            cause,
++            tag_from_command,
++            command,
++            command.header.bounding_rect,
++            visual_context_tree,
++            scroll_offsets,
++        );
++    }
++
++    // `bounding_rect` (in `command`'s own space) as damage in the viewport.
++    fn add_local_rect_damage(
++        &mut self,
++        cause: DamageCause,
++        tag_from_command: bool,
++        command: &CommandReference<'_>,
++        bounding_rect: IntRect,
++        visual_context_tree: &VisualContextTree,
++        scroll_offsets: &[FloatPoint],
++    ) {
++        let context = command.context;
+         let mut transformed_rect = visual_context_tree.transform_rect_to_viewport(
+             context.spatial,
+             FloatRect::new(
+@@ -903,6 +1072,18 @@ impl DamageAccumulator {
+             return;
+         }
+         let command_damage = enclosing_int_rect(transformed_rect);
++        let tag = if command.run != u32::MAX && tag_from_command {
++            command.run
++        } else {
++            self.new_run_hint
++        };
++        self.add_tagged(command_damage, tag);
++        // stats[3]: the command type of the largest damage so far (diagnostics, the scroll trace).
++        if rect_area(command_damage) >= self.largest_area {
++            self.largest_area = rect_area(command_damage);
++            self.stats[3] = command.header.command_type as i32 | ((cause as i32) << 8);
++        }
++        self.add_region_rect(command_damage, cause);
+         self.damage_rect = Some(match self.damage_rect {
+             Some(damage_rect) => damage_rect.united(command_damage),
+             None => command_damage,
+@@ -910,11 +1091,43 @@ impl DamageAccumulator {
+     }
+ 
+     fn add_old_command_damage(&mut self, chains: &TreeChainComparison<'_>, command: &CommandReference<'_>) {
+-        self.add_command_damage(command, chains.old_tree, chains.old_scroll_offsets, &chains.old_culling);
++        self.add_old_command_damage_for(DamageCause::Diff, chains, command);
+     }
+ 
+     fn add_new_command_damage(&mut self, chains: &TreeChainComparison<'_>, command: &CommandReference<'_>) {
+-        self.add_command_damage(command, chains.new_tree, chains.new_scroll_offsets, &chains.new_culling);
++        self.add_new_command_damage_for(DamageCause::Diff, chains, command);
++    }
++
++    fn add_old_command_damage_for(
++        &mut self,
++        cause: DamageCause,
++        chains: &TreeChainComparison<'_>,
++        command: &CommandReference<'_>,
++    ) {
++        self.add_command_damage(
++            cause,
++            false,
++            command,
++            chains.old_tree,
++            chains.old_scroll_offsets,
++            &chains.old_culling,
++        );
++    }
++
++    fn add_new_command_damage_for(
++        &mut self,
++        cause: DamageCause,
++        chains: &TreeChainComparison<'_>,
++        command: &CommandReference<'_>,
++    ) {
++        self.add_command_damage(
++            cause,
++            true,
++            command,
++            chains.new_tree,
++            chains.new_scroll_offsets,
++            &chains.new_culling,
++        );
+     }
+ 
+     // Damage for a command whose drawing is unchanged but whose chains moved or restyled it.
+@@ -933,8 +1146,68 @@ impl DamageAccumulator {
+             }
+             return;
+         }
+-        self.add_old_command_damage(chains, old_command);
+-        self.add_new_command_damage(chains, new_command);
++        self.add_old_command_damage_for(DamageCause::Chain, chains, old_command);
++        self.add_new_command_damage_for(DamageCause::Chain, chains, new_command);
++    }
++
++    // A solid fill that only moved or resized (same colour and everything else, same chains: a root background that
++    // covers the viewport at the scroll offset, a growing panel) changes the pixels in the parts of the two rects that
++    // do not overlap, not in both rects whole. Chitin (patch 0084): YouTube's background fill moved with every scroll
++    // and damaged the whole view each frame.
++    fn add_resized_fill_damage(
++        &mut self,
++        chains: &TreeChainComparison<'_>,
++        old_command: &CommandReference<'_>,
++        new_command: &CommandReference<'_>,
++    ) -> bool {
++        let (oh, nh) = (&old_command.header, &new_command.header);
++        if oh.command_type != DisplayListCommandType::FillRect
++            || nh.command_type != DisplayListCommandType::FillRect
++            || !oh.has_bounding_rect
++            || !nh.has_bounding_rect
++            || oh.inline_clip_count != 0
++            || nh.inline_clip_count != 0
++            || oh.has_inline_transform
++            || nh.has_inline_transform
++            || old_command.payload.len() != new_command.payload.len()
++        {
++            return false;
++        }
++        let old_fill = read_command::<FillRect>(old_command.payload);
++        let new_fill = read_command::<FillRect>(new_command.payload);
++        if old_fill.color != new_fill.color
++            || old_fill.compositing_and_blending_operator != new_fill.compositing_and_blending_operator
++            || old_fill.background_color_animation_effect != new_fill.background_color_animation_effect
++            || old_fill.color.0 >> 24 != 0xff
++        {
++            return false;
++        }
++        let verdict = chains.verdict(old_command.context, new_command.context);
++        if !verdict.compatible || !verdict.equal {
++            return false;
++        }
++        // Both in the same space (equal chains): the old rect minus the new and the new minus the old.
++        for piece in rect_difference(oh.bounding_rect, nh.bounding_rect) {
++            self.add_local_rect_damage(
++                DamageCause::Diff,
++                false,
++                old_command,
++                piece,
++                chains.old_tree,
++                chains.old_scroll_offsets,
++            );
++        }
++        for piece in rect_difference(nh.bounding_rect, oh.bounding_rect) {
++            self.add_local_rect_damage(
++                DamageCause::Diff,
++                true,
++                new_command,
++                piece,
++                chains.new_tree,
++                chains.new_scroll_offsets,
++            );
++        }
++        true
+     }
+ 
+     fn add_visual_context_damage(
+@@ -982,8 +1255,8 @@ impl DamageAccumulator {
+             return;
+         }
+ 
+-        self.add_old_command_damage(chains, old_command);
+-        self.add_new_command_damage(chains, new_command);
++        self.add_old_command_damage_for(DamageCause::Scrollbar, chains, old_command);
++        self.add_new_command_damage_for(DamageCause::Scrollbar, chains, new_command);
+     }
+ 
+     // Identical runs draw the same thing; only their chains and scroll offsets can differ. The
+@@ -1017,11 +1290,13 @@ impl DamageAccumulator {
+                 header: *header,
+                 payload,
+                 context: old_run.context,
++                run: u32::MAX,
+             };
+             let new_command = CommandReference {
+                 header: *header,
+                 payload,
+                 context: new_run.context,
++                run: u32::MAX,
+             };
+             if commands_moved {
+                 self.add_moved_command_damage(chains, &old_command, &new_command);
+@@ -1066,10 +1341,21 @@ impl DamageAccumulator {
+                 }
+             };
+ 
++        let hint = |index: usize| {
++            new_commands
++                .get(index.min(new_commands.len().saturating_sub(1)))
++                .map_or(u32::MAX, |c| c.run)
++        };
++        let fallback_hint = self.new_run_hint;
++        let set_hint = |this: &mut Self, index: usize| {
++            let h = hint(index);
++            this.new_run_hint = if h == u32::MAX { fallback_hint } else { h };
++        };
+         for i in 0..common_prefix_length {
+             if self.covers_viewport() {
+                 return;
+             }
++            set_hint(self, i);
+             add_matched_pair_damage(self, &old_commands[i], &new_commands[i]);
+         }
+ 
+@@ -1095,6 +1381,7 @@ impl DamageAccumulator {
+             if self.covers_viewport() {
+                 return;
+             }
++            set_hint(self, new_index);
+             if chains.commands_are_equal(&old_commands[old_index], &new_commands[new_index]) {
+                 add_matched_pair_damage(self, &old_commands[old_index], &new_commands[new_index]);
+                 old_index += 1;
+@@ -1136,11 +1423,14 @@ impl DamageAccumulator {
+                 continue;
+             }
+ 
+-            self.add_old_command_damage(chains, &old_commands[old_index]);
++            if !self.add_resized_fill_damage(chains, &old_commands[old_index], &new_commands[new_index]) {
++                self.add_old_command_damage(chains, &old_commands[old_index]);
++                self.add_new_command_damage(chains, &new_commands[new_index]);
++            }
+             old_index += 1;
+-            self.add_new_command_damage(chains, &new_commands[new_index]);
+             new_index += 1;
+         }
++        set_hint(self, new_end.max(1) - 1);
+         while old_index < old_end && !self.covers_viewport() {
+             self.add_old_command_damage(chains, &old_commands[old_index]);
+             old_index += 1;
+@@ -1154,6 +1444,7 @@ impl DamageAccumulator {
+             if self.covers_viewport() {
+                 return;
+             }
++            set_hint(self, new_commands.len() - common_suffix_length + i);
+             add_matched_pair_damage(
+                 self,
+                 &old_commands[old_commands.len() - common_suffix_length + i],
+@@ -1307,6 +1598,22 @@ pub fn compute_display_list_damage(
+     new_frame: DisplayListFrame<'_>,
+     viewport_rect: IntRect,
+ ) -> Option<IntRect> {
++    compute_display_list_damage_region(old_frame, new_frame, viewport_rect).map(|r| r.bounds)
++}
++
++/// The damage as a region of a few rects (each inflated and clipped like the union), with why commands were damaged.
++pub struct DamageRegion {
++    pub bounds: IntRect,
++    pub rects: Vec<IntRect>,
++    pub stats: [i32; 16],
++    pub tagged: Vec<TaggedDamage>,
++}
++
++pub fn compute_display_list_damage_region(
++    old_frame: DisplayListFrame<'_>,
++    new_frame: DisplayListFrame<'_>,
++    viewport_rect: IntRect,
++) -> Option<DamageRegion> {
+     let old_tape = Tape {
+         bytes: old_frame.command_bytes,
+         runs: old_frame.command_runs,
+@@ -1384,11 +1691,7 @@ pub fn compute_display_list_damage(
+     }
+     let identical_suffix_run_count = identical_suffix_verdicts.len();
+ 
+-    let mut damage = DamageAccumulator {
+-        damage_rect: None,
+-        changed_unbounded_command: false,
+-        viewport_rect,
+-    };
++    let mut damage = DamageAccumulator::new(viewport_rect);
+     let identical_run_pairs = old_command_runs[..identical_prefix_run_count]
+         .iter()
+         .zip(&new_command_runs[..identical_prefix_run_count])
+@@ -1403,6 +1706,8 @@ pub fn compute_display_list_damage(
+         if damage.covers_viewport() {
+             break;
+         }
++        damage.new_run_hint = ((new_run as *const DisplayListCommandRun as usize - new_command_runs.as_ptr() as usize)
++            / std::mem::size_of::<DisplayListCommandRun>()) as u32;
+         damage.add_identical_run_damage(&chains, old_run, new_run, *verdict, scroll_offsets_differ);
+     }
+ 
+@@ -1412,10 +1717,11 @@ pub fn compute_display_list_damage(
+         let new_middle_runs =
+             &new_command_runs[identical_prefix_run_count..new_command_runs.len() - identical_suffix_run_count];
+         if !old_middle_runs.is_empty() || !new_middle_runs.is_empty() {
++            damage.new_run_hint = identical_prefix_run_count as u32;
+             let mut old_commands = Vec::new();
+-            old_tape.collect_commands_of_runs(old_middle_runs, &mut old_commands);
++            old_tape.collect_commands_of_runs(old_middle_runs, identical_prefix_run_count, &mut old_commands);
+             let mut new_commands = Vec::new();
+-            new_tape.collect_commands_of_runs(new_middle_runs, &mut new_commands);
++            new_tape.collect_commands_of_runs(new_middle_runs, identical_prefix_run_count, &mut new_commands);
+             damage.add_command_diff_damage(&chains, &old_commands, &new_commands, scroll_offsets_differ);
+         }
+     }
+@@ -1424,12 +1730,33 @@ pub fn compute_display_list_damage(
+         return None;
+     }
+     let Some(damage_rect) = damage.damage_rect else {
+-        return Some(IntRect::default());
++        return Some(DamageRegion {
++            bounds: IntRect::default(),
++            rects: Vec::new(),
++            stats: damage.stats,
++            tagged: Vec::new(),
++        });
+     };
+-    Some(intersect_like_gfx_int_rect(
+-        damage_rect.inflated_edges(1, 1, 1, 1),
+-        viewport_rect,
+-    ))
++    let clip = |rect: IntRect| intersect_like_gfx_int_rect(rect.inflated_edges(1, 1, 1, 1), viewport_rect);
++    Some(DamageRegion {
++        bounds: clip(damage_rect),
++        rects: damage
++            .region
++            .iter()
++            .map(|r| clip(*r))
++            .filter(|r| !r.is_empty())
++            .collect(),
++        stats: damage.stats,
++        tagged: damage
++            .tagged
++            .iter()
++            .map(|t| TaggedDamage {
++                rect: clip(t.rect),
++                ..*t
++            })
++            .filter(|t| !t.rect.is_empty())
++            .collect(),
++    })
+ }
+ 
+ #[cfg(test)]
+@@ -1867,6 +2194,61 @@ mod tests {
+         );
+     }
+ 
++    fn region(
++        old_bytes: &TestDisplayList,
++        new_bytes: &TestDisplayList,
++        viewport_rect: IntRect,
++    ) -> Option<DamageRegion> {
++        let tree = identity_tree();
++        compute_display_list_damage_region(
++            DisplayListFrame {
++                command_bytes: old_bytes,
++                command_runs: &old_bytes.runs,
++                visual_context_tree: &tree,
++                scroll_offsets: &[],
++            },
++            DisplayListFrame {
++                command_bytes: new_bytes,
++                command_runs: &new_bytes.runs,
++                visual_context_tree: &tree,
++                scroll_offsets: &[],
++            },
++            viewport_rect,
++        )
++    }
++
++    #[test]
++    fn a_moved_solid_fill_damages_only_what_it_uncovers_and_covers() {
++        let old = fill_command_bytes(IntRect::new(0, 100, 200, 400), RED);
++        let new = fill_command_bytes(IntRect::new(0, 200, 200, 400), RED);
++        let r = region(&old, &new, IntRect::new(0, 0, 1000, 1000)).expect("bounded");
++        assert_eq!(r.rects.len(), 2);
++        // The band the fill left (100..200) and the band it reached (500..600), each inflated by 1; not 200..500.
++        assert!(r.rects.iter().all(|rect| rect.height <= 102));
++        assert!(r.rects.iter().all(|rect| rect.bottom() <= 202 || rect.y >= 498));
++    }
++
++    #[test]
++    fn a_recoloured_fill_damages_both_rects() {
++        let old = fill_command_bytes(IntRect::new(0, 100, 200, 400), RED);
++        let new = fill_command_bytes(IntRect::new(0, 200, 200, 400), GREEN);
++        let r = region(&old, &new, IntRect::new(0, 0, 1000, 1000)).expect("bounded");
++        assert_eq!(r.bounds, IntRect::new(0, 99, 201, 502));
++        assert_eq!(r.stats[0], 2);
++    }
++
++    #[test]
++    fn distant_changes_damage_two_rects_not_their_union() {
++        let mut old = fill_command_bytes(IntRect::new(0, 0, 50, 50), RED);
++        old.extend_from_slice(&fill_command_bytes(IntRect::new(0, 900, 50, 50), RED));
++        let mut new = fill_command_bytes(IntRect::new(0, 0, 50, 50), BLUE);
++        new.extend_from_slice(&fill_command_bytes(IntRect::new(0, 900, 50, 50), BLUE));
++        let r = region(&old, &new, IntRect::new(0, 0, 1000, 1000)).expect("bounded");
++        assert_eq!(r.rects.len(), 2);
++        assert!(r.rects.iter().all(|rect| rect.height <= 52));
++        assert!(r.bounds.height >= 950);
++    }
++
+     #[test]
+     fn identical_display_lists_have_no_damage() {
+         let tree = identity_tree();
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/replay.rs b/Libraries/LibCompositing/Rust/src/display_list/replay.rs
+index 3f2d395794..1359b76c8d 100644
+--- a/Libraries/LibCompositing/Rust/src/display_list/replay.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/replay.rs
+@@ -690,7 +690,15 @@ pub fn replay_display_list_range(
+     painter: &mut impl ReplayPainter,
+     range: ReplayRange,
+ ) {
+-    replay_display_list_impl(tree, tape, command_runs, effect_clips, scroll_offsets, painter, Some(range));
++    replay_display_list_impl(
++        tree,
++        tape,
++        command_runs,
++        effect_clips,
++        scroll_offsets,
++        painter,
++        Some(range),
++    );
+ }
+ 
+ fn replay_display_list_impl(
+diff --git a/Libraries/LibCompositing/Rust/src/ffi.rs b/Libraries/LibCompositing/Rust/src/ffi.rs
+index 15684850fa..2b463c99e7 100644
+--- a/Libraries/LibCompositing/Rust/src/ffi.rs
++++ b/Libraries/LibCompositing/Rust/src/ffi.rs
+@@ -109,6 +109,84 @@ pub unsafe extern "C" fn display_list_compute_damage(
+     }
+ }
+ 
++/// The damage as a region: its bounds, at most `max_rects` rects and 16 numbers saying why (see `DamageRegion`).
++/// Returns false when a change without bounds needs a full repaint.
++///
++/// # Safety
++///
++/// As `display_list_compute_damage`; `out_rects` must address `max_rects` rects and `out_stats` 16 integers.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn display_list_compute_damage_region(
++    old_storage: *const c_void,
++    old_tree: *const c_void,
++    old_scroll_offsets: *const libgfx_rust::FloatPoint,
++    old_scroll_offsets_len: usize,
++    new_storage: *const c_void,
++    new_tree: *const c_void,
++    new_scroll_offsets: *const libgfx_rust::FloatPoint,
++    new_scroll_offsets_len: usize,
++    viewport_rect: libgfx_rust::IntRect,
++    out_bounds: *mut libgfx_rust::IntRect,
++    out_rects: *mut libgfx_rust::IntRect,
++    max_rects: usize,
++    out_rect_count: *mut usize,
++    out_stats: *mut i32,
++    out_tagged_rects: *mut libgfx_rust::IntRect,
++    out_tagged_runs: *mut u32,
++    max_tagged: usize,
++    out_tagged_count: *mut usize,
++) -> bool {
++    // SAFETY: The caller guarantees live handles and valid slices for the duration of the call.
++    let (old_storage, old_tree, old_scroll_offsets, new_storage, new_tree, new_scroll_offsets) = unsafe {
++        (
++            storage_from_handle(old_storage),
++            tree_from_handle(old_tree),
++            ffi_slice(old_scroll_offsets, old_scroll_offsets_len),
++            storage_from_handle(new_storage),
++            tree_from_handle(new_tree),
++            ffi_slice(new_scroll_offsets, new_scroll_offsets_len),
++        )
++    };
++    let region = crate::display_list::damage::compute_display_list_damage_region(
++        crate::display_list::damage::DisplayListFrame {
++            command_bytes: old_storage.bytes(),
++            command_runs: old_storage.command_runs(),
++            visual_context_tree: old_tree,
++            scroll_offsets: old_scroll_offsets,
++        },
++        crate::display_list::damage::DisplayListFrame {
++            command_bytes: new_storage.bytes(),
++            command_runs: new_storage.command_runs(),
++            visual_context_tree: new_tree,
++            scroll_offsets: new_scroll_offsets,
++        },
++        viewport_rect,
++    );
++    let Some(region) = region else {
++        return false;
++    };
++    let count = region.rects.len().min(max_rects);
++    // SAFETY: The caller guarantees the out pointers are writable for the sizes above.
++    unsafe {
++        *out_bounds = region.bounds;
++        for (i, rect) in region.rects.iter().take(count).enumerate() {
++            *out_rects.add(i) = *rect;
++        }
++        *out_rect_count = count;
++        for (i, v) in region.stats.iter().enumerate() {
++            *out_stats.add(i) = *v;
++        }
++        let tagged = region.tagged.len().min(max_tagged);
++        for (i, t) in region.tagged.iter().take(tagged).enumerate() {
++            *out_tagged_rects.add(i) = t.rect;
++            *out_tagged_runs.add(2 * i) = t.first_run;
++            *out_tagged_runs.add(2 * i + 1) = t.last_run;
++        }
++        *out_tagged_count = tagged;
++    }
++    true
++}
++
+ /// # Safety
+ ///
+ /// The storage and the tree must be live handles and `scroll_offsets` must address
+@@ -896,7 +974,11 @@ pub struct FfiLayerRunInfo {
+ ///
+ /// `storage` must be a live storage handle and `out` writable. Returns false when `run` is out of range.
+ #[unsafe(no_mangle)]
+-pub unsafe extern "C" fn display_list_layer_run_info(storage: *const c_void, run: usize, out: *mut FfiLayerRunInfo) -> bool {
++pub unsafe extern "C" fn display_list_layer_run_info(
++    storage: *const c_void,
++    run: usize,
++    out: *mut FfiLayerRunInfo,
++) -> bool {
+     let storage = unsafe { storage_from_handle(storage) };
+     let runs = storage.command_runs();
+     let Some(info) = runs.get(run) else {
+@@ -908,7 +990,8 @@ pub unsafe extern "C" fn display_list_layer_run_info(storage: *const c_void, run
+     crate::display_list::builder::for_each_command(records, |header, _, payload| {
+         command_count += 1;
+         if header.command_type == crate::display_list::commands::DisplayListCommandType::PaintScrollBar {
+-            let command = crate::display_list::builder::read_command::<crate::display_list::commands::PaintScrollBar>(payload);
++            let command =
++                crate::display_list::builder::read_command::<crate::display_list::commands::PaintScrollBar>(payload);
+             scroll_bar_node = command.scroll_node_index.0;
+         }
+     });
+@@ -936,7 +1019,14 @@ pub unsafe extern "C" fn display_list_layer_run_info(storage: *const c_void, run
+ pub unsafe extern "C" fn display_list_layer_for_each_command(
+     storage: *const c_void,
+     context: *mut c_void,
+-    visit: unsafe extern "C" fn(*mut c_void, u32, u32, crate::display_list::commands::DisplayListCommandType, libgfx_rust::IntRect, u32),
++    visit: unsafe extern "C" fn(
++        *mut c_void,
++        u32,
++        u32,
++        crate::display_list::commands::DisplayListCommandType,
++        libgfx_rust::IntRect,
++        u32,
++    ),
+ ) {
+     let storage = unsafe { storage_from_handle(storage) };
+     for (run_index, run) in storage.command_runs().iter().enumerate() {
+@@ -944,7 +1034,16 @@ pub unsafe extern "C" fn display_list_layer_for_each_command(
+         let mut index = 0u32;
+         crate::display_list::builder::for_each_command(records, |header, offset, _| {
+             // SAFETY: `visit` runs synchronously.
+-            unsafe { visit(context, run_index as u32, index, header.command_type, header.bounding_rect, offset as u32) };
++            unsafe {
++                visit(
++                    context,
++                    run_index as u32,
++                    index,
++                    header.command_type,
++                    header.bounding_rect,
++                    offset as u32,
++                )
++            };
+             index += 1;
+         });
+     }
+@@ -1015,7 +1114,11 @@ pub struct FfiLayerSpatialNodeInfo {
+ ///
+ /// `tree` must be a live retained tree handle and `out` writable.
+ #[unsafe(no_mangle)]
+-pub unsafe extern "C" fn visual_context_tree_layer_spatial_node_info(tree: *const c_void, index: u32, out: *mut FfiLayerSpatialNodeInfo) -> bool {
++pub unsafe extern "C" fn visual_context_tree_layer_spatial_node_info(
++    tree: *const c_void,
++    index: u32,
++    out: *mut FfiLayerSpatialNodeInfo,
++) -> bool {
+     use crate::visual_context::SpatialData;
+     let tree = unsafe { tree_from_handle(tree) };
+     let Some(node) = tree.spatial_nodes.get(index as usize) else {
+@@ -1055,7 +1158,8 @@ pub unsafe extern "C" fn visual_context_tree_layer_spatial_node_info(tree: *cons
+         }
+         SpatialData::Transform(transform) => {
+             info.kind = 3;
+-            info.transform_sorting = transform.sorting_context_root_index.is_some() || transform.establishes_sorting_context;
++            info.transform_sorting =
++                transform.sorting_context_root_index.is_some() || transform.establishes_sorting_context;
+         }
+         SpatialData::Perspective(_) => info.kind = 4,
+         SpatialData::BackfaceVisibility(_) => info.kind = 5,
+@@ -1083,7 +1187,11 @@ pub struct FfiLayerClipNodeInfo {
+ ///
+ /// `tree` must be a live retained tree handle and `out` writable.
+ #[unsafe(no_mangle)]
+-pub unsafe extern "C" fn visual_context_tree_layer_clip_node_info(tree: *const c_void, index: u32, out: *mut FfiLayerClipNodeInfo) -> bool {
++pub unsafe extern "C" fn visual_context_tree_layer_clip_node_info(
++    tree: *const c_void,
++    index: u32,
++    out: *mut FfiLayerClipNodeInfo,
++) -> bool {
+     use crate::visual_context::ClipNodeData;
+     let tree = unsafe { tree_from_handle(tree) };
+     let Some(node) = tree.clip_nodes.get(index as usize) else {
+@@ -1108,7 +1216,12 @@ pub unsafe extern "C" fn visual_context_tree_layer_clip_node_info(tree: *const c
+         ClipNodeData::Path(path) => {
+             info.kind = 2;
+             let r = path.bounding_rect;
+-            info.rect = libgfx_rust::FloatRect { x: r.x as f32, y: r.y as f32, width: r.width as f32, height: r.height as f32 };
++            info.rect = libgfx_rust::FloatRect {
++                x: r.x as f32,
++                y: r.y as f32,
++                width: r.width as f32,
++                height: r.height as f32,
++            };
+         }
+     }
+     // SAFETY: The caller guarantees `out` is writable.
+@@ -1140,7 +1253,11 @@ pub struct FfiLayerEffectNodeInfo {
+ ///
+ /// `tree` must be a live retained tree handle and `out` writable. The filter pointers live as long as the tree.
+ #[unsafe(no_mangle)]
+-pub unsafe extern "C" fn visual_context_tree_layer_effect_node_info(tree: *const c_void, index: u32, out: *mut FfiLayerEffectNodeInfo) -> bool {
++pub unsafe extern "C" fn visual_context_tree_layer_effect_node_info(
++    tree: *const c_void,
++    index: u32,
++    out: *mut FfiLayerEffectNodeInfo,
++) -> bool {
+     use crate::visual_context::EffectNodeData;
+     let tree = unsafe { tree_from_handle(tree) };
+     let Some(node) = tree.effect_nodes.get(index as usize) else {
+diff --git a/Libraries/LibCompositing/Rust/src/filter_bytes.rs b/Libraries/LibCompositing/Rust/src/filter_bytes.rs
+index 1b116d0c62..95e59969ea 100644
+--- a/Libraries/LibCompositing/Rust/src/filter_bytes.rs
++++ b/Libraries/LibCompositing/Rust/src/filter_bytes.rs
+@@ -116,7 +116,12 @@ mod tests {
+ ///
+ /// `bytes` must address `size` readable bytes and `out` `capacity` writable functions.
+ #[unsafe(no_mangle)]
+-pub unsafe extern "C" fn filter_bytes_simple_functions(bytes: *const u8, size: usize, out: *mut FfiFilterFunction, capacity: usize) -> usize {
++pub unsafe extern "C" fn filter_bytes_simple_functions(
++    bytes: *const u8,
++    size: usize,
++    out: *mut FfiFilterFunction,
++    capacity: usize,
++) -> usize {
+     if bytes.is_null() || size == 0 {
+         return 0;
+     }
+@@ -137,13 +142,21 @@ pub unsafe extern "C" fn filter_bytes_simple_functions(bytes: *const u8, size: u
+         };
+         match filter {
+             Filter::Compose { outer, inner } => walk(inner, list) && walk(outer, list),
+-            Filter::Blur { radius_x, radius_y, input } if radius_x == radius_y => {
++            Filter::Blur {
++                radius_x,
++                radius_y,
++                input,
++            } if radius_x == radius_y => {
+                 if let Some(input) = input
+                     && !walk(input, list)
+                 {
+                     return false;
+                 }
+-                list.push(simple(FfiFilterFunctionKind::Blur, *radius_x, libgfx_rust::ColorFilterType::Brightness));
++                list.push(simple(
++                    FfiFilterFunctionKind::Blur,
++                    *radius_x,
++                    libgfx_rust::ColorFilterType::Brightness,
++                ));
+                 true
+             }
+             Filter::Saturate { value, input } => {
+@@ -152,7 +165,11 @@ pub unsafe extern "C" fn filter_bytes_simple_functions(bytes: *const u8, size: u
+                 {
+                     return false;
+                 }
+-                list.push(simple(FfiFilterFunctionKind::Color, *value, libgfx_rust::ColorFilterType::Saturate));
++                list.push(simple(
++                    FfiFilterFunctionKind::Color,
++                    *value,
++                    libgfx_rust::ColorFilterType::Saturate,
++                ));
+                 true
+             }
+             Filter::ColorFilter { kind, amount, input } => {
+-- 
+2.50.1 (Apple Git-155)
+

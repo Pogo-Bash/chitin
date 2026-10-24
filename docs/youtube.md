@@ -173,3 +173,57 @@ The home page in a fresh profile says "Try searching to get started" in Chitin a
 history, signed out). Audio in a headless run of the watch page: peak 0.375 at volume 1. The peak is measured in the
 worklet on the mixed samples, after the element's volume and before the output; the system volume cannot make it 0, and
 the panel's line is the last half second only (0 once paused or ended).
+
+## 10. Long and high-resolution playback: audio cuts out, then playback stops (branch `ytlong`, 2026-10-23)
+
+Owner report (their Chrome, main): YouTube stops after ~2 minutes, audio cutting out first; later, audio cut out at once
+on load. Their bisect: everything played at 360p with h2's 64 KiB windows; with b2ae750's larger windows YouTube's ABR
+picks 720p/1080p and the bug comes back. The window was the trigger, not the bug.
+
+Headless YouTube cannot show it past ~35-45 s: plain Chrome for Testing gets "Something went wrong" there too (with
+a desktop UA as well); YouTube refuses headless clients. The local stand-in is `harness/sites/video.example/long.html`:
+YouTube's shape (two SourceBuffers, 6 s appends at a moving timestampOffset, 30 s ahead, removed 10 s behind),
+`?file=vp9-1080p60-6s.webm` (1920x1080 at 60 fps, ~6 Mbit/s, `tools/make-test-media.mjs` NOISE=1 VIDEO_ONLY=1),
+`?speed=` playbackRate, `?draw=1` drawImage samples, `?stall=ms` a busy page script.
+
+Two causes, both the segment's one thread:
+
+- **Audio fed 1 s ahead.** Decoding, the decoded audio's hand-over and the media clock run on the segment's thread with
+  the page's script; YouTube's watch page holds it 1.5-2.6 s at load ('event loop stalls' status). With 1 s sent ahead
+  the AudioWorklet ran dry for the rest of a stall: a 3 s stall gave 2011 ms of silence and a waiting/playing pair. Now
+  4 s (Media.cpp `AUDIO_LEAD_MS`; the worklet holds up to 8 s): 9-18 ms (a864940).
+- **Video converted on the CPU.** At 1080p60 half the thread was video (profile, 40 s): every frame copied into wasm
+  (3.5 s), converted YUV->RGB by LibGfx in wasm (7.8 s) and scaled by Skia (3.3 s); playback fell behind at ~71 s
+  (video queue empty, 10 frames in flight). Under YouTube's own script there was no headroom left.
+
+### Video on the host
+
+With the GPU compositor, decoded frames never enter the engine:
+
+- `55-media.js`: a VideoFrame becomes an ImageBitmap (`createImageBitmap`: Chrome's own colour conversion, off the
+  thread) and is closed at once (a hardware decoder's buffer goes back). A second bitmap is the carapace's copy,
+  transferred (a structured clone of an ImageBitmap copies its pixels on the sending thread: ~5 ms a 1080p frame).
+- `Media.cpp`: the engine holds a placeholder frame and a handle. `FrameSink::current_frame()` (LibWeb's rasterizer,
+  drawImage, createImageBitmap, WebGL uploads of the video) reads the pixels back from the kept bitmap when asked; a
+  host frame is released when nothing holds it. A hosted sink's new frame damages no engine tile.
+- `Layers.cpp`: a DrawVideoFrame of a host frame is a span of its own (like a canvas) with no tiles when it has only
+  rectangle inline clips, no inline transform, clips inside its layer that are rectangles (at most one rounded) and a
+  translate/scale to its layer; the layer JSON carries `video: [frame, rect, scaling, uv crop, rounded clip, radius]`.
+  Otherwise it is rastered here as before (the engine log says why, and that frames are read back).
+- `glcompositor.mjs` draws the bitmap as a textured quad in paint order (YouTube's controls stay above it; the rounded
+  player corners through the tile shader's rounded clip); `compositor.mjs` (DOM backend) puts it in a canvas on the
+  layer's plane; `guard.mjs` checks the bitmaps.
+
+Measured, 1080p60 MSE in Chrome for Testing headless: segment paint p50/p95 0.25/0.59 ms (main 5.98/6.13), segment
+thread idle 37.4 of 40 s (main 19.9), 120 s with no waiting, engine memory flat at 245 MiB. YouTube (Big Buck Bunny,
+854x480 in a headless 800x600 view): no read-backs, the controls over the video.
+
+Tests: `tests/media-long.test.mjs` (engine-js-test: 5 minutes of MSE at 8x in one and two SourceBuffers, memory
+levels off; a 3 s page stall does not starve the audio); chrome-test long video group (in `CHITIN_ONLY=media`: 60 s of
+1080p60 at 2x against Chrome; paint p95 < 4 ms and a page timer's lateness p95 < 6 ms fail on main; frames composited on
+the host; drawImage of the video shows the right second, as in Chrome). Status rows for owner reports: `engine memory`
+(MiB, worst timer lateness over 5 s) and `event loop stalls`. The `first frames` row goes out once.
+
+Not done / seen on the way: Chitin accepts an init segment with a track its SourceBuffer's type does not name (Chrome
+refuses it: "error" at once); video in a flat or `layers` compositor still converts in the engine; the stall at load
+itself is YouTube's script on our thread (Chrome runs it on the main thread with media elsewhere).
