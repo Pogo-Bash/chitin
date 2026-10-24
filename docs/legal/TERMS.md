@@ -26,13 +26,15 @@ See `TRADEMARKS.md`.
 
 ## 2. How these terms fit with the licence
 
-Chitin's own code is licensed to you under the PolyForm Noncommercial License 1.0.0 (see `LICENSE.md`).
-That licence decides what you may do with the code: use it, copy it, change it, share it, and only for
-noncommercial purposes. Parts of Chitin made by others, including Ladybird, have their own licences,
+Chitin's own code is licensed to you under the GNU General Public License, version 2 or (at your option)
+any later version (see `LICENSE.md`). That licence decides what you may do with the code: use it, copy it,
+change it and share it, for any purpose, including commercial ones, as long as you follow its terms
+(for example, passing on the source and the licence). Parts of Chitin made by others, including Ladybird, have their own licences,
 listed in `CREDITS.md`.
 
 These terms add rules about how you use Chitin and what the project promises. If these terms and the
-PolyForm licence disagree about your rights in the code, the licence decides.
+GPL disagree about your rights in the code, the GPL decides. Nothing in these terms limits what the GPL lets
+you do with the code.
 
 ## 3. Who may use Chitin (age)
 
@@ -124,7 +126,7 @@ stop running any site we operate, at any time, with or without notice.
 
 **Chitin is provided "as is", without any warranty or condition of any kind, to the extent the law
 allows.** That includes any promise that it will work, be accurate, be secure, be free of bugs, be
-available, work with any site, or be fit for any purpose. (The PolyForm licence says the same about the
+available, work with any site, or be fit for any purpose. (The GPL says the same about the
 code. This section says it about everything else.)
 
 ## 11. Limit of liability
@@ -150,14 +152,12 @@ extent the law allows. This does not apply to anyone under 18 [LAWYER: confirm],
 
 ## 13. Ending your rights
 
-- The PolyForm licence has its own rules for what happens if you break it. In outline: if you are told in
-  writing that you have broken it, your licence can continue if you put things right (and fix the past) within
-  32 days of the notice; if not, your licences end immediately. See the "Violations" section of
-  `LICENSE.md`. Using Chitin in a way that breaks the licence's noncommercial limit, or distributing it in a way the
-  licence does not allow, is a breach of that licence.
+- The GPL has its own rules for what happens if you break it: distributing the code other than as the GPL
+  allows (for example without the source or the notices) ends your rights under it (section 4 of
+  `LICENSE.md`; later versions you may choose have their own rules).
 - Separately, we may suspend or end your access to anything we operate straight away if you break
-  `ACCEPTABLE_USE.md` or the law, or if keeping you would put others at risk. [LAWYER: decide whether
-  breaches of `ACCEPTABLE_USE.md` should also be made conditions of the licence itself.]
+  `ACCEPTABLE_USE.md` or the law, or if keeping you would put others at risk. (This is about our services, not
+  the code licence: the GPL does not allow extra conditions on the code.)
 - If your licence ends, you must stop using, copying and sharing Chitin's code, and stop running copies
   of it. Sections that by their nature should survive (sections 5, 7, 10, 11, 12, 14 and 15) survive.
 - You can stop at any time by closing the page and clearing the data stored in your browser.
@@ -184,10 +184,10 @@ product.
 - **Contact.** General: [CONTACT EMAIL]. Legal notices and copyright or trademark reports:
   [LEGAL EMAIL]. Abuse: [ABUSE EMAIL]. Security issues: [SECURITY EMAIL].
 
-## What these terms add to the PolyForm licence (note for the reviewer, remove before publishing)
+## What these terms add to the GPL (note for the reviewer, remove before publishing)
 
-PolyForm already covers: what you may do with the code, who may use it (noncommercial), notices,
-patents, violations and a 32-day cure period, and "as is, no liability". These terms add: coverage of
+The GPL already covers: what you may do with the code (anything, for anyone), notices, source, violations
+and termination, and "as is, no liability". These terms add: coverage of
 sites and builds, not only code; age rules; the acceptable-use rules; user responsibility for the law
 and for network rules; honest wording on Tor and anonymity; the fact that relays are third parties;
 consumer-law carve-outs; governing law; a power to suspend project-run services; trademark pointers.

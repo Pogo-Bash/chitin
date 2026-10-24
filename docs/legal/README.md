@@ -16,13 +16,13 @@ claim below has no source and no "unverified" label, treat that as my mistake an
 
 | File | What it is | Who it is for |
 |---|---|---|
-| `../../LICENSE.md` | PolyForm Noncommercial 1.0.0, official text unchanged, with a top note on third-party licences and the `Required Notice:` line | everyone who copies or changes the code |
+| `../../LICENSE.md` | GNU GPL version 2, official text unchanged; Chitin's code is GPL-2.0-or-later (SPDX headers and the `Required Notice:` line in each file) | everyone who copies or changes the code |
 | `TERMS.md` | Terms of Use for anyone using a Chitin build or a site running Chitin | users |
 | `ACCEPTABLE_USE.md` | Plain-language rules on what Chitin must not be used for | users, operators |
 | `PRIVACY.md` | What Chitin does and does not do with data; a template for a demo site | users |
 | `relay-operators.md` | Disclaimer and guide for people who run the Docker relay | operators |
 | `../../TRADEMARKS.md` | Name and logo policy; forks must rename | forks, press, anyone |
-| `takedown.md` | How the project handles licence violations by clone sites; templates; how to report misuse of the name | the owner, hosts, reporters |
+| `takedown.md` | How the project handles licence (GPL) violations by clone sites; templates; how to report misuse of the name | the owner, hosts, reporters |
 | `rvwasm-notes.md` | Checklist: what changes if these documents are reused for rvwasm | the owner |
 | this file | overview, lawyer checklist, issues memo, sources | the lawyer, the owner |
 
@@ -38,7 +38,7 @@ From `README.md`, `docs/architecture.md`, `docs/plan.md` and `CREDITS.md`:
   engine built on Ladybird (BSD-2-Clause). Network traffic leaves through a relay or through Tor.
 - The relay is not hosted by the project. It ships as a Docker image and whoever runs it is
   responsible for the traffic through it. The project collects no data.
-- Chitin's own code is PolyForm Noncommercial 1.0.0. The engine carries watermarks and behaviour
+- Chitin's own code is GPL-2.0-or-later. The engine carries watermarks and behaviour
   fingerprints. There is a trademark policy. Forks must rename.
 - Users may be 13-17, and the tool can be used for good reasons (privacy, access) and bad ones
   (breaking laws, or breaking a school's or employer's network rules).
@@ -113,15 +113,14 @@ Review marketing the way a hostile lawyer would: read the page as if it were Exh
 3. **Is the delivery host a "collector"? (5.3, 5.4).** If a static host or CDN serves the shell page,
    does its logging make the project an "operator" under COPPA or a controller under GDPR/UK GDPR?
    Does the "support for the internal operations" provision cover log-only IP handling? Does COPPA's
-   "operator" definition (commercial websites, nonprofit carve-out) reach a noncommercial
+   "operator" definition (commercial websites, nonprofit carve-out) reach a non-profit
    open-source project run by an individual?
-4. **Licence structure (5.7).** (a) Whether the Terms' acceptable-use rules can be made conditions of
-   the PolyForm licence, or are only a contract; and how the Terms' immediate suspension of
-   project-run services interacts with PolyForm's written-notice-and-32-days-to-cure rule.
-   (b) Whether an ad-funded clone site is "noncommercial" under PolyForm, and whether serving the
-   code to browsers counts as "distribution" that PolyForm does not permit for commercial purposes.
-   (c) The engine is mostly Ladybird's BSD-2-Clause code, which has no noncommercial limit. The
-   noncommercial licence and any DMCA claim can reach only Chitin-authored code and assets. How should
+4. **Licence structure (5.7).** (a) The GPL does not allow further restrictions (GPLv2 section 6), so the
+   Terms' acceptable-use rules cannot be conditions of the code licence; confirm they work as a contract
+   for project-run services and builds, and as rules for use of the name. (b) Whether serving the code
+   (the shell and the wasm engine) to visitors' browsers counts as "distribution" under the GPL, so that a
+   clone site must offer the corresponding source. (c) The engine is mostly Ladybird's BSD-2-Clause code.
+   The GPL and any DMCA claim can reach only Chitin-authored code and assets. How should
    Chitin-authored files be identified (SPDX headers, a directory split) so claims can be specific?
 5. **Provenance marks and DMCA 1202 (5.7).** Do the watermarks and behaviour fingerprints count as
    "copyright management information" (17 U.S.C. 1202(c) includes identifying numbers or symbols and
@@ -130,19 +129,19 @@ Review marketing the way a hostile lawyer would: read the page as if it were Exh
    identify the work and build, never a person.
 6. **Export controls (5.6).** Confirm the classification path for the shipped wasm (object code) and
    for the source, whether the Tor client or Chitin's own TLS counts as "non-standard cryptography"
-   (which would trigger the BIS/NSA email notification), and whether the PolyForm noncommercial
-   restriction affects "publicly available" status. Confirm the position outside the US.
+   (which would trigger the BIS/NSA email notification), and confirm that GPL source
+   counts as "publicly available". Confirm the position outside the US.
 7. **Tor naming (5.8).** Is the feature label "Route through Tor" acceptable, and does the credits
    notice in `TRADEMARKS.md` meet the Tor Project's policy? Should the project ask Tor in writing?
 8. **Relay operators (5.2, `relay-operators.md`).** Does the operator guide say enough to keep the
    project out of the operator's liability, and is the project exposed by shipping an image whose
    safe defaults it chose? Does the project become a "service provider" or a joint actor in any
    jurisdiction by publishing recommended settings and templates?
-9. **Whether the noncommercial licence suits the aim.** PolyForm Noncommercial is not an open-source
-   licence (the OSI definition does not allow field-of-use limits; I did not read the OSI text, so
-   this is my understanding). It will not be accepted into distro repositories, and some contributors
-   and Ladybird itself may react to it. Does the owner accept that cost? Is a contributor licence
-   agreement or developer certificate of origin needed so the owner can enforce and relicense?
+9. **The GPL and the aim.** The owner chose GPL-2.0-or-later (2026-10-23, replacing PolyForm
+   Noncommercial). It allows commercial use, including ad-funded copies that follow its terms, so
+   clones are now handled mainly through the trademark policy and GPL compliance (source, notices).
+   "Or later" lets recipients use GPLv3 terms too. Is a contributor licence agreement or developer
+   certificate of origin needed so the owner can enforce and, if ever needed, relicense?
 10. **Trademark clearance (`TRADEMARKS.md`).** No search for existing uses of CHITIN has been done.
     Run clearance before registration or before building a brand on the name.
 11. **Contractual form.** The Terms are drafted to be accepted on first run (click-through). Is
@@ -455,11 +454,8 @@ What this means for Chitin (the lawyer should confirm each step):
    been published"). This is a judgment, not a certainty: Tor's protocol is documented but is not an IETF
    standard, and I did not read the specifications. The lawyer should decide; the safe course, if in
    doubt, is to send the notification once (cost: one email) and keep the record.
-3. PolyForm Noncommercial restricts use, not who may read or copy the source, but it does say you may only
-   distribute for permitted (noncommercial) purposes. Whether that counts as "restrictions on further
-   dissemination" in 734.7(a) is a question I could not resolve. 742.15(b)(1) accepts licence fees and
-   royalties, which suggests restrictions on commercial use do not defeat "publicly available", but this
-   is the lawyer's call.
+3. The GPL puts no restriction on who may read, copy or further distribute the source, so it should not be
+   a "restriction on further dissemination" under 734.7(a). This is the lawyer's call.
 4. If anyone ships a closed-source or customised build, it falls outside the public-source route and
    needs its own classification.
 5. Sanctions are separate. 734.3(b)(1)(ii) records that OFAC's regulations impose embargoes
@@ -470,33 +466,30 @@ What this means for Chitin (the lawyer should confirm each step):
 
 ### 5.7 Licence design, provenance and enforcement
 
-- **PolyForm Noncommercial 1.0.0.** Installed unchanged (identical to tag 1.0.0 of
-  `polyformproject/polyform-licenses`; official URL
-  `https://polyformproject.org/licenses/noncommercial/1.0.0`). Points I noticed in the text:
-  - Acceptance: the terms are "strict obligations and conditions to all your licenses".
-  - Notices: downstream recipients must get the terms or the URL, and any plain-text lines starting
-    with `Required Notice:`. The line is in `LICENSE.md`.
-  - Permitted purposes: any noncommercial purpose; personal uses listed; use by charities,
-    educational institutions, public research bodies, public safety or health organisations,
-    environmental protection organisations and government institutions regardless of funding.
-  - Violations: after a written notice of violation, the licences continue if the violator comes into
-    full compliance and takes practical steps to correct past violations within 32 days of notice;
-    otherwise all licences end immediately. This is the contractual enforcement clock; `takedown.md`
-    template A starts it.
-  - No Liability: "As far as the law allows, the software comes as is, without any warranty or condition,
-    and the licensor will not be liable to you for any damages arising out of these terms or the use or
-    nature of the software, under any kind of legal claim."
-  - The licence does not itself say what "noncommercial" means for an ad-funded site. A clone that
-    carries advertising, takes payment or sells access is, in my reading, outside "noncommercial purposes", and
-    "Personal Uses" requires the absence of any "anticipated commercial application". The lawyer should
-    confirm, in particular for ad-funded hosting of the web app (does that infringe by "distributing" to
-    the visitor's browser outside the licence?).
+- **GPL-2.0-or-later.** (Replaced PolyForm Noncommercial 1.0.0 on 2026-10-23.) `LICENSE.md` holds the
+  GNU GPL version 2 text unchanged; each Chitin-authored file carries `SPDX-License-Identifier:
+  GPL-2.0-or-later`, a copyright line and a `Required Notice:` line. Points that matter here:
+  - Any use, including commercial use, is allowed. Running the program is not restricted (section 0).
+  - Distribution, modified or not, must keep the copyright notices and the licence, and must come with the
+    corresponding source or a written offer of it (sections 1-3). Modified versions stay under the GPL.
+  - No further restrictions may be added (section 6), so acceptable-use rules and the trademark policy
+    sit beside the licence, not inside it.
+  - Violations: under version 2, distributing other than as the licence allows ends the violator's rights
+    automatically (section 4), with no cure period. Because recipients may choose a later version, a
+    violator may point to GPLv3's reinstatement rules (cure within 30 days of a first notice). `takedown.md`
+    template A is written so it works either way.
+  - No warranty (sections 11-12): the program is provided "as is", and no copyright holder is liable for
+    damages, "unless required by applicable law".
+  - Ad-funded or paid clones are not a licence violation in themselves. What remains enforceable is
+    missing source, stripped notices, a changed licence, and (separately) misuse of the name. The lawyer
+    should confirm whether serving the web app to a visitor's browser is "distribution" that triggers the
+    source obligation.
 - **Ladybird is BSD-2-Clause** (`third_party/ladybird/LICENSE`, copyright 2018-present the Ladybird
   developers). Redistributions in source form keep the notice, conditions and disclaimer; in binary form the
   same must be reproduced "in the documentation and/or other materials provided with the distribution". Practical rule: the shell's
   `about:credits` page and the downloadable bundle carry the Ladybird text. Consequence for
-  enforcement: BSD-2-Clause lets anyone use Ladybird's code commercially. A clone that includes only Ladybird-origin code is
-  not violating Chitin's noncommercial licence by selling ads against it. The enforceable part of Chitin is what
+  enforcement: BSD-2-Clause lets anyone use Ladybird's code commercially. A clone that includes only Ladybird-origin code owes
+  only Ladybird's notices, not the GPL's obligations. The enforceable part of Chitin is what
   Chitin's author wrote: the shell, bindings, glue, relay and the Chitin-specific engine changes. Identifying
   those precisely (file headers, directories) is the first step of any notice.
 - **Patches back to Ladybird** are offered under BSD-2-Clause (owner's decision, recorded in `LICENSE.md`). Confirm
@@ -556,11 +549,10 @@ How Chitin follows it (also reflected in `TRADEMARKS.md`, `TERMS.md` and `PRIVAC
   "Route through Tor". I think the descriptive form is safer, but it is the Tor Project's call.
 - The policy also covers "Tails", which Chitin does not use.
 
-### 5.9 No warranty and limitation of liability: PolyForm versus the Terms
+### 5.9 No warranty and limitation of liability: the GPL versus the Terms
 
-What PolyForm already says (text above): the software comes as is, without warranty or condition, and
-the licensor is not liable for damages "arising out of these terms or the use or nature of the software,
-under any kind of legal claim", "as far as the law allows".
+What the GPL already says (sections 11-12): the program comes "as is", without warranty, and no copyright
+holder is liable for damages arising out of its use, "unless required by applicable law".
 
 What it does not cover, and what `TERMS.md` therefore adds:
 - It binds licensee and licensor over the *software*. It says nothing about a website, a hosted
@@ -573,11 +565,11 @@ What it does not cover, and what `TERMS.md` therefore adds:
   excluded by law ("as far as the law allows" does some of that work, but the Terms spell it out for consumers).
 - No governing law, venue, severability, changes clause, or contact route for notices and abuse reports.
 - No separate suspension right for project-operated services, and no mechanism for the project to
-  refuse service to an abuser quickly (PolyForm's 32-day cure period applies to the licence itself).
+  refuse service to an abuser quickly (the licence's own termination rules apply only to the code).
 - No indemnity. The Terms include an *optional* one, flagged for the lawyer; many consumer-facing
   terms avoid indemnities from individuals, and for minors they are unlikely to be enforceable.
 
-The Terms are written to repeat the disclaimers in plain words rather than to replace PolyForm's, and to give way to
+The Terms are written to repeat the disclaimers in plain words rather than to replace the GPL's, and to give way to
 the licence on rights in the code.
 
 ### 5.10 Other points for the lawyer
@@ -588,7 +580,7 @@ the licence on rights in the code.
 - **Third-party relays that rewrite or inject content** would be outside the project's control, but the
   user-facing text says the engine does TLS itself, so a relay cannot read or alter content. If that
   design claim is ever not true, the Privacy text must change at once.
-- **Open source expectations versus noncommercial licence.** See 4.2 item 9.
+- **The licence change.** See 4.2 item 9.
 - **Records.** Keep dated copies of each version of these documents (users who accepted version X).
   Since nothing is collected, there is no server-side acceptance log; the acceptance is a local
   setting. The lawyer should say whether that is enough evidence if a Terms issue arises.
@@ -673,7 +665,7 @@ Read in full or in the relevant part on 2026-10-11 (URLs as fetched):
 - BIS encryption notification change (March 29, 2021), secondary: https://www.wiley.law/alert-Commerce-Eases-Encryption-Export-Controls-Reporting-Requirements
 
 **Licences, policies and practice**
-- PolyForm Noncommercial License 1.0.0: https://polyformproject.org/licenses/noncommercial/1.0.0 (text from the tag 1.0.0 file in https://github.com/polyformproject/polyform-licenses, checked byte-for-byte against the copy installed as `LICENSE.md`)
+- GNU General Public License, version 2: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html (installed as `LICENSE.md`)
 - Tor Project, Copyright, Trademark and Brand Policy: https://www.torproject.org/about/trademark/
 - Cloudflare, abuse and DMCA handling: https://www.cloudflare.com/trust-hub/abuse-approach/
 - Ladybird licence (BSD-2-Clause): `third_party/ladybird/LICENSE` in this repo

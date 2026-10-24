@@ -25,11 +25,10 @@ anyone can run one. The design and the sources behind the defaults are in `docs/
    where your users are, and **you must follow your hosting provider's acceptable-use policy.** Many
    providers do not allow public proxies, VPN-like services or anything that looks like scanning, and a
    complaint can get your account locked or closed. Read the policy before you start (section 8).
-5. **You may only run the relay as the licence allows.** The relay is part of Chitin's own code and is
-   under the PolyForm Noncommercial License 1.0.0. Running one for yourself, friends, a school or a
-   charity may be a noncommercial purpose; selling access to it or running it as a business is not
-   permitted under that licence without separate permission. [LAWYER: confirm how this reads for relays,
-   and for a relay run by a company for its own staff.]
+5. **The licence.** The relay is part of Chitin's own code and is under the GNU General Public License,
+   version 2 or (at your option) any later version (`LICENSE.md`). You may run it for any purpose,
+   including as a paid service or inside a company. If you distribute it, modified or not, the GPL's terms
+   apply, including offering the source. The rest of this guide still applies however you run it.
 6. **Do not describe your relay as official** or use Chitin's name or logo in a way that suggests the
    project runs, backs or endorses it (`TRADEMARKS.md`). Do not advertise it as a way to bypass school,
    work or other filters; your wording can create liability for you (see `docs/legal/README.md` section 5.1).
@@ -132,7 +131,7 @@ they must follow the law and `ACCEPTABLE_USE.md`.
 - [ ] My logs are metadata only, with a short written retention period, and I have written down what I keep.
 - [ ] I will not collect anything from children, or I have checked the rules.
 - [ ] I understand I am responsible, the project is not, and there is no warranty.
-- [ ] My use is noncommercial under the licence, or I have separate permission.
+- [ ] If I distribute the relay (or a changed copy), I pass on the source, the licence and the notices.
 - [ ] I will not call my relay official or advertise it as a way past filters.
 
 ## 9. Updating

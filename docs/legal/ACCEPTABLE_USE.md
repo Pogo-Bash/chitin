@@ -49,9 +49,8 @@ following these rules, and you are responsible if you do not.
 
 ## Rules for people who share or run Chitin
 
-- **If you publish a copy or fork,** you must follow the licence (noncommercial use, notices kept), rename and
-  rebrand it, and must not describe it as unblocking school, work or other filters. No advertising around
-  it: the licence is noncommercial.
+- **If you publish a copy or fork,** you must follow the licence (the GPL: same licence, source offered,
+  notices kept), rename and rebrand it, and must not describe it as unblocking school, work or other filters.
 - **If you run a relay,** you must follow `relay-operators.md`: keep the safe defaults, have an abuse
   contact, and follow the law and your hosting provider's rules. You are responsible for the traffic that
   goes through your relay.

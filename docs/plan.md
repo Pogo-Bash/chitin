@@ -9,7 +9,7 @@ Decisions (owner, 2026-10-11):
 - No hosted relay: the relay ships as a Docker image; whoever runs one is responsible for the traffic
   through it (docs/legal/). Chitin's own defaults stay safe.
 - Provenance: the engine carries structural watermarks and behaviour fingerprints so copies can be
-  identified; licence: noncommercial, plus a trademark policy (docs/legal/).
+  identified; licence: GPL-2.0-or-later, plus a trademark policy (docs/legal/).
 - Classic scripts are evaluated with one appended `//# sourceURL=` line, so errors and stack traces
   name the real script. The page never sees it: its own view of the script text and integrity checks
   use the engine's untouched copy.

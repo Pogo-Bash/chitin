@@ -36,13 +36,14 @@ reused.
       the Debian userland (GPL, LGPL, MPL, MIT, BSD and non-free or restricted packages), KDE, Chromium
       if included, and so on. Distributing the images means complying with each licence: provide corresponding source or a
       written offer for GPL parts, keep notices, and publish the licence texts (an about/credits page or a
-      directory in the image). Own-code licence (PolyForm Noncommercial) applies only to the owner's code
+      directory in the image). Own-code licence (GPL-2.0-or-later) applies only to the owner's code
       (emulator, JIT, tooling), not to the image as a whole. Make the split explicit in `LICENSE.md` for
       rvwasm.
-- [ ] **Is the PolyForm Noncommercial licence compatible with how the owner's code links to or ships with
-      GPL code?** A separate-programs boundary (the emulator and the guest are separate) is
-      usually the point; the lawyer should check where code is combined (kernel patches, drivers
-      written for the guest, a guest-side agent), because GPL code that is combined may not be covered by a noncommercial licence.
+- [ ] **How the owner's GPL-2.0-or-later code combines with the guest's code.** GPL-2.0-or-later is
+      compatible with GPL-2.0-only (the kernel) and with GPLv3 code, but a combined work with GPL-2.0-only
+      parts can be distributed only under version 2. A separate-programs boundary (the emulator and the
+      guest) usually keeps them apart; the lawyer should check where code is combined (kernel patches,
+      drivers written for the guest, a guest-side agent).
 - [ ] **Kernel and distro patches the owner wrote** (framebuffer and input drivers, sound card, GPU path) may
       be derived works of GPL code and then must be GPL. Decide and label.
 - [ ] **Ladybird/BSD-2** applies only if rvwasm includes Ladybird code. If not, drop that paragraph.
@@ -103,4 +104,4 @@ reused.
 - [ ] `takedown.md`: the sets of "Chitin-authored" files do not apply; list the owner's code (emulator, JIT,
       tooling) and make sure provenance marks identify rvwasm builds. Remember that most of an image is other people's code
       and cannot be the subject of a notice from the owner.
-- [ ] `LICENSE.md`: add the third-party and GPL notes and a list of what is and is not under PolyForm.
+- [ ] `LICENSE.md`: add the third-party notes and a list of what is and is not the owner's GPL-2.0-or-later code.

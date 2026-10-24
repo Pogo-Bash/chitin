@@ -16,17 +16,20 @@ sender liable (17 U.S.C. 512(f)). Where in doubt, ask the lawyer first, or do no
 
 ## 1. Know what can be claimed
 
-1. **Only Chitin's own code and assets are covered by the noncommercial licence.** The engine is mostly
-   Ladybird's code under BSD-2-Clause, which lets anyone use it commercially if they keep the notices. A site that
-   copies only Ladybird's code is not breaking Chitin's licence by running ads, though it still has to keep
-   Ladybird's copyright notice and licence text. Before sending anything, identify which files or assets in
-   the copy are Chitin-authored. (Chitin-authored files should carry an SPDX header, or live in directories the repository lists as
-   Chitin-authored; that list does not exist yet, so create it first.)
-2. **Violations of the PolyForm licence** are mainly: using or sharing Chitin's code for commercial purposes (ads,
-   payment, selling access); distributing without the licence terms or the `Required Notice:` line; and
-   anything else outside the licence. The licence says a violator who is told in writing and comes into full
-   compliance within 32 days keeps their licences; otherwise they end. So the first step is a *notice of
-   violation* (template A), not a takedown.
+1. **Only Chitin's own code and assets are covered by Chitin's licence (the GPL).** The engine is mostly
+   Ladybird's code under BSD-2-Clause, which lets anyone use it if they keep the notices. A site that
+   copies only Ladybird's code owes nothing under Chitin's licence, though it still has to keep
+   Ladybird's copyright notice and licence text. Note that running ads or charging is not a violation of the
+   GPL either. Before sending anything, identify which files or assets in
+   the copy are Chitin-authored. (Chitin-authored files carry an
+   `SPDX-License-Identifier: GPL-2.0-or-later` header and a copyright line.)
+2. **Violations of the GPL** are mainly: distributing Chitin's code (including serving it to visitors, if
+   that counts as distribution; see `docs/legal/README.md` 5.7) without the corresponding source or a written
+   offer of it; stripping the copyright, `Required Notice:` or licence notices; putting a modified version under
+   another licence or adding restrictions; and anything else outside the licence. Under version 2 the
+   violator's rights end automatically; GPLv3, which recipients may choose, reinstates them if the violation
+   is fixed within 30 days of a first notice. Either way, the first step is a *notice of violation*
+   (template A), not a takedown: the aim is compliance.
 3. **Trademark and "passing off"** is a separate claim: using the name or logo in a way likely to confuse about
    affiliation or source. The US statute is 15 U.S.C. 1125(a)(1)(A) (false designation of origin,
    "likely to cause confusion ... as to the affiliation, connection, or association ... or as to the origin,
@@ -51,8 +54,8 @@ How they may be used:
   If the copy is later changed, you still have the record.
 - Be honest about confidence. Levels: (1) identical files or strings (strong); (2) fingerprints and
   watermarks match (strong, explain how they work if asked); (3) looks similar (not enough alone).
-- Check for innocent explanations before acting: a compliant fork (renamed, noncommercial, notices intact)
-  is allowed; a research group, school or charity using it noncommercially is allowed; the "copy" may be
+- Check for innocent explanations before acting: a compliant fork (renamed, source offered, notices intact)
+  is allowed, whether or not it makes money; anyone simply running it is allowed; the "copy" may be
   Ladybird-only; the site may be an official mirror.
 - The marks are build identifiers. They must never identify a user. If a mark ever turns out to be able to
   identify a person, stop using it and tell the lawyer. (`docs/legal/README.md` sections 5.7 and 6.)
@@ -62,8 +65,8 @@ How they may be used:
 1. **Verify** (section 2). Write down the claim in one sentence: which Chitin-authored work, in what form, is
    being used how, in breach of what term.
 2. **Contact the operator** (template A). Use contact details on the site, the WHOIS record or the repository.
-   Say what is wrong and what putting it right means (remove the ads and payments, restore notices,
-   rename, or take it down). Give 32 days, which is the licence's own period, or a shorter period if the
+   Say what is wrong and what putting it right means (publish or offer the source, restore notices,
+   rename, or take it down). Give 30 days, which matches GPLv3's cure period, or a shorter period if the
    lawyer agrees for trademark confusion. Keep a copy of what you sent and when.
 3. **If there is no cure, or the operator is hidden:** send a DMCA notice to the host (template B). Find
    the host from the site's DNS, IP address and hosting information. If the site is behind a CDN or proxy
@@ -98,31 +101,30 @@ answered. Keep a copy.
 ### Template A: notice of licence violation, to the operator of a copy
 
 ```
-Subject: Notice of violation of the PolyForm Noncommercial License 1.0.0 (Chitin)
+Subject: Notice of violation of the GNU General Public License (Chitin)
 
 To: [operator / contact]
 From: [OWNER NAME] ([LEGAL EMAIL])
 Date: [DATE]
 
-I am the copyright holder of Chitin, which is licensed under the PolyForm Noncommercial License 1.0.0
-(https://polyformproject.org/licenses/noncommercial/1.0.0; the text is in LICENSE.md in the repository at
-[PROJECT URL]).
+I am the copyright holder of Chitin, which is licensed under the GNU General Public License, version 2
+or (at your option) any later version (https://www.gnu.org/licenses/old-licenses/gpl-2.0.html; the text is
+in LICENSE.md in the repository at [PROJECT URL]).
 
 I believe that the site at [URL] ("the site") is using [copying / distributing / hosting] Chitin's code
 in a way the licence does not allow:
 
-- [e.g. the site contains advertising / takes payment for access, which is not a noncommercial purpose]
-- [e.g. the copy does not include the Required Notice line or a copy of the licence terms]
+- [e.g. the site distributes the code without the corresponding source or a written offer of it]
+- [e.g. the copy has had its copyright, Required Notice or licence notices removed, or is offered under other terms]
 - [e.g. the site uses the name Chitin / my logo for a modified or unofficial copy (see TRADEMARKS.md)]
 
 Evidence: [files, strings, hashes, build identifiers that match; dates; screenshots / archive links].
 
-This is notice in writing under the "Violations" section of the licence. If you come into full compliance
-with the licence, and take practical steps to correct past violations, within 32 days of receiving this
-notice, your licences can continue. Otherwise, all your licences end immediately and further use is
-unlicensed.
+Distributing the code other than as the licence allows ends your rights under it (GPL version 2,
+section 4). If you come into full compliance within 30 days of receiving this notice, I will treat your
+rights as restored (as GPL version 3, section 8, provides). Otherwise further distribution is unlicensed.
 
-To comply, please: [list: remove the advertising and payments, or take the site down; restore the notices;
+To comply, please: [list: publish the corresponding source or a written offer of it, or take the site down; restore the notices;
 rename and rebrand as described in TRADEMARKS.md; stop describing it as official]. Please reply by [DATE]
 to confirm what you have done.
 
@@ -151,7 +153,8 @@ Date: [DATE]
 2. Copyrighted work(s) claimed to have been infringed: Chitin, [list the specific files or
    components, e.g. "the shell and glue code in the repository at [PROJECT URL], files [paths]"],
    first published [DATE]. [US copyright registration number(s), if any.] It is available under the
-   PolyForm Noncommercial License 1.0.0, which permits noncommercial use only.
+   GNU General Public License, version 2 or any later version, which requires that copies come with the
+   source and the notices.
 
 3. Material claimed to be infringing and its location: [exact URLs on your service, and the file
    names / paths that contain the copied material]. [Short explanation of how the material matches: e.g.
@@ -160,8 +163,8 @@ Date: [DATE]
 4. My contact information: [name, postal address, telephone, email].
 
 5. I have a good faith belief that the use of the material in the manner complained of is not
-   authorised by the copyright owner, its agent, or the law. [The site is using the code for commercial
-   purposes (advertising), which the licence does not allow.]
+   authorised by the copyright owner, its agent, or the law. [The site distributes the code without the
+   source and with the notices removed, which the licence does not allow.]
 
 6. The information in this notice is accurate, and, under penalty of perjury, I am authorised to act on
    behalf of the owner of an exclusive right that is allegedly infringed.

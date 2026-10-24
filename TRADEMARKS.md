@@ -4,7 +4,7 @@
 
 Version: DRAFT 0.1 (2026-10-11).
 
-The PolyForm licence in `LICENSE.md` covers Chitin's code. It does not give you any right to use
+The GPL in `LICENSE.md` (version 2 or any later version) covers Chitin's code. It does not give you any right to use
 Chitin's name or logo. This policy says how the name and logo may be used.
 
 The point of this policy is simple: when you see "Chitin", you should be able to trust that it is
@@ -38,7 +38,7 @@ Owner of the marks: [OWNER NAME].
 - **Use the name in your own project's documentation** to say that it is compatible with Chitin, in a way
   that makes clear it is not Chitin itself. For example, "Compatible with Chitin. Not affiliated with
   or endorsed by Chitin." Use plain text, not the logo.
-- **Run an unmodified copy for yourself** (on your own machine or private network, noncommercial).
+- **Run an unmodified copy for yourself** (on your own machine or private network).
   If you make it public, section 4 applies.
 
 ## 3. What you may not do
@@ -54,7 +54,8 @@ Owner of the marks: [OWNER NAME].
   "school", "bypass", "free VPN", and similar. Even a truthful use is not allowed next to these words.
 - **Use the logo** in any altered form (changed colours, proportions or elements) or as part of your own logo.
 - **Put advertising around Chitin's name or an unmodified copy of it,** or sell, rent or take payment for access
-  to it, under the name Chitin. (The licence is noncommercial and the name follows the same spirit.)
+  to it, under the name Chitin. (The GPL lets you charge for copies and services under your own name; it
+  gives no right to the name.)
 - **Remove or imitate the marks in the software** that show where a copy came from. Doing so is also treated
   as a licence matter (`takedown.md`).
 - **Register or use Chitin** as a trademark, company name or domain name, in any country.
@@ -68,12 +69,12 @@ If you publish your own version or copy:
 2. **Rebrand:** replace the name, logos, icons and colour schemes that identify the official product, in the
    user interface, the title bar, the about page, package metadata, documentation, store listings,
    screenshots and domain names.
-3. **Keep the notices the licence and the other licences require:** the `Required Notice:` line, the
-   Ladybird BSD-2-Clause notice and the other credits in `CREDITS.md`. Credit is honest and encouraged:
+3. **Keep the notices the licence and the other licences require:** the copyright and `Required Notice:` lines
+   in each file, the GPL text, the Ladybird BSD-2-Clause notice and the other credits in `CREDITS.md`. Credit is honest and encouraged:
    "Based on Chitin by [OWNER NAME]" in plain text is fine, and is encouraged.
 4. **Say it is unofficial** and not endorsed by the project, on the about page and the site.
-5. **Follow the licence.** In particular: noncommercial purposes only, so no advertising, no payments,
-   no selling access.
+5. **Follow the licence.** In particular: keep it under the GPL, and give everyone you distribute it to the
+   corresponding source (or a written offer of it), the licence text and the notices.
 6. **Do not describe the fork as a school, work or firewall unblocker** or a way to evade monitoring.
 7. **Do not use the official origin or anything confusingly similar** for your site.
 

@@ -25,7 +25,8 @@ From `docs/legal/relay-operators.md` (draft, not legal advice; read the whole fi
    providers do not allow public proxies, VPN-like services or anything that looks like scanning, and a
    complaint can get your account locked or closed. Read the policy before you start.
 5. **The licence.** The relay is part of Chitin's own code and is under the GNU General Public License,
-   version 2 (`LICENSE.md`). If you distribute it, modified or not, the GPL's terms apply, including
+   version 2 or (at your option) any later version (`LICENSE.md`). You may run it for any purpose,
+   including as a paid service. If you distribute it, modified or not, the GPL's terms apply, including
    offering the source.
 6. **Do not describe your relay as official** or use Chitin's name or logo in a way that suggests the
    project runs, backs or endorses it (`TRADEMARKS.md`). Do not advertise it as a way to bypass school,
