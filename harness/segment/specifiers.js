@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (c) 2026 [OWNER NAME]
 // Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 // Import maps for page modules (docs/architecture.md "Import maps"): the module specifiers a module's text names, found by

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (c) 2026 [OWNER NAME]
 // Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 // Sign-in handoff (docs/oauth.md): the carapace's rules for third-party sign-in, shared by carapace.js and the Node tests

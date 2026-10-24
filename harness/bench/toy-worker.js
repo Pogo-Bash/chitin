@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (c) 2026 [OWNER NAME]
 // Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 // Runs the same cases on the toy engine, in a dedicated Worker with page JS on V8 next to the

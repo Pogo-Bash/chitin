@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (c) 2026 [OWNER NAME]
 // Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 // WebSocket for a segment's page and for its page's virtual service worker (docs/architecture.md, "WebSockets"). Loaded with

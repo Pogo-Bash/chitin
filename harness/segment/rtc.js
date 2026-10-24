@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (c) 2026 [OWNER NAME]
 // Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 // WebRTC and media capture for a segment's page (docs/webrtc.md). Loaded with importScripts before the host's doors are removed

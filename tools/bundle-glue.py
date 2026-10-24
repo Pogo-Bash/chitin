@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (c) 2026 [OWNER NAME]
 # Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 """Concatenates the glue sources into one classic script: an IIFE that leaves a single boot
@@ -15,7 +15,7 @@ if args[0] == "--global":
     args = args[2:]
 out, *parts = args
 chunks = ["/*! Chitin: a web browser that runs inside a web page. Copyright (c) 2026 [OWNER NAME].\n"
-          " * Licensed under the PolyForm Noncommercial License 1.0.0 (LICENSE.md); built on Ladybird (BSD-2-Clause,\n"
+          " * Licensed under the GNU GPL, version 2 or later (LICENSE.md); built on Ladybird (BSD-2-Clause,\n"
           " * CREDITS.md). Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL]). */\n",
           "// Chitin segment glue (bundled by tools/bundle-glue.py; sources in glue/).\n",
           "(function () {\n'use strict';\n"]

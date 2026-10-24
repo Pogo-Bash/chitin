@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (c) 2026 [OWNER NAME]
 # Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 #
@@ -11,7 +11,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKIP = ("third_party/", "patches/", "build/", "node_modules/", ".git/", "harness/sites/", "docs/", "toy/idl/", "engine/libjs-runtime/tools/Layout-x86_64-reference.h")
 STYLES = {".js": "//", ".mjs": "//", ".cpp": "//", ".h": "//", ".py": "#", ".sh": "#", ".cmake": "#", ".mk": "#", ".idl": "//", ".css": "/*", ".html": "<!--"}
-LINES = ["SPDX-License-Identifier: GPL-2.0-only", "Copyright (c) 2026 [OWNER NAME]", "Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])"]
+LINES = ["SPDX-License-Identifier: GPL-2.0-or-later", "Copyright (c) 2026 [OWNER NAME]", "Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])"]
 
 
 def header_for(ext):

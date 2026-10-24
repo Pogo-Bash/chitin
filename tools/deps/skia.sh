@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (c) 2026 [OWNER NAME]
 # Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 # Skia for wasm32: CPU raster only (no Ganesh/Graphite yet), FreeType with the "custom empty" font

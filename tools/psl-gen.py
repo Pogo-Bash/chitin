@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (c) 2026 [OWNER NAME]
 # Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 """The Public Suffix List (third_party/psl, MPL-2.0) as one glue constant: PSL_RULES, the ICANN and private rules

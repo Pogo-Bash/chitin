@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (c) 2026 [OWNER NAME]
 # Required Notice: Copyright (c) 2026 [OWNER NAME] ([PROJECT URL])
 """The site-compatibility list (docs/surface.md): webcompat/*.json, one rule per file in Ladybird's WebCompat shape, checked and
