@@ -33,9 +33,11 @@ uniform sampler2D u_tex;
 uniform vec4 u_rclip;
 uniform float u_rr;
 uniform vec2 u_fb;
+uniform float u_bgra; // 1: the texture holds raw BGRA premultiplied bytes (the engine's tiles as they are)
 out vec4 o;
 void main() {
     o = texture(u_tex, v_uv);
+    if (u_bgra > 0.5) o = o.bgra;
     if (u_rr > 0.0) {
         vec2 p = vec2(gl_FragCoord.x, u_fb.y - gl_FragCoord.y);
         vec2 q = clamp(p, u_rclip.xy + u_rr, u_rclip.xy + u_rclip.zw - u_rr);
@@ -113,11 +115,16 @@ function program(gl, vs, fs) {
 }
 
 export class GLCompositor {
+    // Anything that changes what shows sets `dirty`; the carapace's `onDirty` asks for one animation frame then (an
+    // animation-frame loop that never stops delays the host's main-thread input by about a frame, docs/feel.md).
+    get dirty() { return this._dirty; }
+    set dirty(v) { this._dirty = v; if (v && this.onDirty) this.onDirty(); }
     // `canvas`: a canvas element the carapace placed over the view. Throws when WebGL2 is not there (the caller falls
     // back to the DOM backend).
     constructor(canvas) {
         this.canvas = canvas;
-        const gl = canvas.getContext('webgl2', { alpha: true, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
+        const desync = typeof location !== 'undefined' && new URLSearchParams(location.search).get('gl.desync') === '1';
+        const gl = canvas.getContext('webgl2', { alpha: true, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: false, powerPreference: 'high-performance', desynchronized: desync });
         if (!gl)
             throw new Error('no WebGL2');
         this.gl = gl;
@@ -159,6 +166,14 @@ export class GLCompositor {
     writeTile(tile, x, y, w, h, bitmap) {
         const gl = this.gl;
         gl.bindTexture(gl.TEXTURE_2D, tile.tex);
+        if (bitmap && bitmap.bgra) {
+            // Raw: already premultiplied, BGRA order (the tile shader swizzles); one upload from the transferred bytes.
+            tile.bgra = true;
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, bitmap.bgra);
+            return;
+        }
+        tile.bgra = false;
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
         gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
         bitmap.close?.();
@@ -255,6 +270,7 @@ export class GLCompositor {
             gl.uniform2f(u.u_uv, 1, 1);
             gl.uniform2f(u.u_uv0, 0, 0);
             gl.uniform1f(u.u_flip, 0);
+            gl.uniform1f(u.u_bgra, 0);
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, p.e.tex);
             gl.uniform1i(u.u_tex, 0);
@@ -286,6 +302,7 @@ export class GLCompositor {
             gl.activeTexture(gl.TEXTURE0);
             for (const tile of layer.store.values()) {
                 gl.bindTexture(gl.TEXTURE_2D, tile.tex);
+                gl.uniform1f(u.u_bgra, tile.bgra ? 1 : 0);
                 gl.uniform4f(u.u_rect, tile.i * layer.tw, tile.j * layer.th, tile.w, tile.h);
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             }
@@ -330,6 +347,7 @@ export class GLCompositor {
             gl.uniform2f(u.u_uv, 1, 1);
             gl.uniform2f(u.u_uv0, 0, 0);
             gl.uniform1f(u.u_flip, 1);
+            gl.uniform1f(u.u_bgra, 0);
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, main.tex);
             gl.uniform1i(u.u_tex, 0);

@@ -1,0 +1,104 @@
+From 783582e72d3a04e8e9a14806dd5be382c38bff2c Mon Sep 17 00:00:00 2001
+From: pogo-bash <pogo-bash@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 22:35:09 -0500
+Subject: [PATCH] LibCompositing: replay profiling hook (per command type
+ painter time, off by default)
+
+Chitin uses it to say where raster time goes on real pages (text, images, shadows, paths).
+---
+ .../Rust/src/display_list/replay.rs           | 38 +++++++++++++++++++
+ Libraries/LibCompositing/Rust/src/ffi.rs      | 25 ++++++++++++
+ 2 files changed, 63 insertions(+)
+
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/replay.rs b/Libraries/LibCompositing/Rust/src/display_list/replay.rs
+index 1359b76c8d..1a1f2d59fe 100644
+--- a/Libraries/LibCompositing/Rust/src/display_list/replay.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/replay.rs
+@@ -49,6 +49,40 @@ pub trait ReplayPainter {
+ /// Plays one stream of records: the records of a run, or the records nested in a command. Compositor
+ /// metadata is skipped, a command whose bounds are empty or clipped away is culled, and each command plays
+ /// inside its inline clips and transform. A scroll bar's thumb moves by the offset of its scroll node.
++// Replay profiling (Chitin, patch 0085): while on, the time spent in each command type's painter call is summed, so a
++// host can say where raster time goes (text, images, shadows, paths). Off by default: one relaxed load per command.
++pub mod profile {
++    use std::cell::RefCell;
++    use std::sync::atomic::{AtomicBool, Ordering};
++    pub static ENABLED: AtomicBool = AtomicBool::new(false);
++    pub const SLOTS: usize = 64;
++    thread_local! {
++        pub static TOTALS: RefCell<([f64; SLOTS], [u32; SLOTS])> = const { RefCell::new(([0.0; SLOTS], [0; SLOTS])) };
++    }
++    #[inline]
++    pub fn enabled() -> bool {
++        ENABLED.load(Ordering::Relaxed)
++    }
++    pub fn add(slot: usize, ms: f64) {
++        TOTALS.with(|t| {
++            let mut t = t.borrow_mut();
++            if slot < SLOTS {
++                t.0[slot] += ms;
++                t.1[slot] += 1;
++            }
++        });
++    }
++    // Copies the sums out (ms per command type, then counts) and clears them.
++    pub fn take(ms: &mut [f64; SLOTS], counts: &mut [u32; SLOTS]) {
++        TOTALS.with(|t| {
++            let mut t = t.borrow_mut();
++            *ms = t.0;
++            *counts = t.1;
++            *t = ([0.0; SLOTS], [0; SLOTS]);
++        });
++    }
++}
++
+ pub fn replay_records<Painter: ReplayPainter + ?Sized>(
+     records: &[u8],
+     scroll_offsets: &[FloatPoint],
+@@ -90,6 +124,10 @@ pub fn replay_records<Painter: ReplayPainter + ?Sized>(
+             let mut command_bytes = [0u8; std::mem::size_of::<PaintScrollBar>()];
+             command.write_ffi_bytes(&mut command_bytes);
+             painter.play_command(header.command_type, &command_bytes, payload);
++        } else if profile::enabled() {
++            let t0 = std::time::Instant::now();
++            painter.play_command(header.command_type, payload, payload);
++            profile::add(header.command_type as usize, t0.elapsed().as_secs_f64() * 1000.0);
+         } else {
+             painter.play_command(header.command_type, payload, payload);
+         }
+diff --git a/Libraries/LibCompositing/Rust/src/ffi.rs b/Libraries/LibCompositing/Rust/src/ffi.rs
+index 2b463c99e7..ea934de1e4 100644
+--- a/Libraries/LibCompositing/Rust/src/ffi.rs
++++ b/Libraries/LibCompositing/Rust/src/ffi.rs
+@@ -1320,3 +1320,28 @@ pub unsafe extern "C" fn visual_context_tree_layer_node_counts(tree: *const c_vo
+         *out_counts.add(3) = u32::from(has_sorting);
+     }
+ }
++
++/// Replay profiling (patch 0085): turns the per-command-type timing on or off.
++#[unsafe(no_mangle)]
++pub extern "C" fn display_list_replay_profile_enable(on: bool) {
++    crate::display_list::replay::profile::ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
++}
++
++/// Replay profiling: copies 64 sums of ms and 64 counts (by command type) out and clears them.
++///
++/// # Safety
++///
++/// `out_ms` must address 64 doubles and `out_counts` 64 integers.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn display_list_replay_profile_take(out_ms: *mut f64, out_counts: *mut u32) {
++    let mut ms = [0.0; crate::display_list::replay::profile::SLOTS];
++    let mut counts = [0; crate::display_list::replay::profile::SLOTS];
++    crate::display_list::replay::profile::take(&mut ms, &mut counts);
++    // SAFETY: The caller guarantees the out pointers address SLOTS values.
++    unsafe {
++        for i in 0..ms.len() {
++            *out_ms.add(i) = ms[i];
++            *out_counts.add(i) = counts[i];
++        }
++    }
++}
+-- 
+2.50.1 (Apple Git-155)
+

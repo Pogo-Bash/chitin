@@ -255,6 +255,7 @@ static HashMap<u32, Gfx::FloatPoint> s_host_offsets;
 static HashMap<u32, u32> s_host_seq; // scroll node -> the last carapace scroll (its sequence number) the engine applied
 static Vector<u64> s_prev_order_ids;
 static bool s_prefetch_pending { false };
+static bool s_raw_tiles { false }; // dirty tiles as BGRA premultiplied (set_raw_tiles)
 // Why the last computed list damage was what it was (patch 0084's stats, for the scroll trace): commands damaged by the
 // command diff / chain changes / scroll bars, then each one's union rect.
 static Array<i32, 16> s_last_damage_stats {};
@@ -267,6 +268,8 @@ static HashMap<u32, TransformState> s_transforms;
 static u64 s_transform_epoch { 0 };
 static u64 s_frame { 0 };
 bool prefetch_pending() { return s_prefetch_pending; }
+void set_raw_tiles(bool raw) { s_raw_tiles = raw; }
+bool raw_tiles() { return s_raw_tiles; }
 
 void reset()
 {
@@ -1459,7 +1462,9 @@ bool paint(PaintInput const& in)
                     ++s_stats.tiles_rastered;
                     if (layer.kind == Kind::Scroll && !visible_for_stats.is_empty() && dirty.intersects(visible_for_stats))
                         ++s_stats.tiles_rastered_visible;
-                    // Out as RGBA, not premultiplied (ImageData); the alpha scaled by the frame alpha mark.
+                    // Out as RGBA, not premultiplied (ImageData); the alpha scaled by the frame alpha mark. Raw tiles (the
+                    // WebGL2 carapace, docs/feel.md "Paint profile"): the tile's own BGRA premultiplied rows, copied, every
+                    // channel scaled by the mark when it is not 255; the carapace swizzles in its shader.
                     auto t_convert = MonotonicTime::now();
                     DirtyTile out;
                     out.layer = layer.id;
@@ -1469,7 +1474,17 @@ bool paint(PaintInput const& in)
                     out.rgba.resize(static_cast<size_t>(in_tile.width()) * in_tile.height() * 4);
                     auto* target = out.rgba.data();
                     u32 const alpha_bits = static_cast<u32>(in.alpha) << 24;
-                    for (int y = in_tile.y(); y < in_tile.bottom(); ++y) {
+                    if (s_raw_tiles) {
+                        size_t row = static_cast<size_t>(in_tile.width()) * 4;
+                        for (int y = in_tile.y(); y < in_tile.bottom(); ++y, target += row)
+                            __builtin_memcpy(target, bitmap.scanline_u8(y) + static_cast<size_t>(in_tile.x()) * 4, row);
+                        if (in.alpha != 255) {
+                            u32 m = in.alpha;
+                            for (auto& byte : out.rgba)
+                                byte = static_cast<u8>((byte * m + 127) / 255);
+                        }
+                    }
+                    for (int y = s_raw_tiles ? in_tile.bottom() : in_tile.y(); y < in_tile.bottom(); ++y) {
                         auto const* source = bitmap.scanline_u8(y) + static_cast<size_t>(in_tile.x()) * 4;
                         int width = in_tile.width();
                         for (int x = 0; x < width; ++x, source += 4, target += 4) {

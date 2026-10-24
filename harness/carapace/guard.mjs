@@ -121,6 +121,13 @@ const PORT_SCHEMAS = {
                 return null;
             out.raster = m.raster.slice();
         }
+        if (m.prof !== undefined) {
+            // Where the paint went (docs/feel.md "Paint profile"): numbers only, the per command type list bounded; else dropped.
+            const p = m.prof, num = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v < 1e7;
+            if (p && typeof p === 'object' && ['layout', 'record', 'raster', 'convert', 'bitmaps'].every((k) => p[k] === undefined || num(p[k]))
+                && Array.isArray(p.cmds) && p.cmds.length <= 64 && p.cmds.every((c) => Array.isArray(c) && c.length === 3 && c.every(num)))
+                out.prof = { layout: p.layout, record: p.record, raster: p.raster, convert: p.convert, bitmaps: p.bitmaps, cmds: p.cmds.map((c) => c.slice()) };
+        }
         if (m.layers !== undefined) {
             // The compositor's layer tree (compositor.mjs cleans it) and one ImageBitmap per dirty tile part, of its size.
             const tree = cleanLayerTree(m.layers);
@@ -130,9 +137,12 @@ const PORT_SCHEMAS = {
                 const b = m.tiles[k];
                 if (!b || typeof b !== 'object' || b.width !== tree.dirty[k][5] || b.height !== tree.dirty[k][6])
                     return null;
+                // Raw tiles: exactly width * height * 4 bytes (docs/feel.md "Paint profile").
+                if (b.bgra !== undefined && (!(b.bgra instanceof Uint8Array) || b.bgra.length !== b.width * b.height * 4))
+                    return null;
             }
             out.layers = tree;
-            out.tiles = m.tiles.slice();
+            out.tiles = m.tiles.map((b) => (b.bgra !== undefined ? { width: b.width, height: b.height, bgra: b.bgra } : b));
             // Video layers' frames (docs/youtube.md "Video on the host"): [layer id, ImageBitmap] for layers of the tree
             // that are video layers, each bitmap within bounds.
             if (m.videos !== undefined) {

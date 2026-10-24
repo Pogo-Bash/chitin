@@ -1267,7 +1267,10 @@
         const compositorMode = m.compositor === 'layers' || m.compositor === 'gpu' ? m.compositor : 'flat';
         engine.setCompositor(compositorMode);
         shownVideo.clear();
-        status('engine compositor', engine.compositor());
+        // The WebGL2 carapace takes tiles as raw BGRA premultiplied bytes (docs/feel.md "Paint profile").
+        if (m.rawTiles === true && engine.setRawTiles)
+            rawTiles = engine.setRawTiles(true);
+        status('engine compositor', engine.compositor() + (rawTiles ? ', raw tiles' : ''));
         paint = () => {
             const p = engine.paint();
             if (!p)
@@ -1314,12 +1317,17 @@
 
     // Every tick gets exactly one reply, whatever happens: the carapace keeps one tick in flight
     // and sends the next only after the reply (harness/carapace/carapace.js).
+    const paintReasons = [];
+    let profileOn = false;
+    let rawTiles = false;
     async function engineFrame(seq) {
         let reply = { type: 'frame', seq };
         let transfer = [];
         try {
             const t0 = hostNow();
+            if (!profileOn && engine.replayProfile) { engine.replayProfile(true); profileOn = true; }
             engine.renderingOpportunity(hostNow()); // the page's requestAnimationFrame callbacks run on this tick
+            const reasons = engine.needsPaintReasons ? engine.needsPaintReasons() : 0;
             const dirty = engine.needsPaint() || needsFirstPaint;
             let painted = false;
             if (dirty) {
@@ -1347,6 +1355,16 @@
                 emeState.frame();
             reply.paintMs = hostNow() - t0;
             reply.dirty = dirty;
+            // Why ticks paint (docs/feel.md): per reason bit, how many of the last 240 painted ticks had it.
+            if (dirty) {
+                paintReasons.push(reasons);
+                if (paintReasons.length >= 60) {
+                    const n = [];
+                    for (let b = 0; b < 9; b++) n.push(paintReasons.filter((r) => r & (1 << b)).length);
+                    status('paint reasons', 'of 60 paints: first requested animations record canvas media frames ahead page = ' + n.join(' '));
+                    paintReasons.length = 0;
+                }
+            }
             reply.inputTs = lastInputTs;
             reply.inputSeq = lastInputSeq;
             lastInputTs = 0;
@@ -1358,9 +1376,16 @@
                 if (engine.layerStats) {
                     const ls = engine.layerStats();
                     reply.raster = [ls.rasterMs, ls.tilesRastered, ls.tilesRasteredVisible];
+                    // Where the paint went (docs/feel.md "Paint profile"): layout, display-list record, raster, and per
+                    // command type the painter's ms [type, ms, count] (patch 0085).
+                    reply.prof = { layout: ls.layoutMs, record: ls.recordMs, raster: ls.rasterMs, convert: ls.convertMs, cmds: engine.replayProfileTake ? engine.replayProfileTake() : [] };
                 }
-                reply.tiles = await hostPromiseAll(p.tiles.map((t) => hostCreateImageBitmap(t.image)));
-                transfer = reply.tiles.slice();
+                const tUp = hostNow();
+                reply.tiles = rawTiles
+                    ? p.tiles.map((t) => ({ width: t.image.width, height: t.image.height, bgra: t.image.bgra }))
+                    : await hostPromiseAll(p.tiles.map((t) => hostCreateImageBitmap(t.image)));
+                if (reply.prof) reply.prof.bitmaps = hostNow() - tUp;
+                transfer = rawTiles ? reply.tiles.map((t) => t.bgra.buffer) : reply.tiles.slice();
                 // Video layers (docs/youtube.md "Video on the host"): the frame of each whose frame changed, as the host
                 // decoded it (its display copy, transferred).
                 const videos = [];

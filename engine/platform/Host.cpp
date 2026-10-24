@@ -25,6 +25,7 @@
 #include <Compositor/DisplayListRasterCache.h>
 #include <LibCompositing/DisplayList/CompositedContext.h>
 #include <LibCompositing/DisplayList/DisplayListDamage.h>
+#include <LibCompositing/RustFFI.h>
 #include <LibCompositing/DisplayList/AccumulatedVisualContext.h>
 #include <LibCompositing/DisplayList/DisplayListResourceStorage.h>
 #include <LibCompositing/Scrolling/AsyncScrollingState.h>
@@ -2556,13 +2557,30 @@ Web::CSS::PreferredColorScheme PageClient::preferred_color_scheme() const
     return host().color_scheme_dark ? Web::CSS::PreferredColorScheme::Dark : Web::CSS::PreferredColorScheme::Light;
 }
 
+static u32 s_paint_requests_from_page { 0 }; // PageClient::request_frame calls since the last paint (diagnostics)
+
 void PageClient::request_frame()
 {
+    ++s_paint_requests_from_page;
     host().paint_requested = true;
     ganglion_host_request_frame();
 }
 
 static bool descendants_need_record(Web::HTML::LocalNavigable&);
+
+// Why a paint is wanted, as bits (docs/feel.md: pages that paint every tick while nothing changes): 1 the first paint,
+// 2 a frame request (input, scrolling, the page client), 4 running animations, 8 a display list to record, 16 a canvas,
+// 32 a media frame, 64 a frame document, 128 tiles ahead still to raster, 256 the page client asked since the last paint.
+GANGLION_EXPORT uint32_t ganglion_needs_paint_reasons(void)
+{
+    auto& h = host();
+    if (!h.page_ready || !h.traversable)
+        return 0;
+    return (h.frames_painted == 0 ? 1u : 0u) | (h.paint_requested ? 2u : 0u) | (h.animations_running ? 4u : 0u)
+        | (h.traversable->needs_to_record_display_list() ? 8u : 0u) | (Ganglion::canvas_2d_pending() ? 16u : 0u)
+        | (Ganglion::media_frames_pending() ? 32u : 0u) | (descendants_need_record(*h.traversable) ? 64u : 0u)
+        | (Ganglion::Layers::prefetch_pending() ? 128u : 0u) | (s_paint_requests_from_page ? 256u : 0u);
+}
 
 // Whether a paint would change the frame: the first one, a display list to re-record (style, layout, DOM
 // and selection changes set the navigable's flag, as they do for Ladybird's compositor), or a frame
@@ -2673,7 +2691,14 @@ struct ChildContextState {
     Compositor::DisplayListRasterCache raster_cache;
     RefPtr<Gfx::Bitmap> bitmap;
     RefPtr<Compositing::DisplayList> display_list;
+    // What the bitmap holds (docs/feel.md "Paint profile"): the paint it was painted in, and the list and offsets it was
+    // painted with. Every DrawCompositedContext of the frame (one per tile it crosses) used to repaint the whole child.
+    u64 painted_in { 0 };
+    Compositing::DisplayList const* painted_list { nullptr };
+    Vector<Gfx::FloatPoint> painted_offsets;
 };
+static u64 s_paint_serial { 0 }; // one per ganglion_paint
+static bool s_paint_canvas_or_media_changed { false }; // this paint flushed a canvas or shows a new video frame
 static HashMap<u64, NonnullOwnPtr<ChildContextState>>& child_contexts()
 {
     static HashMap<u64, NonnullOwnPtr<ChildContextState>> contexts;
@@ -2723,6 +2748,10 @@ static Compositing::CompositedContextSurface paint_child_context(Web::Compositor
     if (width <= 0 || height <= 0 || width > 16384 || height > 16384)
         return {};
     auto& state = *child_contexts().ensure(id.value(), [] { return make<ChildContextState>(); });
+    Gfx::FloatRect content { 0, 0, static_cast<float>(width), static_cast<float>(height) };
+    // Painted already in this paint, at this size: the same pixels for every tile that shows the frame.
+    if (state.bitmap && state.painted_in == s_paint_serial && state.bitmap->width() == width && state.bitmap->height() == height)
+        return { Gfx::PaintingSurface::wrap_bitmap(*state.bitmap), content };
     if (!state.bitmap || state.bitmap->width() != width || state.bitmap->height() != height) {
         auto bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, { width, height });
         if (bitmap.is_error())
@@ -2744,6 +2773,21 @@ static Compositing::CompositedContextSurface paint_child_context(Web::Compositor
     auto tree = document->paint_state().visual_context_tree(*document);
     document->paint_state().refresh_scroll_state(read, *document);
     Compositing::ScrollStateSnapshot scroll_state = document->scroll_state_snapshot();
+    // Nothing changed since the last paint (the same list, the same scroll offsets, no canvas, video or animation that
+    // draws without a new list, and no frame of its own): the bitmap still holds it.
+    auto offsets = scroll_state.device_offsets();
+    bool unchanged = state.painted_in != 0 && state.painted_list == state.display_list.ptr() && state.painted_offsets.size() == offsets.size()
+        && !s_paint_canvas_or_media_changed && !Ganglion::canvas_2d_pending() && !Ganglion::media_frames_pending() && !tree.has_visual_animations()
+        && !descendants_need_record(*navigable);
+    for (size_t k = 0; unchanged && k < offsets.size(); ++k)
+        unchanged = state.painted_offsets[k] == offsets[k];
+    state.painted_in = s_paint_serial;
+    if (unchanged)
+        return { Gfx::PaintingSurface::wrap_bitmap(*state.bitmap), content };
+    state.painted_list = state.display_list.ptr();
+    state.painted_offsets.clear();
+    for (auto const& o : offsets)
+        state.painted_offsets.append(o);
     __builtin_memset(state.bitmap->scanline_u8(0), 0, state.bitmap->size_in_bytes());
     auto surface = Gfx::PaintingSurface::wrap_bitmap(*state.bitmap);
     Compositing::CompositedContextResolver nested = [depth](Web::CompositorContextId child, Gfx::FloatRect rect, Gfx::FloatMatrix4x4 const&) {
@@ -2752,7 +2796,7 @@ static Compositing::CompositedContextSurface paint_child_context(Web::Compositor
     Compositor::DisplayListPlayerSkia player { RefPtr<Gfx::SkiaBackendContext> {} };
     player.execute(*state.display_list, tree, state.resources, state.raster_cache, scroll_state, surface, &Ganglion::canvas_surfaces(), &nested);
     player.flush(*surface);
-    return { surface, Gfx::FloatRect { 0, 0, static_cast<float>(width), static_cast<float>(height) } };
+    return { surface, content };
 }
 
 // An SVG image's frames (drawImage or createImageBitmap of an SVG <img>): Ladybird asks its compositor process to rasterize
@@ -2817,6 +2861,7 @@ GANGLION_EXPORT uint8_t const* ganglion_paint(void)
     // the host keeps the previous page up or shows blank (Chrome does not paint it for a navigation).
     if (document->is_initial_about_blank())
         return nullptr;
+    ++s_paint_serial;
     bool frame_is_new = h.frames_painted == 0 || !h.last_display_list || !h.last_tree.has_value() || h.last_tree->spatial_node_count() == 0;
     Web::HTML::TemporaryExecutionContext context { Web::HTML::relevant_realm(*document), Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes };
     Web::Layout::ForcedReadScope read { *document };
@@ -2846,7 +2891,9 @@ GANGLION_EXPORT uint8_t const* ganglion_paint(void)
     // does not change the list, so it repaints the frame (FIXME: only the video's rect).
     for (auto const& [resource_id, sink_handle] : h.resources.video_sink_handles())
         h.resources.set_video_sink(Compositing::VideoSinkResourceId { resource_id }, Ganglion::media_video_sink(sink_handle));
-    bool video_changed = Ganglion::media_frames_changed() && !h.resources.video_sink_handles().is_empty();
+    bool media_changed_now = Ganglion::media_frames_changed();
+    bool video_changed = media_changed_now && !h.resources.video_sink_handles().is_empty();
+    s_paint_canvas_or_media_changed = canvas_changed || media_changed_now;
     // The tree's node values (a transform, an opacity) change without a new recording when LibWeb updates them in place
     // (incremental visual context updates): take the document's tree whenever it still fits the list.
     auto visual_context_tree = document->paint_state().visual_context_tree(*document);
@@ -2905,6 +2952,7 @@ GANGLION_EXPORT uint8_t const* ganglion_paint(void)
             ++h.rasters;
         ++h.frames_painted;
         h.paint_requested = Ganglion::Layers::prefetch_pending();
+        s_paint_requests_from_page = 0;
         h.last_display_list = display_list;
         h.last_tree = visual_context_tree;
         h.last_scroll_state = scroll_state;
@@ -3042,6 +3090,7 @@ GANGLION_EXPORT void ganglion_set_compositor(int mode)
     h.paint_requested = true;
     h.last_display_list = nullptr; // the flat path's next paint starts from a full frame too
 }
+GANGLION_EXPORT void ganglion_set_raw_tiles(int raw) { Ganglion::Layers::set_raw_tiles(raw != 0); }
 GANGLION_EXPORT int ganglion_compositor(void) { return static_cast<int>(Ganglion::Layers::mode()); }
 // The last layered paint's layer tree as JSON (UTF-8, not NUL-terminated) and its length.
 GANGLION_EXPORT char const* ganglion_layers_json(void) { return Ganglion::Layers::frame_json().characters_without_null_termination(); }
@@ -3057,10 +3106,32 @@ GANGLION_EXPORT uint8_t const* ganglion_layers_dirty_pixels(int index)
 }
 // 0 raster ms, 1 split ms, 2 layers, 3 tiles kept, 4 tiles rastered, 5 bytes, 6 flattened (over budget), 7 tiles of a
 // scroll layer rastered where they are on screen.
+// Replay profiling (patch 0085): per command type, the ms its painter calls took since the last take, as text
+// "type:ms:count;..." (types with a count only); the C++ side of the profile is off until enabled.
+GANGLION_EXPORT void ganglion_replay_profile_enable(int on)
+{
+    Compositing::RustFFI::display_list_replay_profile_enable(on != 0);
+}
+GANGLION_EXPORT char const* ganglion_replay_profile_take(void)
+{
+    static ByteString text;
+    double ms[64];
+    u32 counts[64];
+    Compositing::RustFFI::display_list_replay_profile_take(ms, counts);
+    StringBuilder b;
+    for (int i = 0; i < 64; ++i)
+        if (counts[i])
+            b.appendff("{}:{:.3}:{};", i, ms[i], counts[i]);
+    text = b.to_byte_string();
+    return text.characters();
+}
+
 GANGLION_EXPORT double ganglion_layers_stats(int which)
 {
     auto const& s = Ganglion::Layers::last_stats();
     switch (which) {
+    case 9: return host().last_layout_ms;
+    case 10: return host().last_record_ms;
     case 0: return s.raster_ms;
     case 1: return s.split_ms;
     case 2: return s.layers;

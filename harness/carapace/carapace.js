@@ -258,6 +258,7 @@ import ChitinCookies from '../../build/cookies.mjs';
     const scrollLatencies = []; // wheel inputs only
     function sendInput(seg, m) {
         m.seq = ++inputSeq;
+        wakeTicks(seg);
         const pending = seg.pendingInputs || (seg.pendingInputs = []); // [seq, timestamp (epoch ms), wheel]
         pending.push([m.seq, m.ts, m.kind === 'wheel']);
         if (pending.length > 1000)
@@ -374,9 +375,10 @@ import ChitinCookies from '../../build/cookies.mjs';
                 status('compositor', `WebGL2 backend, engine ${engineCompositor}`);
                 let raf = 0;
                 let shownAfter = []; // timestamps of carapace scrolls not yet on screen
-                // Composites at the host's animation frames, when something changed (independent of engine frames).
+                // Composites at the host's next animation frame after something changed (independent of engine frames);
+                // no frame is asked for while nothing changes (docs/feel.md: a standing rAF loop delays host input).
                 const loop = () => {
-                    raf = requestAnimationFrame(loop);
+                    raf = 0;
                     if (gl.dirty || shownAfter.length) {
                         gl.composite(syncComposite);
                         traceComposite(gl.tree, gl.externals);
@@ -384,7 +386,9 @@ import ChitinCookies from '../../build/cookies.mjs';
                         shownAfter = [];
                     }
                 };
-                raf = requestAnimationFrame(loop);
+                const kick = () => { if (!raf) raf = requestAnimationFrame(loop); };
+                gl.onDirty = kick;
+                kick();
                 return {
                     gl,
                     tree: gl.tree,
@@ -401,6 +405,7 @@ import ChitinCookies from '../../build/cookies.mjs';
                     drawInto: (ctx) => gl.drawInto(ctx),
                     stats: () => ({ compositeMs: gl.stats.ms.slice(), gpuMs: gl.stats.gpuMs.slice(), timer: !!gl.timer }),
                     destroy() {
+                        gl.onDirty = null;
                         cancelAnimationFrame(raf);
                         gl.destroy();
                         holder.remove();
@@ -416,7 +421,7 @@ import ChitinCookies from '../../build/cookies.mjs';
         let shownAfter = [];
         let raf = 0;
         const loop = () => {
-            raf = requestAnimationFrame(loop);
+            raf = 0;
             if (shownAfter.length) {
                 dom.layout();
                 traceComposite(dom.tree, null);
@@ -424,10 +429,9 @@ import ChitinCookies from '../../build/cookies.mjs';
                 shownAfter = [];
             }
         };
-        raf = requestAnimationFrame(loop);
         return {
             tree: dom.tree,
-            scrolled(ts, handled) { shownAfter.push([ts, handled]); },
+            scrolled(ts, handled) { shownAfter.push([ts, handled]); if (!raf) raf = requestAnimationFrame(loop); },
             apply(tree, tiles, videos) {
                 dom.apply(tree, tiles, videos);
                 const scale = tab.clientWidth / tree.w;
@@ -785,6 +789,8 @@ import ChitinCookies from '../../build/cookies.mjs';
                 type: 'init', mode: nest || popup ? 'bitmap' : mode, opener: !!popup, classic, site: standIn ? new URL(targetUrl).hostname : site, url: targetUrl, siteHost: siteOf(targetUrl),
                 engine, scripting, width: seg.width, height: seg.height, dpr, nested: !!nest, frameRealms, debugContexts, compatHide,
                 compositor: seg.compositor ? engineCompositor : 'flat',
+                // The WebGL2 backend uploads tiles as raw BGRA premultiplied bytes (swizzled in its shader); ?tiles=rgba: ImageBitmaps.
+                rawTiles: !!seg.compositor && compositorBackend === 'webgl' && params.get('tiles') !== 'rgba',
                 cookies: seg.cookieInit,
                 rtc: rtcOn,
             };
@@ -820,7 +826,7 @@ import ChitinCookies from '../../build/cookies.mjs';
             }
             seg.started = seg.lastFrameAt = performance.now();
             if (!nest && !popup)
-                requestAnimationFrame(tick);
+                scheduleTick();
             seg.watchdogTimer = setInterval(() => watchdog(seg), 500);
         };
         window.addEventListener('message', seg.onWindowMessage);
@@ -1044,10 +1050,42 @@ import ChitinCookies from '../../build/cookies.mjs';
     });
 
     // --- Frame pacing: one frame in flight per segment, ticked by our requestAnimationFrame. ---------------
+    // One scheduler for every segment. While some segment's engine is painting, ticks follow the host's animation frames;
+    // once every segment answered a few ticks with nothing to paint, ticks go on a 16 ms timer instead: an animation-frame
+    // loop that never stops makes the host deliver main-thread input (our wheel handler) about a frame later (measured,
+    // docs/feel.md). Input to a segment brings it back to animation frames. ?tick=timer: always the timer; ?tick=raf: always
+    // animation frames (the old pacing).
+    const tickMode = params.get('tick') || 'auto';
+    let tickPending = false;
+    let tickTimer = 0; // the idle timer, while ticks wait on one
+    const IDLE_TICKS = 3;
+    function scheduleTick() {
+        if (tickPending)
+            return;
+        tickPending = true;
+        const idle = tickMode === 'timer' || (tickMode !== 'raf' && liveSegments().every((s) => s.placeholder || !s.port || (s.idleTicks || 0) >= IDLE_TICKS));
+        if (idle)
+            tickTimer = setTimeout(() => { tickTimer = 0; tick(); }, 16);
+        else
+            requestAnimationFrame(tick);
+    }
+    // Input wakes the segment's ticks; one waiting on the idle timer goes now (the input message is already queued
+    // ahead of it, so the engine paints with it applied), not up to 16 ms later.
+    function wakeTicks(seg) {
+        for (let s = seg; s; s = s.nest && s.nest.parent)
+            s.idleTicks = 0;
+        if (tickTimer && tickMode !== 'timer') {
+            clearTimeout(tickTimer);
+            tickTimer = 0;
+            tickPending = false;
+            queueMicrotask(tick); // after this handler has posted the input
+        }
+    }
     function tick() {
+        tickPending = false;
         if (!current || current.dead)
             return;
-        requestAnimationFrame(tick);
+        scheduleTick();
         // devicePixelRatio changes (browser zoom, a move to another display) do not always come with an event: checked per
         // frame, and the segment's viewport gets the new ratio as a resized window would (same CSS size, no resize event).
         if ((window.devicePixelRatio || 1) !== dpr) {
@@ -1069,6 +1107,16 @@ import ChitinCookies from '../../build/cookies.mjs';
     function onFrame(seg, m) {
         const t = performance.now();
         seg.inFlight = false;
+        // A layered frame with no tile and the same tree as the last one changes nothing on screen: not applied (no
+        // composite), and counted as an idle tick (docs/feel.md).
+        let sameLayers = false;
+        if (m.layers && (!m.tiles || !m.tiles.length) && (!m.videos || !m.videos.length)) {
+            const key = JSON.stringify(m.layers, (k, v) => (k === 'ms' ? undefined : v)); // ms: raster time, a statistic
+            sameLayers = key === seg.lastLayersKey;
+            seg.lastLayersKey = key;
+        } else if (m.layers)
+            seg.lastLayersKey = null;
+        seg.idleTicks = sameLayers || !(m.dirty || m.layers || m.bitmap || m.notReady) ? (seg.idleTicks || 0) + 1 : 0;
         seg.lastReplyAt = t;
         if (m.notReady) {
             seg.lastReplyKind = 'not ready (engine still loading)';
@@ -1113,8 +1161,10 @@ import ChitinCookies from '../../build/cookies.mjs';
         }
         if (m.bitmap && bitmapCtx)
             bitmapCtx.transferFromImageBitmap(m.bitmap); // zero-copy hand-over to our canvas
-        if (m.layers && seg.compositor)
+        const tApply = performance.now();
+        if (m.layers && seg.compositor && !sameLayers)
             seg.compositor.apply(m.layers, m.tiles, m.videos);
+        const applyMs = performance.now() - tApply;
         // The new page presented its first frame: the held one goes (after the composite that shows it).
         if (held && (m.bitmap || m.layers) && seg === current)
             requestAnimationFrame(() => requestAnimationFrame(dropHold));
@@ -1126,7 +1176,7 @@ import ChitinCookies from '../../build/cookies.mjs';
                     seg.compositor.child(child.label + ':' + child.nest.frameId, undefined, childRect(child), childMoves(child));
         }
         if (trace && m.layers && trace.length <= 20000)
-            trace.push({ k: 'f', t, seq: m.seq, paint: m.paintMs, rt: t - seg.sentAt, raster: m.raster || null, dirty: m.tiles.length, media: m.layers.media || null, ds: m.layers.ds || null,
+            trace.push({ k: 'f', t, seq: m.seq, paint: m.paintMs, rt: t - seg.sentAt, raster: m.raster || null, dirty: m.tiles.length, media: m.layers.media || null, ds: m.layers.ds || null, prof: m.prof ? { ...m.prof, apply: applyMs } : null,
                 nodes: m.layers.scroll.nodes.map((n) => [n[0], n[10], n[11], n[15], n[14]]),
                 layers: m.layers.layers.map((l) => [l.id, l.kind, l.node, l.m[4], l.m[5], l.clip, l.tiles.length, l.chain || null, m.layers.dirty.filter((d) => d[0] === l.id).length, l.ms, l.why || 0, l.dmg || null]) });
         if (m.inputSeq)
@@ -1176,6 +1226,7 @@ import ChitinCookies from '../../build/cookies.mjs';
                 tree.scrollBy(hit.node, hit.dx, hit.dy, seq);
                 if (trace && trace.length <= 20000) trace.push({ k: 'w', t: performance.now(), node: hit.node, dy: hit.dy });
                 seg.compositor.scrolled(ts, performance.now());
+                wakeTicks(seg);
                 seg.port.postMessage({ type: 'input', kind: 'scroll-sync', seq, node: hit.node, x, y, dx: hit.dx / dpr, dy: hit.dy / dpr, ts });
                 return;
             }
@@ -1517,8 +1568,13 @@ import ChitinCookies from '../../build/cookies.mjs';
     // Gamepads: the host's, polled each display frame while the carapace has focus (Chrome's own gamepad user gesture applies
     // to us: none appear before a button is pressed), sent to the displayed page and its frames when they change.
     let lastPads = '';
+    // Polled only while a pad is connected (a standing animation-frame loop delays host input, docs/feel.md).
+    let padsPolling = false;
     function pollGamepads() {
-        requestAnimationFrame(pollGamepads);
+        const any = navigator.getGamepads && [...navigator.getGamepads()].some((p) => p && p.connected);
+        padsPolling = !!any || lastPads !== '[]' && lastPads !== '';
+        if (padsPolling)
+            requestAnimationFrame(pollGamepads);
         if (!current || !current.port || !navigator.getGamepads || !document.hasFocus())
             return;
         const pads = [];
@@ -1533,7 +1589,8 @@ import ChitinCookies from '../../build/cookies.mjs';
             if (topOf(s) === current && s.port)
                 s.port.postMessage({ type: 'gamepads', pads });
     }
-    requestAnimationFrame(pollGamepads);
+    window.addEventListener('gamepadconnected', () => { if (!padsPolling) { padsPolling = true; requestAnimationFrame(pollGamepads); } });
+    window.addEventListener('gamepaddisconnected', () => { if (!padsPolling) { padsPolling = true; requestAnimationFrame(pollGamepads); } });
     function gamepadEffect(c) {
         const pad = navigator.getGamepads ? navigator.getGamepads()[c.index] : null;
         const act = pad && pad.vibrationActuator;

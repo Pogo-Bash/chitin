@@ -2298,6 +2298,7 @@ api.setNetworkInformation = (c) => {
 api.setAudioOutput = (sampleRate) => { if (typeof X.ganglion_set_audio_output === 'function') X.ganglion_set_audio_output(typeof sampleRate === 'number' && sampleRate > 0 ? MathFloor(sampleRate) : 0); };
 api.setColorScheme = (scheme) => { if (typeof X.ganglion_set_color_scheme === 'function') X.ganglion_set_color_scheme(scheme === 'dark' ? 1 : 0); };
 api.needsPaint = () => !!X.ganglion_needs_paint();
+api.needsPaintReasons = () => (typeof X.ganglion_needs_paint_reasons === 'function' ? X.ganglion_needs_paint_reasons() >>> 0 : 0);
 api.frameWidth = () => X.ganglion_frame_width();
 api.frameHeight = () => X.ganglion_frame_height();
 
@@ -2346,6 +2347,10 @@ api.paint = () => {
 // The compositor (docs/compositor.md): 'flat' (one frame, api.paint as above), 'layers' (tiles; backdrop filters
 // rastered in the engine) or 'gpu' (tiles; blur/saturate backdrop filters for the carapace's WebGL2).
 api.setCompositor = (mode) => { if (typeof X.ganglion_set_compositor === 'function') X.ganglion_set_compositor(mode === 'gpu' ? 2 : mode === 'layers' ? 1 : 0); };
+// Raw tiles (the WebGL2 carapace): each dirty tile part as { width, height, bgra: Uint8Array } of BGRA premultiplied
+// bytes, not an ImageData of RGBA straight alpha (no conversion in the engine, no ImageBitmap in the Worker).
+let rawTiles = false;
+api.setRawTiles = (on) => { if (typeof X.ganglion_set_raw_tiles === 'function') { X.ganglion_set_raw_tiles(on ? 1 : 0); rawTiles = !!on; } return rawTiles; };
 api.compositor = () => (typeof X.ganglion_compositor === 'function' ? ['flat', 'layers', 'gpu'][X.ganglion_compositor()] || 'flat' : 'flat');
 // A layered paint: { layers: the tree (JSON from the engine), tiles: [{ layer, i, j, x, y, width, height, image }], bytes }.
 function layeredFrame() {
@@ -2356,12 +2361,15 @@ function layeredFrame() {
     for (let k = 0; k < dirty.length; k++) {
         const d = dirty[k];
         const width = d[5], height = d[6];
-        tiles[k] = { __proto__: null, layer: d[0], i: d[1], j: d[2], x: d[3], y: d[4], width, height, image: imageOf(X.ganglion_layers_dirty_pixels(k), width, height) };
+        tiles[k] = { __proto__: null, layer: d[0], i: d[1], j: d[2], x: d[3], y: d[4], width, height, image: rawTiles ? { __proto__: null, width, height, bgra: copyOutBytes(X.ganglion_layers_dirty_pixels(k), width * height * 4) } : imageOf(X.ganglion_layers_dirty_pixels(k), width, height) };
         bytes += width * height * 4;
     }
     return { __proto__: null, layers: tree, tiles, bytes, blit: { __proto__: null, dx: 0, dy: 0 }, x: 0, y: 0, width: 0, height: 0, image: null };
 }
-api.layerStats = () => ({ __proto__: null, rasterMs: X.ganglion_layers_stats(0), splitMs: X.ganglion_layers_stats(1), layers: X.ganglion_layers_stats(2), tiles: X.ganglion_layers_stats(3), tilesRastered: X.ganglion_layers_stats(4), bytes: X.ganglion_layers_stats(5), flattened: !!X.ganglion_layers_stats(6), tilesRasteredVisible: X.ganglion_layers_stats(7), convertMs: X.ganglion_layers_stats(8) });
+api.layerStats = () => ({ __proto__: null, rasterMs: X.ganglion_layers_stats(0), splitMs: X.ganglion_layers_stats(1), layers: X.ganglion_layers_stats(2), tiles: X.ganglion_layers_stats(3), tilesRastered: X.ganglion_layers_stats(4), bytes: X.ganglion_layers_stats(5), flattened: !!X.ganglion_layers_stats(6), tilesRasteredVisible: X.ganglion_layers_stats(7), convertMs: X.ganglion_layers_stats(8), layoutMs: X.ganglion_layers_stats(9), recordMs: X.ganglion_layers_stats(10) });
+// Replay profiling (patch 0085): on/off, and per command type [type, ms, count] since the last call.
+api.replayProfile = (on) => { if (typeof X.ganglion_replay_profile_enable === 'function') X.ganglion_replay_profile_enable(on ? 1 : 0); };
+api.replayProfileTake = () => (typeof X.ganglion_replay_profile_take === 'function' ? cString(X.ganglion_replay_profile_take()).split(';').filter(Boolean).map((e) => e.split(':').map(Number)) : []);
 
 // The whole frame as an ImageData (a copy out of linear memory), or null before the first paint.
 api.frame = () => {

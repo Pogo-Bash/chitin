@@ -95,6 +95,9 @@ Vector<DirtyTile> const& dirty_tiles();
 Stats const& last_stats();
 // Tiles ahead are still to be rastered: the host asks for another paint.
 bool prefetch_pending();
+// Dirty tiles as the tiles' own BGRA premultiplied rows (the WebGL2 carapace swizzles), not RGBA straight alpha.
+void set_raw_tiles(bool);
+bool raw_tiles();
 // The carapace's scroll offsets (P3): the device offset of a scroll node as the user last saw it. Tiles are rastered
 // ahead around it as well as around the engine's own offset.
 void set_host_scroll_offset(u32 node, float x, float y);

@@ -248,6 +248,8 @@ export class LayerTree {
         let px = 0;
         for (const layer of this.order) {
             if (layer.kind !== 'scroll' || !layer.ext || !layer.clip) continue;
+            // A video layer with no tile (docs/youtube.md "Video on the host"): the host draws its frame; nothing to wait for.
+            if (layer.video && !layer.tiles.length) continue;
             const m = this.matrixOf(layer);
             const port = intersect(this.clipOf(layer), [0, 0, this.width, this.height]);
             const r = intersect([port[0] - m[4], port[1] - m[5], port[2], port[3]], layer.ext);
